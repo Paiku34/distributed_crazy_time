@@ -1,1 +1,13 @@
+com\crazytime\rabbitmq\PayoutListener.class
+com\crazytime\controller\AuthController.class
+com\crazytime\rabbitmq\GameStateCache.class
+com\crazytime\entity\Bet.class
+com\crazytime\rabbitmq\GameResultListener.class
+com\crazytime\repository\PlayerRepository.class
+com\crazytime\controller\GameController.class
+com\crazytime\config\WebSocketConfig.class
+com\crazytime\rabbitmq\RefundListener.class
+com\crazytime\controller\WalletController.class
+com\crazytime\entity\Player.class
+com\crazytime\repository\BetRepository.class
 com\crazytime\GatewayApplication.class

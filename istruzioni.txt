@@ -1,0 +1,42 @@
+========================================
+  ISTRUZIONI PER AVVIARE IL SISTEMA
+  Distributed Crazy Time
+========================================
+
+1 terminale — RabbitMQ:
+
+cd "C:\Program Files\RabbitMQ Server\rabbitmq_server-4.3.4\sbin"
+.\rabbitmq-server.bat
+aprire http://localhost:15672
+
+2 terminale — Spring Boot (Java Gateway):
+
+cd C:\Users\cacak\OneDrive\Desktop\distributed_crazy_time\java-gateway
+mvn spring-boot:run
+
+3 terminale — Erlang Game Engine:
+
+cd C:\Users\cacak\OneDrive\Desktop\distributed_crazy_time\erlang-engine\game_engine
+escript ..\rebar3 shell
+  (il game engine parte automaticamente con supervisor, wheel_process, worker e 4 mini-giochi)
+
+4 terminale — Curl per testare (comandi REST):
+
+Registra utente:
+curl.exe -X POST "http://localhost:8080/api/wallet/register?username=testuser"
+
+Controlla saldo:
+curl.exe -X GET "http://localhost:8080/api/wallet/balance?username=testuser"
+
+Piazza scommessa su numero:
+curl.exe -X POST "http://localhost:8080/api/wallet/place-bet?username=testuser&amount=10.00&segment=5"
+
+Piazza scommessa su mini-game:
+curl.exe -X POST "http://localhost:8080/api/wallet/place-bet?username=testuser&amount=5.00&segment=Pachinko"
+curl.exe -X POST "http://localhost:8080/api/wallet/place-bet?username=testuser&amount=5.00&segment=CoinFlip"
+curl.exe -X POST "http://localhost:8080/api/wallet/place-bet?username=testuser&amount=5.00&segment=CashHunt"
+curl.exe -X POST "http://localhost:8080/api/wallet/place-bet?username=testuser&amount=5.00&segment=CrazyTime"
+
+========================================
+  NOTA: tutte le risposte sono in JSON
+========================================

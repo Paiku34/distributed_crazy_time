@@ -1,0 +1,45 @@
+creato file pom.xml
+
+creato cartelle java-gateway
+			|
+			application properties
+			GatewayApplication
+		erlang-engine
+			|
+			worker.erl
+			file di cofnigurazione
+
+Si manda una scommessa con curl verso spring. spring la intercetta e la invia a rabbitMQ (queue) che la invia a erlang e riceve scommessa ricevuta.
+
+IMPLEMENTATO FINORA:
+- Infrastruttura di comunicazione base (Test Gateway Java -> RabbitMQ -> Erlang nativo inets).
+- Strutturazione MVC del progetto Java.
+- Integrazione Database in memoria (H2) e JPA.
+- Sviluppate API REST per la registrazione giocatore e la consultazione del portafoglio (Wallet).
+- Sostituito il test-bet fittizio con l'endpoint `/api/wallet/place-bet` nel `WalletController` (scala il credito e invia JSON a RabbitMQ).
+- Creazione test unitari (`WalletControllerTest`) con JUnit 5 e Mockito.
+- Aggiornamento di `istruzioni.txt` con i nuovi comandi curl per simulare il client.
+- Sviluppo del Game Engine in Erlang: Inserito `game_server` (gen_server) per gestire timer scommesse e lancio ruota. Inserito `worker` (gen_server) per ascoltare attivamente RabbitMQ e passare i bet al `game_server`. Inserita la pubblicazione dei risultati verso RabbitMQ (`state_queue` e `results_queue`).
+- Integrazione WebSockets in Java: Aggiunto `spring-boot-starter-websocket`, creato `WebSocketConfig` (/ws) e aggiunto il `GameResultListener` in Spring Boot per propagare i risultati da Erlang al frontend HTML.
+
+REFACTORING E ALLINEAMENTO CON idea_distributed.pdf (11/08/2026):
+Erlang Engine:
+  - game_server.erl RINOMINATO in wheel_process.erl (come da diagramma PDF "Main Wheel Process")
+  - Supervision tree a due livelli: game_engine_sup -> {wheel_process, minigames_sup, worker}
+  - Creato minigames_sup.erl (secondo livello di supervisione per i 4 mini-giochi)
+  - Creati 4 processi mini-game separati: pachinko.erl, coinflip.erl, cashhunt.erl, crazytime.erl
+    - Ogni mini-game è un gen_server con logica propria (moltiplicatori pesati, meccaniche diverse)
+    - Il wheel_process delega automaticamente al mini-game corrispondente quando la ruota atterra su un segmento bonus
+  - Ruota con distribuzione pesata realistica (54 segmenti: 21x1, 13x2, 7x5, 4x10, 4xPachinko, 2xCoinFlip, 2xCashHunt, 1xCrazyTime)
+  - worker.erl riscritto con parsing JSON strutturato (no più regex fragile), forward di mappe #{username, amount, segment} al wheel_process
+  - game_engine.app.src aggiornato con dipendenze inets e crypto
+
+Java Gateway:
+  - WalletController riscritto: restituisce ResponseEntity<Map<String,Object>> (risposte JSON) invece di stringhe
+  - Aggiunta validazione input (importo > 0)
+  - Logging con SLF4J invece di System.out.println
+  - Creato BetRequest.java DTO per le scommesse
+  - Player.java aggiornato con @Table(name="players") e setId()
+  - GameResultListener.java: separati i topic WebSocket (/topic/game-results e /topic/game-timer)
+  - Test ampliati da 4 a 8 casi: registrazione, duplicati, scommessa ok, saldo insufficiente, utente inesistente, importo zero, getBalance ok, getBalance not found
+  - Tutti e 8 i test PASSANO (mvn test BUILD SUCCESS)

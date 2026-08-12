@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Distributed Crazy Time — Live Game Show</title>
+    <meta name="description" content="Distributed Crazy Time: a real-time multiplayer game show powered by Erlang and Spring Boot.">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <!-- Sfondo animato -->
+    <div class="background-animation"></div>
+    <div class="bg-particles" id="bg-particles"></div>
+
+    <!-- Container Login/Registrazione -->
+    <div id="auth-screen" class="glass-panel auth-panel">
+        <div class="auth-logo">
+            <span class="logo-crazy">CRAZY</span>
+            <span class="logo-time">TIME</span>
+        </div>
+        <p class="auth-subtitle">Distributed Game Show</p>
+
+        <div class="auth-tabs">
+            <button id="tab-login" class="active">Login</button>
+            <button id="tab-register">Register</button>
+        </div>
+
+        <form id="auth-form" autocomplete="off">
+            <div class="input-group">
+                <input type="text" id="username" placeholder=" " required>
+                <label for="username">Username</label>
+            </div>
+            <div class="input-group">
+                <input type="password" id="password" placeholder=" " required minlength="4">
+                <label for="password">Password</label>
+            </div>
+
+            <div id="register-fields" style="display: none;">
+                <div class="input-group">
+                    <input type="number" id="initial-balance" value="1000" min="0" max="1000" placeholder=" ">
+                    <label for="initial-balance">Saldo iniziale (Max $1000)</label>
+                </div>
+            </div>
+
+            <button type="submit" id="auth-btn" class="glow-btn">
+                <span id="auth-btn-text">Entra nel Gioco</span>
+                <div id="auth-spinner" class="spinner" style="display:none;"></div>
+            </button>
+        </form>
+        <p id="auth-error" class="error-msg"></p>
+    </div>
+
+    <!-- ====== GAME SCREEN ====== -->
+    <div id="game-screen" style="display: none;">
+
+        <!-- Header -->
+        <header class="game-header glass-panel">
+            <div class="header-left">
+                <div class="logo-mini"><span class="logo-crazy">C</span><span class="logo-time">T</span></div>
+                <div class="user-info">
+                    <span id="player-name" class="player-name">Player</span>
+                    <span id="player-balance" class="balance">$0.00</span>
+                </div>
+            </div>
+            <div class="header-right">
+                <button id="logout-btn" class="outline-btn">Esci</button>
+            </div>
+        </header>
+
+        <!-- Timer Banner -->
+        <div id="top-timer-banner" class="timer-banner">
+            <div class="timer-phase" id="phase-text">CONNECTING...</div>
+            <div class="timer-countdown" id="timer-display">--</div>
+            <div class="timer-round" id="round-display">Round #1</div>
+        </div>
+
+        <!-- Main Game Area -->
+        <main class="game-main">
+            <!-- Wheel Area -->
+            <div class="wheel-section">
+                <div class="wheel-container">
+                    <div class="wheel-pointer-container">
+                        <div class="wheel-pointer">▼</div>
+                    </div>
+                    <canvas id="wheel-canvas" width="500" height="500"></canvas>
+                    <div class="wheel-center-overlay">
+                        <span id="wheel-center-text">CRAZY<br>TIME</span>
+                    </div>
+                </div>
+                <div id="last-results" class="last-results">
+                    <!-- Ultimi risultati -->
+                </div>
+            </div>
+
+            <!-- Betting Area -->
+            <div class="betting-section">
+                <div class="bet-controls glass-panel">
+                    <span class="bet-label">PUNTATA</span>
+                    <div class="bet-amount-controls">
+                        <button class="amount-btn" data-action="half">½</button>
+                        <input type="number" id="bet-amount" value="10" min="1">
+                        <button class="amount-btn" data-action="double">2×</button>
+                    </div>
+                </div>
+
+                <!-- Bet All Button -->
+                <button id="bet-all-btn" class="bet-all-btn glow-btn">
+                    🎰 PUNTA SU TUTTO
+                </button>
+
+                <div class="bet-grid">
+                    <!-- Numeri -->
+                    <button class="bet-btn number-btn seg-1" data-segment="1" id="bet-seg-1">
+                        <span class="seg-name">1</span>
+                        <span class="seg-count">21 spots</span>
+                        <span class="pays">Pays 1:1</span>
+                    </button>
+                    <button class="bet-btn number-btn seg-2" data-segment="2" id="bet-seg-2">
+                        <span class="seg-name">2</span>
+                        <span class="seg-count">13 spots</span>
+                        <span class="pays">Pays 2:1</span>
+                    </button>
+                    <button class="bet-btn number-btn seg-5" data-segment="5" id="bet-seg-5">
+                        <span class="seg-name">5</span>
+                        <span class="seg-count">7 spots</span>
+                        <span class="pays">Pays 5:1</span>
+                    </button>
+                    <button class="bet-btn number-btn seg-10" data-segment="10" id="bet-seg-10">
+                        <span class="seg-name">10</span>
+                        <span class="seg-count">4 spots</span>
+                        <span class="pays">Pays 10:1</span>
+                    </button>
+
+                    <!-- Bonus Games -->
+                    <button class="bet-btn bonus-btn pachinko" data-segment="Pachinko" id="bet-seg-pachinko">
+                        <span class="seg-name">PACHINKO</span>
+                        <span class="seg-count">4 spots</span>
+                    </button>
+                    <button class="bet-btn bonus-btn coinflip" data-segment="CoinFlip" id="bet-seg-coinflip">
+                        <span class="seg-name">COIN FLIP</span>
+                        <span class="seg-count">2 spots</span>
+                    </button>
+                    <button class="bet-btn bonus-btn cashhunt" data-segment="CashHunt" id="bet-seg-cashhunt">
+                        <span class="seg-name">CASH HUNT</span>
+                        <span class="seg-count">2 spots</span>
+                    </button>
+                    <button class="bet-btn bonus-btn crazytime" data-segment="CrazyTime" id="bet-seg-crazytime">
+                        <span class="seg-name">CRAZY TIME</span>
+                        <span class="seg-count">1 spot</span>
+                    </button>
+                </div>
+            </div>
+        </main>
+
+        <!-- Minigame Overlay -->
+        <div id="minigame-overlay" class="fullscreen-overlay" style="display: none;">
+            <div class="minigame-container glass-panel">
+                <h2 id="minigame-title" class="minigame-title">MINIGIOCO</h2>
+                <div id="minigame-animation-area" class="minigame-area">
+                    <!-- Animazioni iniettate da JS -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Result Overlay (solo per vincite) -->
+        <div id="result-overlay" class="fullscreen-overlay" style="display: none;">
+            <div class="result-container glass-panel">
+                <h2 id="result-title" class="result-title">VITTORIA!</h2>
+                <p id="result-desc" class="result-desc"></p>
+                <p id="result-multiplier" class="result-multiplier"></p>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- SockJS e STOMP da CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+
+    <!-- Script App -->
+    <script src="app.js"></script>
+</body>
+</html>
