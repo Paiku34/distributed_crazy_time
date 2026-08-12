@@ -534,82 +534,234 @@ function showMinigameResultMultiplier(multiplier) {
 
 // --- PACHINKO ---
 function animatePachinko(multiplier, details, onComplete) {
-    const slots = details.slots || [2, 3, 5, 8, 10, 15, 25, 50, 100];
-    const slotIndex = details.slot_index !== undefined ? details.slot_index : 0;
-
-    // Build board
-    let html = '<div class="pachinko-board">';
-    html += '<div class="pachinko-pegs">';
-    for (let row = 0; row < 6; row++) {
-        const pegsInRow = row % 2 === 0 ? 7 : 6;
-        html += '<div class="peg-row">';
-        for (let p = 0; p < pegsInRow; p++) {
-            html += `<div class="peg" data-row="${row}" data-col="${p}"></div>`;
-        }
-        html += '</div>';
+    const drops = details.drops || [];
+    if (drops.length === 0) {
+        onComplete();
+        return;
     }
-    html += '</div>';
 
-    // Ball
-    html += '<div class="pachinko-ball" id="pachinko-ball" style="top:0;left:50%;transform:translate(-50%,0);"></div>';
-
-    // Slots
-    html += '<div class="pachinko-slots">';
-    slots.forEach((s, i) => {
-        html += `<div class="pachinko-slot" data-index="${i}">x${s}</div>`;
-    });
-    html += '</div></div>';
+    let html = `
+        <style>
+            .pachinko-drop-zones { display: flex; width: 100%; margin-bottom: 10px; }
+            .pk-dz { flex: 1; height: 10px; background: rgba(255,255,255,0.1); margin: 0 1px; transition: background 0.1s; border-radius: 5px; }
+            .pachinko-slots { display: flex; width: 100%; height: 60px; margin-top: 10px; gap: 2px; }
+            .pachinko-slot { 
+                flex: 1; display: flex; align-items: center; justify-content: center; 
+                background: #1e1e38; border: 2px solid #8b5cf6; border-radius: 8px;
+                font-weight: 900; font-size: 1.5rem; color: white; transition: transform 0.3s, background 0.3s; 
+            }
+        </style>
+        <div class="pachinko-scene" style="width: 100%; max-width: 600px; margin: 0 auto; display: flex; flex-direction: column;">
+            <!-- Top Drop Zone -->
+            <div class="pachinko-drop-zones" id="pk-drop-zones">
+                ${Array.from({length: 16}).map((_,i) => `<div class="pk-dz" id="pk-dz-${i}"></div>`).join('')}
+            </div>
+            
+            <!-- Canvas Board -->
+            <div class="pachinko-board-container" style="position:relative; width: 100%; aspect-ratio: 1.5/1; background: #0a0a1a; border-radius: 12px; border: 2px solid #ffffff20; overflow: hidden;">
+                <canvas id="pk-canvas" style="width:100%; height:100%; display:block;"></canvas>
+            </div>
+            
+            <!-- Bottom Slots -->
+            <div class="pachinko-slots" id="pk-slots">
+                ${Array.from({length: 8}).map((_,i) => `<div class="pachinko-slot" id="pk-slot-${i}">x?</div>`).join('')}
+            </div>
+        </div>
+    `;
 
     minigameArea.innerHTML = html;
 
-    // Animate ball falling
-    const ball = document.getElementById('pachinko-ball');
-    const board = minigameArea.querySelector('.pachinko-board');
-    const pegRows = board.querySelectorAll('.peg-row');
-    let step = 0;
-
-    function dropStep() {
-        if (step < pegRows.length) {
-            const row = pegRows[step];
-            const pegs = row.querySelectorAll('.peg');
-            const pegIdx = Math.min(Math.floor(Math.random() * pegs.length), pegs.length - 1);
-            const peg = pegs[pegIdx];
-
-            // Highlight peg
-            peg.classList.add('hit');
-
-            // Move ball
-            const rect = peg.getBoundingClientRect();
-            const boardRect = board.getBoundingClientRect();
-            ball.style.top = (rect.top - boardRect.top + 5) + 'px';
-            ball.style.left = (rect.left - boardRect.left + 5) + 'px';
-            ball.style.transform = 'none';
-
-            step++;
-            setTimeout(dropStep, 800);
-        } else {
-            // Ball reaches slot
-            const slotEls = board.querySelectorAll('.pachinko-slot');
-            if (slotEls[slotIndex]) {
-                const slotEl = slotEls[slotIndex];
-                const slotRect = slotEl.getBoundingClientRect();
-                const boardRect = board.getBoundingClientRect();
-                ball.style.top = (slotRect.top - boardRect.top - 10) + 'px';
-                ball.style.left = (slotRect.left - boardRect.left + slotRect.width / 2 - 8) + 'px';
-
-                setTimeout(() => {
-                    slotEl.classList.add('winner');
-                    showMinigameResultMultiplier(multiplier);
-                    setTimeout(onComplete, 4000);
-                }, 800);
-            } else {
-                showMinigameResultMultiplier(multiplier);
-                setTimeout(onComplete, 4000);
-            }
+    const canvas = document.getElementById('pk-canvas');
+    // Ensure actual canvas resolution matches CSS display size to avoid blur
+    canvas.width = canvas.offsetWidth * (window.devicePixelRatio || 1);
+    canvas.height = canvas.offsetHeight * (window.devicePixelRatio || 1);
+    const ctx = canvas.getContext('2d');
+    ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+    
+    const boardW = canvas.offsetWidth;
+    const boardH = canvas.offsetHeight;
+    const pegRows = 15;
+    const cols = 16;
+    const pegRadius = 3;
+    const ballRadius = 8;
+    
+    // Calculate peg positions
+    const pegs = [];
+    for(let r = 0; r < pegRows; r++) {
+        const numPegs = (r % 2 === 0) ? cols + 1 : cols;
+        const rowY = (r + 1) * (boardH / (pegRows + 1.5));
+        const spacingX = boardW / cols;
+        const startX = (r % 2 === 0) ? 0 : spacingX / 2;
+        
+        for(let c = 0; c < numPegs; c++) {
+            pegs.push({ x: startX + c * spacingX, y: rowY });
         }
     }
 
-    setTimeout(dropStep, 800);
+    function drawBoard() {
+        ctx.clearRect(0, 0, boardW, boardH);
+        ctx.fillStyle = '#ffbade';
+        ctx.shadowColor = '#ffbade';
+        ctx.shadowBlur = 5;
+        pegs.forEach(p => {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, pegRadius, 0, Math.PI * 2);
+            ctx.fill();
+        });
+        ctx.shadowBlur = 0;
+    }
+
+    drawBoard();
+
+    // Initial shuffle
+    let initialSlots = drops[0].slots;
+    const possibleMults = [2, 3, 5, 7, 10, 15, 20, 25, 50, "DOUBLE"];
+    let shuffleInterval = setInterval(() => {
+        for(let i=0; i<8; i++) {
+            const r = possibleMults[Math.floor(Math.random() * possibleMults.length)];
+            const slot = document.getElementById(`pk-slot-${i}`);
+            slot.textContent = r === "DOUBLE" ? "DBL" : `x${r}`;
+            slot.style.background = r === "DOUBLE" ? "linear-gradient(45deg, #ff0000, #ff7300)" : "";
+        }
+    }, 100);
+
+    setTimeout(() => {
+        clearInterval(shuffleInterval);
+        setSlots(initialSlots);
+        playDrop(0);
+    }, 2500);
+
+    function setSlots(slotsArr) {
+        for(let i=0; i<8; i++) {
+            const slot = document.getElementById(`pk-slot-${i}`);
+            const val = slotsArr[i];
+            slot.textContent = val === "DOUBLE" ? "DBL" : `x${val}`;
+            slot.style.background = val === "DOUBLE" ? "linear-gradient(45deg, #ff0000, #ff7300)" : "#1e1e38";
+            slot.style.transform = "scale(1.2)";
+            setTimeout(() => { slot.style.transform = "scale(1)"; }, 300);
+        }
+    }
+
+    function playDrop(dropIndex) {
+        if (dropIndex >= drops.length) return;
+        const dropData = drops[dropIndex];
+        
+        // 1. Drop zone animation
+        let dzHighlightInterval = setInterval(() => {
+            const allDz = document.querySelectorAll('.pk-dz');
+            allDz.forEach(dz => dz.style.backgroundColor = 'rgba(255,255,255,0.1)');
+            const rDz = Math.floor(Math.random() * 16);
+            document.getElementById(`pk-dz-${rDz}`).style.backgroundColor = '#00ffcc';
+            document.getElementById(`pk-dz-${rDz}`).style.boxShadow = '0 0 10px #00ffcc';
+        }, 100);
+
+        setTimeout(() => {
+            clearInterval(dzHighlightInterval);
+            const allDz = document.querySelectorAll('.pk-dz');
+            allDz.forEach(dz => {
+                dz.style.backgroundColor = 'rgba(255,255,255,0.1)';
+                dz.style.boxShadow = 'none';
+            });
+            const dz = document.getElementById(`pk-dz-${dropData.drop_zone}`);
+            dz.style.backgroundColor = '#ff00ff';
+            dz.style.boxShadow = '0 0 15px #ff00ff';
+            
+            // 2. Physics drop
+            simulatePhysicsDrop(dropData, () => {
+                // Landed
+                const isDouble = dropData.landed_value === "DOUBLE";
+                if (isDouble) {
+                    const landedSlot = document.getElementById(`pk-slot-${dropData.landed_index}`);
+                    landedSlot.style.transform = "scale(1.3)";
+                    landedSlot.style.boxShadow = "0 0 20px red";
+                    setTimeout(() => {
+                        landedSlot.style.transform = "scale(1)";
+                        landedSlot.style.boxShadow = "none";
+                        dz.style.backgroundColor = 'rgba(255,255,255,0.1)';
+                        if (dropIndex + 1 < drops.length) {
+                            setSlots(drops[dropIndex + 1].slots); // Show doubled
+                            setTimeout(() => playDrop(dropIndex + 1), 1000);
+                        }
+                    }, 1500);
+                } else {
+                    document.getElementById(`pk-slot-${dropData.landed_index}`).classList.add('winner-side');
+                    showMinigameResultMultiplier(multiplier);
+                    setTimeout(onComplete, 4000);
+                }
+            });
+        }, 2000);
+    }
+
+    function simulatePhysicsDrop(dropData, onLanded) {
+        const path = dropData.path; 
+        const spacingX = boardW / cols;
+        const startX = (dropData.drop_zone + 0.5) * spacingX;
+        let bx = startX;
+        let by = -ballRadius; // Start slightly above board
+        
+        let currentStep = 0;
+        let isAnimating = true;
+        let targetX = bx;
+        let targetY = boardH / (pegRows + 1.5);
+        
+        const stepDuration = 350; // ms per peg bounce
+        let stepStartTime = performance.now();
+
+        function animatePuck(now) {
+            if (!isAnimating) return;
+            const elapsed = now - stepStartTime;
+            let progress = elapsed / stepDuration;
+
+            if (progress >= 1) {
+                currentStep++;
+                if (currentStep > 15) {
+                    isAnimating = false;
+                    drawBoard(); // clear puck
+                    onLanded();
+                    return;
+                }
+                
+                stepStartTime = now;
+                bx = targetX;
+                by = targetY;
+                progress = 0;
+
+                const dir = path[currentStep - 1]; // -1 or 1
+                targetY = (currentStep + 1) * (boardH / (pegRows + 1.5));
+                targetX = bx + (dir * spacingX / 2);
+            }
+
+            const easeX = progress; // linear horizontal
+            const easeY = progress; // linear vertical base
+            
+            // Add a bounce arc to Y to simulate peg collision
+            const bounceY = Math.sin(progress * Math.PI) * -15;
+
+            const currX = bx + (targetX - bx) * easeX;
+            const currY = by + (targetY - by) * easeY + bounceY;
+
+            drawBoard();
+            
+            // Draw Puck
+            ctx.beginPath();
+            ctx.arc(currX, currY, ballRadius, 0, Math.PI * 2);
+            ctx.fillStyle = '#fff';
+            ctx.fill();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#ff00ff';
+            ctx.stroke();
+            
+            // Glow
+            ctx.shadowColor = '#ff00ff';
+            ctx.shadowBlur = 10;
+            ctx.fill();
+            ctx.shadowBlur = 0;
+
+            requestAnimationFrame(animatePuck);
+        }
+        
+        requestAnimationFrame(animatePuck);
+    }
 }
 
 // --- COIN FLIP ---
@@ -620,25 +772,25 @@ function animateCoinFlip(multiplier, details, onComplete) {
 
     let html = `
         <div class="coinflip-scene">
-            <div class="coinflip-coin" id="cf-coin">
-                <div class="coin-side coin-heads">
-                    <span>x${sideA}</span>
-                    <span class="coin-label">HEADS</span>
+            <div class="coinflip-coin" id="cf-coin" style="opacity: 0; transform: scale(0.5); transition: opacity 0.5s ease, transform 0.5s ease;">
+                <div class="coin-side coin-heads" style="background: radial-gradient(circle at 30% 30%, #ff4b4b, #990000);">
+                    <span id="cf-coin-mult-a">x?</span>
+                    <span class="coin-label">ROSSO</span>
                 </div>
-                <div class="coin-side coin-tails">
-                    <span>x${sideB}</span>
-                    <span class="coin-label">TAILS</span>
+                <div class="coin-side coin-tails" style="background: radial-gradient(circle at 30% 30%, #4b4bff, #000099);">
+                    <span id="cf-coin-mult-b">x?</span>
+                    <span class="coin-label">BLU</span>
                 </div>
             </div>
         </div>
         <div class="coinflip-sides-display">
-            <div class="side-display" id="cf-side-a">
-                <div class="side-label">HEADS</div>
-                <div class="side-mult">x${sideA}</div>
+            <div class="side-display" id="cf-side-a" style="border-left: 5px solid #ff4b4b;">
+                <div class="side-label" style="color: #ff4b4b;">ROSSO</div>
+                <div class="side-mult" id="cf-disp-mult-a">x?</div>
             </div>
-            <div class="side-display" id="cf-side-b">
-                <div class="side-label">TAILS</div>
-                <div class="side-mult">x${sideB}</div>
+            <div class="side-display" id="cf-side-b" style="border-left: 5px solid #4b4bff;">
+                <div class="side-label" style="color: #4b4bff;">BLU</div>
+                <div class="side-mult" id="cf-disp-mult-b">x?</div>
             </div>
         </div>
     `;
@@ -646,23 +798,56 @@ function animateCoinFlip(multiplier, details, onComplete) {
     minigameArea.innerHTML = html;
 
     const coin = document.getElementById('cf-coin');
+    const coinMultA = document.getElementById('cf-coin-mult-a');
+    const coinMultB = document.getElementById('cf-coin-mult-b');
+    const dispMultA = document.getElementById('cf-disp-mult-a');
+    const dispMultB = document.getElementById('cf-disp-mult-b');
 
-    // Start flipping
+    // Shuffle multipliers animation
+    const possibleMults = [2, 3, 5, 7, 10, 15, 20, 25, 50, 100];
+    let shuffleInterval = setInterval(() => {
+        let r1 = possibleMults[Math.floor(Math.random() * possibleMults.length)];
+        let r2 = possibleMults[Math.floor(Math.random() * possibleMults.length)];
+        dispMultA.textContent = `x${r1}`;
+        dispMultB.textContent = `x${r2}`;
+    }, 100);
+
+    // Stop shuffle and settle
     setTimeout(() => {
-        coin.classList.add('flipping');
+        clearInterval(shuffleInterval);
+        coinMultA.textContent = `x${sideA}`;
+        dispMultA.textContent = `x${sideA}`;
+        coinMultB.textContent = `x${sideB}`;
+        dispMultB.textContent = `x${sideB}`;
+        
+        // Blink to show they settled
+        dispMultA.style.transform = "scale(1.2)";
+        dispMultB.style.transform = "scale(1.2)";
+        
+        // Make the coin appear
+        coin.style.opacity = '1';
+        coin.style.transform = 'scale(1)';
 
         setTimeout(() => {
-            coin.classList.remove('flipping');
-            coin.classList.add(winnerSide === 'heads' ? 'heads' : 'tails');
+            dispMultA.style.transform = "scale(1)";
+            dispMultB.style.transform = "scale(1)";
+        }, 300);
 
-            // Highlight winner side
-            const winnerId = winnerSide === 'heads' ? 'cf-side-a' : 'cf-side-b';
-            document.getElementById(winnerId).classList.add('winner-side');
+        // Start flipping after a brief pause
+        setTimeout(() => {
+            coin.style.transform = ''; // Clear inline transform so CSS classes work
+            coin.classList.add(winnerSide === 'heads' ? 'flipping-heads' : 'flipping-tails');
 
-            showMinigameResultMultiplier(multiplier);
-            setTimeout(onComplete, 4000);
-        }, 2500);
-    }, 1000);
+            setTimeout(() => {
+                // Highlight winner side
+                const winnerId = winnerSide === 'heads' ? 'cf-side-a' : 'cf-side-b';
+                document.getElementById(winnerId).classList.add('winner-side');
+
+                showMinigameResultMultiplier(multiplier);
+                setTimeout(onComplete, 4000);
+            }, 3000);
+        }, 1500);
+    }, 2500);
 }
 
 // --- CASH HUNT ---
@@ -831,6 +1016,17 @@ function fetchBalance() {
         .then(r => r.json())
         .then(d => { if (d.success) updateBalanceDisplay(d.balance); })
         .catch(() => {});
+}
+
+// ===== DEV TOOLS =====
+function forceResult(segment) {
+    fetch(`/api/wallet/force-result?segment=${encodeURIComponent(segment)}`, { method: 'POST' })
+        .then(r => r.json())
+        .then(d => {
+            if (d.success) {
+                console.log(`[DEV] Prossimo segmento forzato: ${segment}`);
+            }
+        });
 }
 
 // ===== BETTING =====

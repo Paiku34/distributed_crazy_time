@@ -51,8 +51,9 @@ public class PayoutListener {
             List<Bet> pendingBets = betRepository.findByStatus("PENDING");
             for (Bet bet : pendingBets) {
                 if (bet.getSegment().equals(winner)) {
-                    // VINCITA
-                    BigDecimal payout = bet.getAmount().multiply(multiplier);
+                    // VINCITA (restituisce la puntata iniziale + la vincita)
+                    BigDecimal winnings = bet.getAmount().multiply(multiplier);
+                    BigDecimal payout = bet.getAmount().add(winnings);
                     bet.setStatus("WON");
                     bet.setPayout(payout);
                     betRepository.save(bet);

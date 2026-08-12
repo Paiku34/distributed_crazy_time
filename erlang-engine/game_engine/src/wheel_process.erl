@@ -13,7 +13,7 @@
 -module(wheel_process).
 -behaviour(gen_server).
 
--export([start_link/0, place_bet/1, get_state/0]).
+-export([start_link/0, place_bet/1, get_state/0, force_segment/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 -define(BET_DURATION, 10).   %% secondi per piazzare le scommesse
@@ -23,7 +23,8 @@
     phase = betting,          %% betting | spinning | minigame | cooldown
     time_left = ?BET_DURATION,
     round = 1,
-    bets = []                 %% [{Username, Amount, Segment}, ...]
+    bets = [],                %% [{Username, Amount, Segment}, ...]
+    forced_segment = undefined
 }).
 
 %%====================================================================
@@ -103,6 +104,9 @@ place_bet(Bet) ->
 get_state() ->
     gen_server:call(?MODULE, get_state).
 
+force_segment(Seg) ->
+    gen_server:cast(?MODULE, {force_segment, Seg}).
+
 %%====================================================================
 %% Callbacks
 %%====================================================================
@@ -135,6 +139,10 @@ handle_call(get_state, _From, State) ->
 handle_call(_Req, _From, State) ->
     {reply, {error, unknown}, State}.
 
+handle_cast({force_segment, Seg}, State) ->
+    io:format("[WHEEL] Forzando segmento per il prossimo giro: ~s~n", [Seg]),
+    {noreply, State#state{forced_segment = Seg}};
+    
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -150,29 +158,37 @@ handle_info(tick, State = #state{phase = betting, time_left = 1}) ->
     io:format("~n--- ROUND #~p: NO MORE BETS! SPINNING... ---~n", [State#state.round]),
     publish_timer(0, State#state.round),
 
-    %% Scegli un indice casuale tra 0 e 53
     Segments = wheel_segments(),
-    WinnerIndex = rand:uniform(54) - 1,  %% 0-indexed
-    WinnerSeg = lists:nth(WinnerIndex + 1, Segments),
+    
+    {WinnerIndex, WinnerSeg} = case State#state.forced_segment of
+        undefined ->
+            Idx = rand:uniform(54) - 1,
+            {Idx, lists:nth(Idx + 1, Segments)};
+        ForcedSeg ->
+            Idx = find_segment_index(ForcedSeg, Segments, 0),
+            {Idx, ForcedSeg}
+    end,
 
     io:format("[WHEEL] La ruota si ferma su: ~s (indice ~p)~n", [WinnerSeg, WinnerIndex]),
+    
+    %% Reset forced_segment
+    State1 = State#state{forced_segment = undefined},
 
     %% Determina se è un moltiplicatore diretto o un minigioco
     case segment_type(WinnerSeg) of
         {multiplier, Value} ->
             %% Pubblica spinning state con winner_index per l'animazione
-            publish_spinning(State#state.round, WinnerIndex, WinnerSeg),
+            publish_spinning(State1#state.round, WinnerIndex, WinnerSeg),
             %% Dopo 10.5s (tempo per l'animazione), risolvi il round
             erlang:send_after(10500, self(), {resolve_multiplier, WinnerSeg, Value, WinnerIndex}),
-            {noreply, State#state{phase = spinning, time_left = 0}};
+            {noreply, State1#state{phase = spinning, time_left = 0}};
         {minigame, Module} ->
             io:format("[WHEEL] BONUS! Entriamo in fase minigame: ~p~n", [Module]),
             %% Pubblica spinning state con winner_index
-            publish_spinning(State#state.round, WinnerIndex, WinnerSeg),
-            %% Dopo 10 secondi (tempo per l'animazione della ruota nel frontend),
-            %% avvia il minigioco
+            publish_spinning(State1#state.round, WinnerIndex, WinnerSeg),
+            %% Dopo 10.5 secondi (tempo per l'animazione della ruota nel frontend), avvia il minigioco
             erlang:send_after(10500, self(), {start_minigame, WinnerSeg, Module, WinnerIndex}),
-            {noreply, State#state{phase = spinning, time_left = 0}}
+            {noreply, State1#state{phase = spinning, time_left = 0}}
     end;
 
 %% --- RESOLVE MULTIPLIER (dopo animazione ruota) ---
@@ -189,17 +205,29 @@ handle_info({start_minigame, SegName, Module, WinnerIndex}, State) ->
     %% Pubblica minigame_start al frontend
     publish_minigame_start(State#state.round, SegName),
 
-    %% Gioca il minigioco
+    %% Gioca il minigioco (calcola l'esito)
     case Module:play(BonusBets) of
         {ok, Multiplier, Details} ->
             io:format("[WHEEL] Mini-game ~p completato. Moltiplicatore: x~p~n", [Module, Multiplier]),
-            %% Attendi per l'animazione del minigioco nel frontend (7 secondi)
-            erlang:send_after(7000, self(), {finish_minigame, SegName, Multiplier, Details, AllBets, WinnerIndex}),
-            {noreply, State#state{phase = minigame, time_left = 7}};
+            %% Risolve subito il risultato e lo pubblica (così il frontend avvia l'animazione)
+            resolve_round_with_bonus(SegName, Multiplier, Details, AllBets, WinnerIndex, State#state.round),
+            WaitTime = case Module of
+                pachinko ->
+                    DropsList = maps:get(drops, Details, []),
+                    2500 + (length(DropsList) * 9000); %% 9s per drop in animation
+                coinflip ->
+                    11000;
+                _ -> 
+                    14000
+            end,
+            %% Attendi il tempo calcolato + 5s cooldown
+            erlang:send_after(WaitTime + ?COOLDOWN, self(), new_round),
+            {noreply, State#state{phase = minigame, time_left = WaitTime div 1000}};
         {ok, Multiplier} ->
             io:format("[WHEEL] Mini-game ~p completato. Moltiplicatore: x~p~n", [Module, Multiplier]),
-            erlang:send_after(7000, self(), {finish_minigame, SegName, Multiplier, #{}, AllBets, WinnerIndex}),
-            {noreply, State#state{phase = minigame, time_left = 7}};
+            resolve_round_with_bonus(SegName, Multiplier, #{}, AllBets, WinnerIndex, State#state.round),
+            erlang:send_after(14000 + ?COOLDOWN, self(), new_round),
+            {noreply, State#state{phase = minigame, time_left = 14}};
         {error, Reason} ->
             io:format("[WHEEL] Errore mini-game ~p: ~p. Rimborso.~n", [Module, Reason]),
             resolve_round(SegName, 1, WinnerIndex, AllBets, State#state.round),
@@ -207,11 +235,7 @@ handle_info({start_minigame, SegName, Module, WinnerIndex}, State) ->
             {noreply, State#state{phase = cooldown, time_left = 0}}
     end;
 
-%% --- FINISH MINIGAME (dopo animazione) ---
-handle_info({finish_minigame, SegName, Multiplier, Details, AllBets, WinnerIndex}, State) ->
-    resolve_round_with_bonus(SegName, Multiplier, Details, AllBets, WinnerIndex, State#state.round),
-    erlang:send_after(?COOLDOWN, self(), new_round),
-    {noreply, State#state{phase = cooldown, time_left = 0}};
+%% (Non c'è più bisogno di finish_minigame perché lo facciamo sincrono)
 
 %% --- NEW ROUND ---
 handle_info(new_round, State) ->
@@ -235,6 +259,10 @@ code_change(_OldVsn, State, _Extra) ->
 %%====================================================================
 %% Internal Functions
 %%====================================================================
+
+find_segment_index(Target, [Target|_], Idx) -> Idx;
+find_segment_index(Target, [_|T], Idx) -> find_segment_index(Target, T, Idx+1);
+find_segment_index(_, [], _) -> 0.
 
 %% Determina il tipo di segmento
 segment_type(<<"1">>)         -> {multiplier, 1};
@@ -276,7 +304,7 @@ compute_payouts(WinnerSeg, Multiplier, Bets) ->
             true ->
                 Username = maps:get(<<"username">>, Bet, <<"unknown">>),
                 Amount = maps:get(<<"amount">>, Bet, 0),
-                Payout = Amount * Multiplier,
+                Payout = Amount + (Amount * Multiplier),
                 {true, #{username => Username, bet => Amount, payout => Payout}};
             false ->
                 false
@@ -311,6 +339,13 @@ json_value(N) when is_integer(N) -> integer_to_list(N);
 json_value(N) when is_float(N) -> float_to_list(N, [{decimals, 2}]);
 json_value(B) when is_binary(B) -> "\"" ++ binary_to_list(B) ++ "\"";
 json_value(A) when is_atom(A) -> "\"" ++ atom_to_list(A) ++ "\"";
+json_value(M) when is_map(M) ->
+    Pairs = maps:fold(fun(K, V, Acc) ->
+        KStr = if is_atom(K) -> atom_to_list(K); is_binary(K) -> binary_to_list(K); true -> lists:flatten(io_lib:format("~p", [K])) end,
+        VStr = json_value(V),
+        ["\"" ++ KStr ++ "\":" ++ VStr | Acc]
+    end, [], M),
+    "{" ++ string:join(Pairs, ",") ++ "}";
 json_value(L) when is_list(L) ->
     Items = lists:map(fun(I) -> json_value(I) end, L),
     "[" ++ string:join(Items, ",") ++ "]";

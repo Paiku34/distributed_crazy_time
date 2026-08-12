@@ -889,17 +889,21 @@ body {
     transition: transform 0.1s;
 }
 
-.coinflip-coin.flipping {
-    animation: coinFlip 2.5s cubic-bezier(0.25, 0.1, 0.25, 1);
+.coinflip-coin.flipping-heads {
+    animation: coinFlipHeads 3s cubic-bezier(0.25, 0.1, 0.25, 1) forwards;
+}
+.coinflip-coin.flipping-tails {
+    animation: coinFlipTails 3s cubic-bezier(0.25, 0.1, 0.25, 1) forwards;
 }
 
-@keyframes coinFlip {
-    0% { transform: rotateX(0deg); }
-    100% { transform: rotateX(1800deg); }
+@keyframes coinFlipHeads {
+    0% { transform: rotateX(0deg) scale(1); }
+    100% { transform: rotateX(1800deg) scale(1); }
 }
-
-.coinflip-coin.heads { transform: rotateX(0deg); }
-.coinflip-coin.tails { transform: rotateX(180deg); }
+@keyframes coinFlipTails {
+    0% { transform: rotateX(0deg) scale(1); }
+    100% { transform: rotateX(1980deg) scale(1); }
+}
 
 .coin-side {
     position: absolute;

@@ -51,5 +51,10 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
 %% Internal: genera due moltiplicatori casuali per le due facce
 generate_sides() ->
-    Choices = [{5, 10}, {2, 15}, {3, 8}, {10, 25}],
-    lists:nth(rand:uniform(length(Choices)), Choices).
+    Choices = [2, 3, 5, 7, 10, 15, 20, 25, 50, 100],
+    V1 = lists:nth(rand:uniform(length(Choices)), Choices),
+    V2 = lists:nth(rand:uniform(length(Choices)), Choices),
+    case V1 =:= V2 of
+        true -> generate_sides();
+        false -> {V1, V2}
+    end.

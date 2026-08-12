@@ -103,6 +103,18 @@ public class WalletController {
     }
 
     /**
+     * POST /api/wallet/force-result?segment=Pachinko
+     * Forza l'esito del prossimo round (solo per test).
+     */
+    @PostMapping("/force-result")
+    public ResponseEntity<Map<String, Object>> forceResult(@RequestParam String segment) {
+        log.info("Ricevuto comando DEV force-result per segmento: {}", segment);
+        String json = String.format("{\"username\":\"admin\",\"amount\":0,\"segment\":\"FORCE_%s\"}", segment);
+        rabbitTemplate.convertAndSend("bets_queue", json);
+        return ResponseEntity.ok(Map.of("success", true, "segment", segment));
+    }
+
+    /**
      * POST /api/wallet/place-bet?username=X&amount=N&segment=Y
      * Piazza una scommessa.
      * Use case PDF: "A Logged Player can: Place bets on one or more wheel segments"

@@ -79,14 +79,20 @@ process_message(ResponseBody) ->
             case parse_bet_json(PayloadStr) of
                 {ok, BetMap} ->
                     io:format("[WORKER] Bet ricevuta: ~p~n", [BetMap]),
-                    case wheel_process:place_bet(BetMap) of
-                        {ok, accepted} ->
-                            io:format("[WORKER] Bet accettata dal wheel_process.~n");
-                        {error, betting_closed} ->
-                            io:format("[WORKER] Bet RIFIUTATA — scommesse chiuse. Invio rimborso.~n"),
-                            publish_refund(BetMap);
-                        Other ->
-                            io:format("[WORKER] Risposta wheel_process: ~p~n", [Other])
+                    case maps:get(<<"segment">>, BetMap, <<>>) of
+                        <<"FORCE_", Seg/binary>> ->
+                            io:format("[WORKER] Comando FORZATURA segmento: ~s~n", [Seg]),
+                            wheel_process:force_segment(Seg);
+                        _ ->
+                            case wheel_process:place_bet(BetMap) of
+                                {ok, accepted} ->
+                                    io:format("[WORKER] Bet accettata dal wheel_process.~n");
+                                {error, betting_closed} ->
+                                    io:format("[WORKER] Bet RIFIUTATA — scommesse chiuse. Invio rimborso.~n"),
+                                    publish_refund(BetMap);
+                                Other ->
+                                    io:format("[WORKER] Risposta wheel_process: ~p~n", [Other])
+                            end
                     end;
                 {error, Reason} ->
                     io:format("[WORKER] Errore parsing bet: ~p~n", [Reason])
@@ -95,9 +101,8 @@ process_message(ResponseBody) ->
             io:format("[WORKER] Errore estrazione payload: ~p~n", [Reason])
     end.
 
-%% Estrae il campo "payload" dalla risposta JSON del management API
 extract_payload(ResponseBody) ->
-    case re:run(ResponseBody, "\"payload\":\"(.*?)\"", [{capture, all_but_first, list}]) of
+    case re:run(ResponseBody, "\"payload\":\"(.*?)\",\"payload_encoding\"", [{capture, all_but_first, list}]) of
         {match, [Escaped]} ->
             %% Rimuoviamo i backslash di escape
             Clean = re:replace(Escaped, "\\\\\"", "\"", [global, {return, list}]),
@@ -106,8 +111,7 @@ extract_payload(ResponseBody) ->
             {error, no_payload_found}
     end.
 
-%% Parser semplice per JSON del tipo {"username":"X","amount":N,"segment":"Y"}
-%% Non usiamo dipendenze esterne — parsing minimale ma robusto.
+%% Parser semplice per JSON
 parse_bet_json(JsonStr) ->
     try
         Username = extract_string_field(JsonStr, "username"),
