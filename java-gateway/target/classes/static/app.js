@@ -5,12 +5,15 @@
 
 // ===== CONSTANTS =====
 const SEGMENTS = [
-    "1","2","1","5","1","2","1","Pachinko","1","2",
-    "1","10","2","1","5","1","2","CoinFlip","1","2",
-    "1","5","1","2","10","1","2","CashHunt","1","2",
-    "1","5","1","Pachinko","2","1","10","1","2","1",
-    "5","2","1","Pachinko","1","2","1","10","2","5",
-    "1","CoinFlip","1","CrazyTime"
+    "CrazyTime", "1", "2", "5", "1", "2",
+    "Pachinko", "1", "5", "1", "2", "1",
+    "CoinFlip", "1", "2", "1", "10", "2",
+    "CashHunt", "1", "2", "1", "5", "1",
+    "CoinFlip", "1", "5", "2", "10", "1",
+    "Pachinko", "1", "2", "5", "1", "2",
+    "CoinFlip", "1", "10", "1", "5", "1",
+    "CashHunt", "1", "2", "5", "1", "2",
+    "CoinFlip", "2", "1", "10", "2", "1"
 ];
 const NUM_SEGMENTS = 54;
 
@@ -103,64 +106,20 @@ function drawWheel(rotation) {
 
     const cx = size / 2;
     const cy = size / 2;
-    const radius = size / 2 - 6;
-    const arcAngle = (2 * Math.PI) / NUM_SEGMENTS;
 
     ctx.clearRect(0, 0, size, size);
     ctx.save();
     ctx.translate(cx, cy);
     ctx.rotate(rotation);
 
-    for (let i = 0; i < NUM_SEGMENTS; i++) {
-        const seg = SEGMENTS[i];
-        const startAngle = i * arcAngle - Math.PI / 2;
-        const endAngle = startAngle + arcAngle;
-
-        // Draw arc segment
-        ctx.beginPath();
-        ctx.moveTo(0, 0);
-        ctx.arc(0, 0, radius, startAngle, endAngle);
-        ctx.closePath();
-        ctx.fillStyle = SEGMENT_COLORS[seg];
-        ctx.fill();
-
-        // Segment border
-        ctx.strokeStyle = 'rgba(0,0,0,0.3)';
-        ctx.lineWidth = 1;
-        ctx.stroke();
-
-        // Text
-        ctx.save();
-        const textAngle = startAngle + arcAngle / 2;
-        ctx.rotate(textAngle);
-        ctx.translate(radius * 0.72, 0);
-        ctx.rotate(Math.PI / 2);
-        ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 10px Outfit';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.shadowColor = 'rgba(0,0,0,0.7)';
-        ctx.shadowBlur = 3;
-        ctx.fillText(SEGMENT_TEXT_SHORT[seg] || seg, 0, 0);
-        ctx.shadowBlur = 0;
-        ctx.restore();
+    if (!window.wheelImg) {
+        window.wheelImg = new Image();
+        window.wheelImg.src = 'img/wheel.png';
+        window.wheelImg.onload = () => drawWheel(rotation);
+    } else if (window.wheelImg.complete && window.wheelImg.naturalWidth > 0) {
+        // Draw the image centered
+        ctx.drawImage(window.wheelImg, -cx, -cy, size, size);
     }
-
-    // Outer ring
-    ctx.beginPath();
-    ctx.arc(0, 0, radius, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-    ctx.lineWidth = 4;
-    ctx.stroke();
-
-    // Inner ring (behind center overlay)
-    ctx.beginPath();
-    ctx.arc(0, 0, 38, 0, Math.PI * 2);
-    ctx.fillStyle = '#0d1020';
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
-    ctx.lineWidth = 2;
-    ctx.stroke();
 
     ctx.restore();
 }
@@ -174,12 +133,12 @@ function spinWheel(targetIndex, duration, onComplete) {
     isSpinning = true;
 
     const arcAngle = (2 * Math.PI) / NUM_SEGMENTS;
-    // The pointer is at the top (12 o'clock = -π/2).
-    // We want the target segment center to align with the pointer.
-    // Segment i center is at: i * arcAngle + arcAngle/2 (from -π/2 in draw)
-    // So we need rotation = -(targetIndex * arcAngle + arcAngle/2)
-    // Plus several full rotations for visual effect
-    const targetAngle = -(targetIndex * arcAngle + arcAngle / 2);
+    
+    // Assuming the image has index 0 (CrazyTime) perfectly centered at the top (12 o'clock)
+    // To land on targetIndex, we just rotate backwards by targetIndex * arcAngle
+    // (We also add a random offset within the segment so it doesn't land perfectly center every time)
+    const randomOffset = (Math.random() * 0.8 - 0.4) * arcAngle; 
+    const targetAngle = -(targetIndex * arcAngle) + randomOffset;
     const fullRotations = 5 * 2 * Math.PI; // 5 full spins
     const totalAngle = fullRotations + targetAngle - (wheelAngle % (2 * Math.PI));
 
@@ -558,7 +517,7 @@ function animatePachinko(multiplier, details, onComplete) {
             </div>
             
             <!-- Canvas Board -->
-            <div class="pachinko-board-container" style="position:relative; width: 100%; aspect-ratio: 1.5/1; background: #0a0a1a; border-radius: 12px; border: 2px solid #ffffff20; overflow: hidden;">
+            <div class="pachinko-board-container" style="position:relative; width: 100%; aspect-ratio: 1.5/1; background-color: #0a0a1a; background-image: url('img/pachinko.png'); background-size: cover; background-position: center; border-radius: 12px; border: 2px solid #ffffff20; overflow: hidden;">
                 <canvas id="pk-canvas" style="width:100%; height:100%; display:block;"></canvas>
             </div>
             
@@ -704,7 +663,7 @@ function animatePachinko(multiplier, details, onComplete) {
         let targetX = bx;
         let targetY = boardH / (pegRows + 1.5);
         
-        const stepDuration = 350; // ms per peg bounce
+        const stepDuration = 550; // Slower drop (ms per peg bounce)
         let stepStartTime = performance.now();
 
         function animatePuck(now) {
@@ -771,26 +730,30 @@ function animateCoinFlip(multiplier, details, onComplete) {
     const winnerSide = details.winner_side || 'heads';
 
     let html = `
-        <div class="coinflip-scene">
-            <div class="coinflip-coin" id="cf-coin" style="opacity: 0; transform: scale(0.5); transition: opacity 0.5s ease, transform 0.5s ease;">
-                <div class="coin-side coin-heads" style="background: radial-gradient(circle at 30% 30%, #ff4b4b, #990000);">
-                    <span id="cf-coin-mult-a">x?</span>
-                    <span class="coin-label">ROSSO</span>
+        <div class="coinflip-container" style="position: relative; width: 100%; max-width: 600px; margin: 0 auto; aspect-ratio: 16/9; background-image: url('img/coinflip.png'); background-size: cover; background-position: center; border-radius: 8px; border: 2px solid #ef4444; overflow: hidden;">
+            
+            <div class="coinflip-sides-display" style="position: absolute; top: 10%; left: 50%; transform: translateX(-50%); width: 60%; background: transparent; padding: 0;">
+                <div class="side-display" id="cf-side-a" style="border-left: 5px solid #ff4b4b; background: rgba(0,0,0,0.7); box-shadow: 0 0 10px black;">
+                    <div class="side-label" style="color: #ff4b4b;">ROSSO</div>
+                    <div class="side-mult" id="cf-disp-mult-a">x?</div>
                 </div>
-                <div class="coin-side coin-tails" style="background: radial-gradient(circle at 30% 30%, #4b4bff, #000099);">
-                    <span id="cf-coin-mult-b">x?</span>
-                    <span class="coin-label">BLU</span>
+                <div class="side-display" id="cf-side-b" style="border-left: 5px solid #4b4bff; background: rgba(0,0,0,0.7); box-shadow: 0 0 10px black;">
+                    <div class="side-label" style="color: #4b4bff;">BLU</div>
+                    <div class="side-mult" id="cf-disp-mult-b">x?</div>
                 </div>
             </div>
-        </div>
-        <div class="coinflip-sides-display">
-            <div class="side-display" id="cf-side-a" style="border-left: 5px solid #ff4b4b;">
-                <div class="side-label" style="color: #ff4b4b;">ROSSO</div>
-                <div class="side-mult" id="cf-disp-mult-a">x?</div>
-            </div>
-            <div class="side-display" id="cf-side-b" style="border-left: 5px solid #4b4bff;">
-                <div class="side-label" style="color: #4b4bff;">BLU</div>
-                <div class="side-mult" id="cf-disp-mult-b">x?</div>
+
+            <div style="position: absolute; top: 65%; left: 50%; transform: translate(-50%, -50%);">
+                <div class="coinflip-coin" id="cf-coin" style="opacity: 0; transform: scale(0.5); transition: opacity 0.5s ease, transform 0.5s ease; box-shadow: 0 10px 30px rgba(0,0,0,0.8); border-radius: 50%;">
+                    <div class="coin-side coin-heads" style="background: radial-gradient(circle at 30% 30%, #ff4b4b, #990000);">
+                        <span id="cf-coin-mult-a">x?</span>
+                        <span class="coin-label">ROSSO</span>
+                    </div>
+                    <div class="coin-side coin-tails" style="background: radial-gradient(circle at 30% 30%, #4b4bff, #000099);">
+                        <span id="cf-coin-mult-b">x?</span>
+                        <span class="coin-label">BLU</span>
+                    </div>
+                </div>
             </div>
         </div>
     `;
@@ -810,7 +773,7 @@ function animateCoinFlip(multiplier, details, onComplete) {
         let r2 = possibleMults[Math.floor(Math.random() * possibleMults.length)];
         dispMultA.textContent = `x${r1}`;
         dispMultB.textContent = `x${r2}`;
-    }, 100);
+    }, 250);
 
     // Stop shuffle and settle
     setTimeout(() => {
@@ -831,7 +794,7 @@ function animateCoinFlip(multiplier, details, onComplete) {
         setTimeout(() => {
             dispMultA.style.transform = "scale(1)";
             dispMultB.style.transform = "scale(1)";
-        }, 300);
+        }, 400);
 
         // Start flipping after a brief pause
         setTimeout(() => {
@@ -845,60 +808,307 @@ function animateCoinFlip(multiplier, details, onComplete) {
 
                 showMinigameResultMultiplier(multiplier);
                 setTimeout(onComplete, 4000);
-            }, 3000);
-        }, 1500);
-    }, 2500);
+            }, 3500);
+        }, 2000);
+    }, 4500);
 }
 
 // --- CASH HUNT ---
 function animateCashHunt(multiplier, details, onComplete) {
-    const grid = details.grid || [5,10,15,2,3,8,20,50,25,10,5,3,2,15,100,75];
-    const cellIndex = details.cell_index !== undefined ? details.cell_index : 0;
+    const grid = details.grid || [];
+    const cols = details.cols || 9;
+    const rows = details.rows || 12;
+    const defaultCell = details.default_cell || 0;
+    const totalCells = cols * rows;
 
-    let html = '<div class="cashhunt-grid">';
-    for (let i = 0; i < 16; i++) {
-        html += `
-            <div class="cashhunt-card" data-index="${i}" id="ch-card-${i}">
-                <div class="cashhunt-card-inner">
-                    <div class="cashhunt-card-front">?</div>
-                    <div class="cashhunt-card-back">x${grid[i]}</div>
-                </div>
+    const emojis = ['🎯','🐰','⭐','🎪','🎲','🍀','💎','🦊','🎵','🎈','🔔','🌟','🎃','🍎','🎁','🦄','🐻','🎮','🏆','🎺','🌈','🍕','🎭','🦋'];
+    const scrollMults = [2,3,5,7,10,15,20,25,50,75,100,200];
+    let html = `
+        <style>
+            .ch-container { 
+                width: 100%; max-width: 560px; margin: 0 auto; position: relative; 
+                background-image: url('img/cashhunt.png'); background-size: cover; background-position: center; border-radius: 8px; padding: 10px; box-sizing: border-box;
+            }
+            .ch-title {
+                text-align: center; font-size: 2rem; font-weight: 900;
+                background: linear-gradient(90deg, #fbbf24, #ef4444, #fbbf24);
+                -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+                background-clip: text;
+                letter-spacing: 3px; text-transform: uppercase;
+                margin-bottom: 6px;
+                animation: chTitlePulse 1.5s ease-in-out infinite alternate;
+            }
+            @keyframes chTitlePulse { 0% { opacity: 0.8; filter: brightness(1); } 100% { opacity: 1; filter: brightness(1.3); } }
+            .ch-timer-bar { 
+                display: flex; align-items: center; justify-content: center; gap: 10px;
+                margin-bottom: 5px; font-size: 1rem; color: #fbbf24; font-weight: 800;
+                opacity: 0; transition: opacity 0.3s;
+            }
+            .ch-timer-bar.visible { opacity: 1; }
+            .ch-timer-fill { width: 180px; height: 7px; background: rgba(255,255,255,0.1); border-radius: 4px; overflow: hidden; }
+            .ch-timer-fill-inner { height: 100%; background: linear-gradient(90deg, #fbbf24, #ef4444); width: 100%; transition: width 1s linear; border-radius: 4px; }
+            
+            .ch-grid-wrapper { position: relative; border-radius: 6px; border: 2px solid rgba(139, 92, 246, 0.3); background: #0a0a1a; padding: 2px; }
+            
+            .ch-grid {
+                display: grid;
+                grid-template-columns: repeat(${cols}, 1fr);
+                gap: 1px; width: 100%;
+            }
+            .ch-cell {
+                aspect-ratio: 1.4; display: flex; align-items: center; justify-content: center;
+                font-weight: 900; font-size: 0.6rem; color: white; background: #1a1a2e;
+                border-radius: 2px; cursor: default; transition: transform 0.15s, background 0.3s, box-shadow 0.3s;
+                position: relative; overflow: hidden; user-select: none;
+            }
+            .ch-cell .ch-mult { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 0.6rem; color: white; transition: opacity 0.4s; }
+            .ch-cell .ch-emoji { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 1rem; opacity: 0; transition: opacity 0.4s, transform 0.5s; }
+            .ch-cell.covered .ch-mult { opacity: 0; }
+            .ch-cell.covered .ch-emoji { opacity: 1; }
+            .ch-cell.pickable { cursor: crosshair; }
+            .ch-cell.pickable:hover { transform: scale(1.25); box-shadow: 0 0 12px rgba(251, 191, 36, 0.6); z-index: 10; }
+            .ch-cell.picked { box-shadow: 0 0 15px #fbbf24 !important; border: 2px solid #fbbf24; transform: scale(1.25); z-index: 10; }
+            .ch-cell.revealed .ch-emoji { opacity: 0; transform: scale(0.3) rotateZ(360deg); }
+            .ch-cell.revealed .ch-mult { opacity: 1; }
+            .ch-cell.winner-cell { background: linear-gradient(135deg, #fbbf24, #f59e0b) !important; box-shadow: 0 0 25px rgba(251, 191, 36, 0.8) !important; transform: scale(1.4) !important; z-index: 20; }
+            .ch-cell.winner-cell .ch-mult { color: #1a1a2e !important; font-size: 0.8rem; }
+            
+            /* CSS HW Accelerated Scrolling Layer */
+            .ch-scroll-layer { position: absolute; inset: 0; background: #0a0a1a; z-index: 5; overflow: hidden; display: flex; flex-direction: column; gap: 1px; padding: 2px; transition: opacity 0.5s; }
+            .ch-scroll-row { flex: 1; display: flex; gap: 1px; overflow: hidden; white-space: nowrap; }
+            .ch-scroll-item { flex: 0 0 calc((100% - 8px) / 9); display: flex; align-items: center; justify-content: center; background: #1a1a2e; color: white; font-weight: 900; font-size: 0.6rem; border-radius: 2px; }
+            
+            @keyframes scrollRightAnim { 0% { transform: translateX(-50%); } 100% { transform: translateX(0%); } }
+            @keyframes scrollLeftAnim { 0% { transform: translateX(0%); } 100% { transform: translateX(-50%); } }
+            
+            .ch-msg { text-align: center; font-size: 1.1rem; font-weight: 800; color: #fbbf24; margin-top: 6px; min-height: 1.4em; }
+            @keyframes chShuffleSlow { 0%,100% { transform: translate(0,0); } 50% { transform: translate(2px, -2px); } }
+            @keyframes chShuffleFast { 0% { transform: translate(0,0); } 25% { transform: translate(4px,-3px); } 50% { transform: translate(-3px,3px); } 75% { transform: translate(3px,2px); } 100% { transform: translate(0,0); } }
+            .ch-cell.shuffle-slow { animation: chShuffleSlow 0.3s ease-in-out infinite; }
+            .ch-cell.shuffle-fast { animation: chShuffleFast 0.1s linear infinite; }
+        </style>
+        <div class="ch-container">
+            <div class="ch-title">💰 CASH HUNT 💰</div>
+            <div class="ch-timer-bar" id="ch-timer">
+                <span>⏱️ SCEGLI!</span>
+                <div class="ch-timer-fill"><div class="ch-timer-fill-inner" id="ch-timer-fill"></div></div>
+                <span id="ch-timer-sec">10</span>
             </div>
-        `;
-    }
-    html += '</div>';
+            <div class="ch-grid-wrapper">
+                <div class="ch-scroll-layer" id="ch-scroll-layer"></div>
+                <div class="ch-grid" id="ch-grid"></div>
+            </div>
+            <div class="ch-msg" id="ch-msg">Moltiplicatori in arrivo...</div>
+        </div>
+    `;
 
     minigameArea.innerHTML = html;
 
-    // Shuffle animation — briefly show all, then hide
+    const gridEl = document.getElementById('ch-grid');
+    const scrollLayerEl = document.getElementById('ch-scroll-layer');
+    const msgEl = document.getElementById('ch-msg');
+
+    function colorMult(el, val) {
+        if (val >= 100) el.style.color = '#fbbf24';
+        else if (val >= 50) el.style.color = '#f59e0b';
+        else if (val >= 15) el.style.color = '#a78bfa';
+        else el.style.color = 'white';
+    }
+
+    // Populate actual grid (hidden behind scroll layer initially)
+    for (let i = 0; i < totalCells; i++) {
+        const cell = document.createElement('div');
+        cell.className = 'ch-cell';
+        cell.dataset.idx = i;
+        cell.id = `ch-c-${i}`;
+        const val = grid[i] || 5;
+        cell.innerHTML = `<div class="ch-mult" id="ch-m-${i}">x${val}</div><div class="ch-emoji" id="ch-e-${i}"></div>`;
+        gridEl.appendChild(cell);
+        colorMult(cell.querySelector('.ch-mult'), val);
+    }
+
+    // Populate CSS scrolling layer
+    let scrollHtml = '';
+    // Make strip twice as wide to allow scrolling without tearing
+    const stripLength = cols * 3; 
+    for (let r = 0; r < rows; r++) {
+        const isRight = r % 2 === 0;
+        const animName = isRight ? 'scrollRightAnim' : 'scrollLeftAnim';
+        scrollHtml += `<div class="ch-scroll-row" style="width: 200%; animation: ${animName} 8s cubic-bezier(0.1, 0.7, 0.1, 1) forwards;">`;
+        for (let c = 0; c < stripLength; c++) {
+            const mult = scrollMults[Math.floor(Math.random() * scrollMults.length)];
+            let colColor = 'white';
+            if (mult >= 100) colColor = '#fbbf24'; else if (mult >= 50) colColor = '#f59e0b'; else if (mult >= 15) colColor = '#a78bfa';
+            scrollHtml += `<div class="ch-scroll-item" style="color: ${colColor};">x${mult}</div>`;
+        }
+        scrollHtml += `</div>`;
+    }
+    scrollLayerEl.innerHTML = scrollHtml;
+
+    // === PHASE 1 & 2: CSS Scroll for 8s, then fade out layer ===
     setTimeout(() => {
-        // Reveal all briefly
-        document.querySelectorAll('.cashhunt-card').forEach(c => c.classList.add('revealed'));
-
+        msgEl.textContent = 'Moltiplicatori assestati!';
+        scrollLayerEl.style.opacity = '0';
         setTimeout(() => {
-            // Hide all again
-            document.querySelectorAll('.cashhunt-card').forEach(c => c.classList.remove('revealed'));
+            scrollLayerEl.style.display = 'none';
+            startPhase3();
+        }, 500);
+    }, 8000);
 
-            setTimeout(() => {
-                // Reveal winner
-                const winnerCard = document.getElementById(`ch-card-${cellIndex}`);
-                if (winnerCard) {
-                    winnerCard.classList.add('revealed', 'winner');
+    // === PHASE 3: Cover with emojis ===
+    function startPhase3() {
+        setTimeout(() => {
+            msgEl.textContent = 'Copertura in corso...';
+            for (let r = 0; r < rows; r++) {
+                setTimeout(() => {
+                    for (let c = 0; c < cols; c++) {
+                        const idx = r * cols + c;
+                        const emojiEl = document.getElementById(`ch-e-${idx}`);
+                        const cell = document.getElementById(`ch-c-${idx}`);
+                        if (emojiEl) emojiEl.textContent = emojis[Math.floor(Math.random() * emojis.length)];
+                        if (cell) cell.classList.add('covered');
+                    }
+                }, r * 60);
+            }
+            setTimeout(startPhase4, rows * 60 + 400);
+        }, 1500);
+    }
+
+    // === PHASE 4: Shuffle with accelerate then decelerate (6s) ===
+    function startPhase4() {
+        msgEl.textContent = '\u{1F500} Shuffle!';
+        const allCells = gridEl.querySelectorAll('.ch-cell');
+        const shuffleDuration = 6000;
+        const shuffleStartTime = performance.now();
+
+        // Start slow
+        allCells.forEach(c => c.classList.add('shuffle-slow'));
+        setTimeout(() => {
+            allCells.forEach(c => { c.classList.remove('shuffle-slow'); c.classList.add('shuffle-fast'); });
+        }, 800);
+        setTimeout(() => {
+            allCells.forEach(c => { c.classList.remove('shuffle-fast'); c.classList.add('shuffle-slow'); });
+        }, shuffleDuration - 1000);
+
+        let swapTimeout;
+        function doSwap() {
+            const elapsed = performance.now() - shuffleStartTime;
+            if (elapsed >= shuffleDuration) {
+                allCells.forEach(c => { c.classList.remove('shuffle-slow', 'shuffle-fast'); });
+                
+                // CRITICAL: Scramble the actual multipliers behind the scenes!
+                for (let i = grid.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [grid[i], grid[j]] = [grid[j], grid[i]];
                 }
 
-                // Reveal all others after a beat
-                setTimeout(() => {
-                    document.querySelectorAll('.cashhunt-card').forEach(c => {
-                        c.classList.add('revealed');
-                    });
-                    
-                    showMinigameResultMultiplier(multiplier);
-                    setTimeout(onComplete, 4000);
-                }, 2000);
-            }, 2500);
-        }, 3000);
-    }, 1000);
+                startPhase5();
+                return;
+            }
+            const progress = elapsed / shuffleDuration;
+            let swapDelay;
+            if (progress < 0.2) swapDelay = 250;
+            else if (progress < 0.7) swapDelay = 60;
+            else swapDelay = 200 + (progress - 0.7) * 800;
+
+            for (let i = 0; i < totalCells; i++) {
+                const emojiEl = document.getElementById(`ch-e-${i}`);
+                if (emojiEl) emojiEl.textContent = emojis[Math.floor(Math.random() * emojis.length)];
+            }
+            swapTimeout = setTimeout(doSwap, swapDelay);
+        }
+        doSwap();
+    }
+
+    // === PHASE 5: Player picks (10s timer) ===
+    function startPhase5() {
+        msgEl.textContent = '\u{1F3AF} SCEGLI UNA CELLA!';
+        const timerBar = document.getElementById('ch-timer');
+        timerBar.classList.add('visible');
+        const timerFill = document.getElementById('ch-timer-fill');
+        const timerSec = document.getElementById('ch-timer-sec');
+
+        const pickDuration = 10;
+        let pickedIndex = -1;
+        let timeLeft = pickDuration;
+
+        const allCells = gridEl.querySelectorAll('.ch-cell');
+        allCells.forEach((cell) => {
+            cell.classList.add('pickable');
+            cell.addEventListener('click', function handler() {
+                const cellIdx = parseInt(this.dataset.idx);
+                if (pickedIndex >= 0) {
+                    document.getElementById(`ch-c-${pickedIndex}`).classList.remove('picked');
+                }
+                pickedIndex = cellIdx;
+                this.classList.add('picked');
+            });
+        });
+
+        let countdownIv = setInterval(() => {
+            timeLeft--;
+            timerSec.textContent = timeLeft;
+            timerFill.style.width = `${(timeLeft / pickDuration) * 100}%`;
+            if (timeLeft <= 0) clearInterval(countdownIv);
+        }, 1000);
+
+        setTimeout(() => {
+            clearInterval(countdownIv);
+            timerBar.classList.remove('visible');
+            if (pickedIndex < 0) pickedIndex = defaultCell;
+
+            allCells.forEach(cell => {
+                cell.classList.remove('pickable');
+                cell.style.cursor = 'default';
+            });
+
+            startPhase6(pickedIndex);
+        }, pickDuration * 1000);
+    }
+
+    // === PHASE 6: Reveal all cells ===
+    function startPhase6(pickedIndex) {
+        msgEl.textContent = '\u{1F389} Rivelazione!';
+
+        // CRITICAL: Force the picked cell to contain the server's chosen multiplier
+        let mIdx = grid.indexOf(multiplier);
+        if (mIdx !== -1 && mIdx !== pickedIndex) {
+            // Swap to put multiplier exactly where user clicked
+            let temp = grid[pickedIndex];
+            grid[pickedIndex] = grid[mIdx];
+            grid[mIdx] = temp;
+        } else if (mIdx === -1) {
+            grid[pickedIndex] = multiplier;
+        }
+
+        // Update DOM with new scrambled grid
+        for (let i = 0; i < totalCells; i++) {
+            const el = document.getElementById(`ch-m-${i}`);
+            const val = grid[i] || 5;
+            if (el) { el.textContent = `x${val}`; colorMult(el, val); }
+        }
+
+        for (let r = 0; r < rows; r++) {
+            setTimeout(() => {
+                for (let c = 0; c < cols; c++) {
+                    const idx = r * cols + c;
+                    const cell = document.getElementById(`ch-c-${idx}`);
+                    if (cell) cell.classList.add('revealed');
+                }
+            }, r * 50);
+        }
+
+        setTimeout(() => {
+            const winnerCell = document.getElementById(`ch-c-${pickedIndex}`);
+            if (winnerCell) winnerCell.classList.add('winner-cell');
+
+            msgEl.textContent = `\u{1F3C6} Hai vinto: x${multiplier}!`;
+            showMinigameResultMultiplier(multiplier);
+            setTimeout(onComplete, 4000);
+        }, rows * 50 + 800);
+    }
 }
+
 
 // --- CRAZY TIME BONUS WHEEL ---
 function animateCrazyTime(multiplier, details, onComplete) {
