@@ -43,3 +43,27 @@ Java Gateway:
   - GameResultListener.java: separati i topic WebSocket (/topic/game-results e /topic/game-timer)
   - Test ampliati da 4 a 8 casi: registrazione, duplicati, scommessa ok, saldo insufficiente, utente inesistente, importo zero, getBalance ok, getBalance not found
   - Tutti e 8 i test PASSANO (mvn test BUILD SUCCESS)
+
+AGGIORNAMENTI UI E BUGFIX (12/08/2026):
+Frontend (UI/UX Refactoring):
+  - Creata un'interfaccia "Premium Glassmorphism" moderna e responsive (index.html, style.css).
+  - Implementata una Ruota della Fortuna in Canvas 2D con animazioni fluide a 60fps, rotazione di 10 secondi calibrata con funzioni Easing.
+  - Sviluppati 4 Minigiochi animati in JS (Pachinko, CoinFlip, CashHunt, CrazyTime) con timing rallentato per favorire la suspense e overlay dinamici dei risultati.
+  - Sistema di autenticazione integrato: form per Login/Register con auto-login abilitato.
+  - Aggiunto bottone "PUNTA SU TUTTO" (Bet All) per piazzare bet su tutti gli 8 segmenti con un click.
+  - Rimossa la sezione "Storico Scommesse" come richiesto.
+
+Backend Erlang (Sincronizzazione e Logica):
+  - wheel_process.erl: sincronizzati i timer tra Erlang e animazioni frontend, ritardando l'accredito delle vincite a fine animazione (spin o minigioco).
+  - Inseriti 5 secondi di "cooldown" prima di riaprire le puntate, per dare una pausa tra un round e l'altro.
+  - Corretto bug di serializzazione JSON in Erlang: i percorsi dei minigiochi (es. liste di binarie [<<"L">>, <<"R">>]) ora sono parsati correttamente.
+  - I minigiochi restituiscono {ok, Multiplier, Details} popolando "Details" con tutti i metadati per il JS.
+
+Backend Java (Gestione Payout):
+  - AuthControllerTest.java: aggiunti 7 nuovi test unitari su login/logout e JWT/Session.
+  - Bugfix Round-Robin RabbitMQ ("uno sì, uno no"): Unificati i listener GameResultListener e PayoutListener in un'unica catena di esecuzione sincrona. Precedentemente i risultati si perdevano (bilanciamento round-robin), adesso GameResultListener processa sempre i pagamenti su DB prima di fare il broadcast WebSocket, assicurando che il fetch del bilancio (WalletController) riporti sempre il valore esatto e aggiornato post-vittoria.
+
+COSA MANCA (Escluso per volere dell'utente):
+- Database Persistente: Si utilizza H2 In-Memory (giocate e account persi al riavvio).
+- Algoritmi di Sistemi Distribuiti e Snapshot Chandy-Lamport: Le componenti accademiche per la fault-tolerance e il recovery distribuito tra backend Java e cluster Erlang non sono state integrate, mantenendo un'architettura 1 Gateway / 1 Cluster.
+- Load Balancer per WebSockets per eventuale scaling orizzontale del nodo Java.
