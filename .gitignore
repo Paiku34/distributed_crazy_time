@@ -1,0 +1,7 @@
+# File di istruzioni locale (curl macOS)
+istruzioni_curl_mac.txt
+
+# Log e file temporanei
+log.txt
+*.log
+.DS_Store
