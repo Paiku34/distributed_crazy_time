@@ -1,14 +1,17 @@
 <!DOCTYPE html>
 <html lang="it">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Distributed Crazy Time — Live Game Show</title>
-    <meta name="description" content="Distributed Crazy Time: a real-time multiplayer game show powered by Erlang and Spring Boot.">
+    <meta name="description"
+        content="Distributed Crazy Time: a real-time multiplayer game show powered by Erlang and Spring Boot.">
     <!-- Google Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800;900&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
 
     <!-- Sfondo animato -->
@@ -54,116 +57,140 @@
     </div>
 
     <!-- ====== GAME SCREEN ====== -->
-    <div id="game-screen" style="display: none;">
+    <div id="game-screen" style="display: none; width: 100vw; height: 100vh; overflow: hidden; position: relative;">
 
-        <!-- Header -->
-        <header class="game-header glass-panel">
-            <div class="header-left">
-                <div class="logo-mini"><span class="logo-crazy">C</span><span class="logo-time">T</span></div>
-                <div class="user-info">
-                    <span id="player-name" class="player-name">Player</span>
-                    <span id="player-balance" class="balance">$0.00</span>
-                </div>
+        <!-- Bottom Left Logo & Balance (Moved to game-screen level for absolute bottom left positioning) -->
+        <div class="hud-bottom-left" style="position: absolute; bottom: 20px; left: 20px; z-index: 50;">
+            <img src="img/crazy_time_logo.png" alt="Crazy Time"
+                style="max-height: 170px; margin-bottom: 10px; display: block;">
+            <div class="user-stats"
+                style="background: rgba(0,0,0,0.6); padding: 10px 15px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.2); display: flex; flex-direction: column; gap: 5px;">
+                <span style="color: #ccc; font-size: 0.9rem;">Saldo: <strong id="player-balance"
+                        style="color: #10b981; font-size: 1.2rem;">$0.00</strong></span>
+                <span style="color: #ccc; font-size: 0.9rem;">Totale Scommessa: <strong id="total-bet-display"
+                        style="color: #fbbf24; font-size: 1.2rem;">$0.00</strong></span>
             </div>
-            <div class="header-right">
-                <button id="logout-btn" class="outline-btn">Esci</button>
-            </div>
-        </header>
+        </div>
 
-        <!-- Timer Banner -->
-        <div id="top-timer-banner" class="timer-banner">
-            <div class="timer-phase" id="phase-text">CONNECTING...</div>
-            <div class="timer-countdown" id="timer-display">--</div>
-            <div class="timer-round" id="round-display">Round #1</div>
+        <!-- Bottom Right History (Moved to game-screen level for absolute bottom right positioning) -->
+        <div id="last-results" class="history-grid"
+            style="position: absolute; bottom: 20px; right: 20px; display: grid; grid-template-columns: repeat(7, 40px); grid-template-rows: repeat(3, 40px); gap: 5px; z-index: 50; direction: ltr;">
+            <!-- History items will be injected here -->
         </div>
 
         <!-- Main Game Area -->
-        <main class="game-main">
-            <!-- Wheel Area -->
-            <div class="wheel-section">
+        <main class="game-main"
+            style="width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center;">
+
+            <!-- Wheel Area (Top 2/3) -->
+            <div class="wheel-section"
+                style="width: 100%; flex: 0 0 65%; display: flex; align-items: center; justify-content: center; position: relative; padding-top: 2vh;">
+
+
+                <!-- Wheel -->
                 <div class="wheel-container">
                     <div class="wheel-pointer-container">
                         <div class="wheel-pointer">▼</div>
                     </div>
                     <canvas id="wheel-canvas" width="500" height="500"></canvas>
-                    <div class="wheel-center-overlay">
+                    <div class="wheel-center-overlay" style="display: none;">
                         <span id="wheel-center-text">CRAZY<br>TIME</span>
                     </div>
                 </div>
-                <div id="last-results" class="last-results">
-                    <!-- Ultimi risultati -->
-                </div>
+
+
             </div>
 
-            <!-- Betting Area -->
-            <div class="betting-section">
-                <div class="bet-controls glass-panel">
-                    <span class="bet-label">PUNTATA</span>
-                    <div class="bet-amount-controls">
-                        <button class="amount-btn" data-action="half">½</button>
-                        <input type="number" id="bet-amount" value="10" min="1">
-                        <button class="amount-btn" data-action="double">2×</button>
-                    </div>
+            <!-- Betting Area (Bottom 1/3) -->
+            <div class="betting-section"
+                style="width: 100%; flex: 0 0 35%; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; padding-bottom: 2vh; position: relative;">
+
+                <!-- Phase overlay text -->
+                <div id="phase-text-overlay"
+                    style="position: absolute; top: -30px; font-size: 1.5rem; font-weight: bold; color: #fbbf24; text-transform: uppercase; letter-spacing: 2px; text-shadow: 2px 2px 4px black; z-index: 20; pointer-events: none;">
                 </div>
 
-                <!-- Bet All Button -->
-                <button id="bet-all-btn" class="bet-all-btn glow-btn">
-                    🎰 PUNTA SU TUTTO
-                </button>
+                <!-- Bets Background with Hitboxes -->
+                <div class="bets-area-container"
+                    style="position: relative; width: 90vw; max-width: 350px; aspect-ratio: 4/1; top:-40px;">
+                    <img src="img/bets.png"
+                        style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: block; z-index: 1;">
 
-                <div class="bet-grid">
-                    <!-- Numeri -->
-                    <button class="bet-btn number-btn seg-1" data-segment="1" id="bet-seg-1">
-                        <span class="seg-name">1</span>
-                        <span class="seg-count">21 spots</span>
-                        <span class="pays">Pays 1:1</span>
-                    </button>
-                    <button class="bet-btn number-btn seg-2" data-segment="2" id="bet-seg-2">
-                        <span class="seg-name">2</span>
-                        <span class="seg-count">13 spots</span>
-                        <span class="pays">Pays 2:1</span>
-                    </button>
-                    <button class="bet-btn number-btn seg-5" data-segment="5" id="bet-seg-5">
-                        <span class="seg-name">5</span>
-                        <span class="seg-count">7 spots</span>
-                        <span class="pays">Pays 5:1</span>
-                    </button>
-                    <button class="bet-btn number-btn seg-10" data-segment="10" id="bet-seg-10">
-                        <span class="seg-name">10</span>
-                        <span class="seg-count">4 spots</span>
-                        <span class="pays">Pays 10:1</span>
-                    </button>
+                    <!-- HITBOXES: adjust top, left, width, height if needed -->
+                    <div class="bet-hitbox" data-segment="1"
+                        style="z-index: 5; top: 10%; left: 5%; width: 20%; height: 40%;"></div>
+                    <div class="bet-hitbox" data-segment="2"
+                        style="z-index: 5; top: 10%; left: 28%; width: 20%; height: 40%;"></div>
+                    <div class="bet-hitbox" data-segment="CoinFlip"
+                        style="z-index: 5; top: 10%; left: 52%; width: 20%; height: 40%;"></div>
+                    <div class="bet-hitbox" data-segment="Pachinko"
+                        style="z-index: 5; top: 10%; left: 75%; width: 20%; height: 40%;"></div>
 
-                    <!-- Bonus Games -->
-                    <button class="bet-btn bonus-btn pachinko" data-segment="Pachinko" id="bet-seg-pachinko">
-                        <span class="seg-name">PACHINKO</span>
-                        <span class="seg-count">4 spots</span>
-                    </button>
-                    <button class="bet-btn bonus-btn coinflip" data-segment="CoinFlip" id="bet-seg-coinflip">
-                        <span class="seg-name">COIN FLIP</span>
-                        <span class="seg-count">2 spots</span>
-                    </button>
-                    <button class="bet-btn bonus-btn cashhunt" data-segment="CashHunt" id="bet-seg-cashhunt">
-                        <span class="seg-name">CASH HUNT</span>
-                        <span class="seg-count">2 spots</span>
-                    </button>
-                    <button class="bet-btn bonus-btn crazytime" data-segment="CrazyTime" id="bet-seg-crazytime">
-                        <span class="seg-name">CRAZY TIME</span>
-                        <span class="seg-count">1 spot</span>
-                    </button>
+                    <div class="bet-hitbox" data-segment="5"
+                        style="z-index: 5; top: 55%; left: 5%; width: 20%; height: 40%;"></div>
+                    <div class="bet-hitbox" data-segment="10"
+                        style="z-index: 5; top: 55%; left: 28%; width: 20%; height: 40%;"></div>
+                    <div class="bet-hitbox" data-segment="CashHunt"
+                        style="z-index: 5; top: 55%; left: 52%; width: 20%; height: 40%;"></div>
+                    <div class="bet-hitbox" data-segment="CrazyTime"
+                        style="z-index: 5; top: 55%; left: 75%; width: 20%; height: 40%;"></div>
+
+                </div>
+
+                <!-- Chips Background with Hitboxes -->
+                <div class="chips-area-container"
+                    style="position: relative; width: 90vw; max-width: 500px; aspect-ratio: 6/1; top: -40px;">
+                    <img src="img/fish.png"
+                        style="position: absolute; top: 0; left: 0; width: 100%; height: auto; display: block; z-index: 1;">
+
+                    <!-- Undo Button -->
+                    <div id="btn-undo"
+                        style="position: absolute; z-index: 5; top: 0px; left: 8%; width: 8%; height: 50%; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: rgba(239, 68, 68, 0.2); border: 2px solid #ef4444; color: white; font-weight: bold; font-size: 0.75rem; cursor: pointer; transition: all 0.2s; box-shadow: 0 0 10px rgba(239, 68, 68, 0.3);">
+                        UNDO
+                    </div>
+
+                    <div class="chip-hitbox active-chip" data-amount="0.10"
+                        style="z-index: 5; top: 0px; left: 17%; width: 8%; height: 50%;"></div>
+                    <div class="chip-hitbox" data-amount="0.20"
+                        style="z-index: 5; top: 0px; left: 26%; width: 8%; height: 50%;"></div>
+                    <div class="chip-hitbox" data-amount="0.50"
+                        style="z-index: 5; top: 0px; left: 35%; width: 8%; height: 50%;"></div>
+                    <div class="chip-hitbox" data-amount="1"
+                        style="z-index: 5; top: 0px; left: 44%; width: 8%; height: 50%;"></div>
+                    <div class="chip-hitbox" data-amount="2"
+                        style="z-index: 5; top: 0px; left: 53%; width: 8%; height: 50%;"></div>
+                    <div class="chip-hitbox" data-amount="5"
+                        style="z-index: 5; top: 0px; left: 62%; width: 8%; height: 50%;"></div>
+                    <div class="chip-hitbox" data-amount="25"
+                        style="z-index: 5; top: 0px; left: 71%; width: 8%; height: 50%;"></div>
+
+                    <!-- 2x Button -->
+                    <div id="btn-2x"
+                        style="position: absolute; z-index: 5; top: 0px; left: 80%; width: 8%; height: 50%; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: rgba(16, 185, 129, 0.2); border: 2px solid #10b981; color: white; font-weight: bold; font-size: 0.8rem; cursor: pointer; transition: all 0.2s; box-shadow: 0 0 10px rgba(16, 185, 129, 0.3);">
+                        2X
+                    </div>
+
                 </div>
             </div>
         </main>
 
         <!-- Dev Tools (Forcing Outcomes) -->
-        <div class="dev-panel glass-panel" style="position:fixed; bottom:20px; right:20px; padding:10px; z-index:9999; display:flex; gap:5px; align-items:center; flex-direction:column; background:rgba(0,0,0,0.8); border: 1px solid rgba(255,255,255,0.2);">
-            <div style="color:#aaa; font-size:12px; margin-bottom:5px; font-weight:bold;">FORZA PROSSIMO GIRO (DEV)</div>
+        <div class="dev-panel glass-panel"
+            style="position:fixed; top:20px; right:20px; padding:10px; z-index:9999; display:flex; gap:5px; align-items:center; flex-direction:column; background:rgba(0,0,0,0.8); border: 1px solid rgba(255,255,255,0.2);">
+            <div style="color:#aaa; font-size:12px; margin-bottom:5px; font-weight:bold;">FORZA PROSSIMO GIRO (DEV)
+            </div>
             <div style="display:flex; gap:5px; flex-wrap:wrap; max-width:220px; justify-content:center;">
-                <button onclick="forceResult('Pachinko')" style="background:#8b5cf6; color:white; border:none; padding:4px 8px; border-radius:4px; cursor:pointer;">Pachinko</button>
-                <button onclick="forceResult('CoinFlip')" style="background:#3b82f6; color:white; border:none; padding:4px 8px; border-radius:4px; cursor:pointer;">CoinFlip</button>
-                <button onclick="forceResult('CashHunt')" style="background:#10b981; color:white; border:none; padding:4px 8px; border-radius:4px; cursor:pointer;">CashHunt</button>
-                <button onclick="forceResult('CrazyTime')" style="background:#ef4444; color:white; border:none; padding:4px 8px; border-radius:4px; cursor:pointer;">CrazyTime</button>
-                <button onclick="forceResult('10')" style="background:#555; color:white; border:none; padding:4px 8px; border-radius:4px; cursor:pointer;">Num 10</button>
+                <button onclick="forceResult('Pachinko')"
+                    style="background:#8b5cf6; color:white; border:none; padding:4px 8px; border-radius:4px; cursor:pointer;">Pachinko</button>
+                <button onclick="forceResult('CoinFlip')"
+                    style="background:#3b82f6; color:white; border:none; padding:4px 8px; border-radius:4px; cursor:pointer;">CoinFlip</button>
+                <button onclick="forceResult('CashHunt')"
+                    style="background:#10b981; color:white; border:none; padding:4px 8px; border-radius:4px; cursor:pointer;">CashHunt</button>
+                <button onclick="forceResult('CrazyTime')"
+                    style="background:#ef4444; color:white; border:none; padding:4px 8px; border-radius:4px; cursor:pointer;">CrazyTime</button>
+                <button onclick="forceResult('10')"
+                    style="background:#555; color:white; border:none; padding:4px 8px; border-radius:4px; cursor:pointer;">Num
+                    10</button>
             </div>
         </div>
 
@@ -177,14 +204,7 @@
             </div>
         </div>
 
-        <!-- Result Overlay (solo per vincite) -->
-        <div id="result-overlay" class="fullscreen-overlay" style="display: none;">
-            <div class="result-container glass-panel">
-                <h2 id="result-title" class="result-title">VITTORIA!</h2>
-                <p id="result-desc" class="result-desc"></p>
-                <p id="result-multiplier" class="result-multiplier"></p>
-            </div>
-        </div>
+
 
     </div>
 
@@ -193,6 +213,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
 
     <!-- Script App -->
-    <script src="app.js?v=18"></script>
+    <script src="app.js?v=24"></script>
 </body>
+
 </html>

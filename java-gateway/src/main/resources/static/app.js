@@ -18,13 +18,13 @@ const SEGMENTS = [
 const NUM_SEGMENTS = 54;
 
 const SEGMENT_COLORS = {
-    "1":         "#2563eb",
-    "2":         "#eab308",
-    "5":         "#e844a0",
-    "10":        "#8b5cf6",
-    "Pachinko":  "#d946ef",
-    "CoinFlip":  "#ef4444",
-    "CashHunt":  "#10b981",
+    "1": "#2563eb",
+    "2": "#eab308",
+    "5": "#e844a0",
+    "10": "#8b5cf6",
+    "Pachinko": "#d946ef",
+    "CoinFlip": "#ef4444",
+    "CashHunt": "#10b981",
     "CrazyTime": "#f59e0b"
 };
 
@@ -55,26 +55,22 @@ const authBtn = document.getElementById('auth-btn');
 const authBtnText = document.getElementById('auth-btn-text');
 const authSpinner = document.getElementById('auth-spinner');
 const authError = document.getElementById('auth-error');
-const logoutBtn = document.getElementById('logout-btn');
-const betAllBtn = document.getElementById('bet-all-btn');
+// logoutBtn removed
 
-const playerName = document.getElementById('player-name');
+// playerName removed
 const playerBalance = document.getElementById('player-balance');
-const phaseText = document.getElementById('phase-text');
-const timerDisplay = document.getElementById('timer-display');
-const roundDisplay = document.getElementById('round-display');
+const phaseText = document.getElementById('phase-text-overlay');
 
 const wheelCanvas = document.getElementById('wheel-canvas');
 const wheelCenterText = document.getElementById('wheel-center-text');
 const lastResultsContainer = document.getElementById('last-results');
 
-const betButtons = document.querySelectorAll('.bet-btn');
-const betAmountInput = document.getElementById('bet-amount');
+const chipHitboxes = document.querySelectorAll('.chip-hitbox');
+const betHitboxes = document.querySelectorAll('.bet-hitbox');
+const totalBetDisplay = document.getElementById('total-bet-display');
 
-const resultOverlay = document.getElementById('result-overlay');
-const resultTitle = document.getElementById('result-title');
-const resultDesc = document.getElementById('result-desc');
-const resultMultiplier = document.getElementById('result-multiplier');
+let selectedChipAmount = 0.10;
+let totalBetThisRound = 0;
 
 const minigameOverlay = document.getElementById('minigame-overlay');
 const minigameTitle = document.getElementById('minigame-title');
@@ -133,11 +129,11 @@ function spinWheel(targetIndex, duration, onComplete) {
     isSpinning = true;
 
     const arcAngle = (2 * Math.PI) / NUM_SEGMENTS;
-    
+
     // Assuming the image has index 0 (CrazyTime) perfectly centered at the top (12 o'clock)
     // To land on targetIndex, we just rotate backwards by targetIndex * arcAngle
     // (We also add a random offset within the segment so it doesn't land perfectly center every time)
-    const randomOffset = (Math.random() * 0.8 - 0.4) * arcAngle; 
+    const randomOffset = (Math.random() * 0.8 - 0.4) * arcAngle;
     const targetAngle = -(targetIndex * arcAngle) + randomOffset;
     const fullRotations = 5 * 2 * Math.PI; // 5 full spins
     const totalAngle = fullRotations + targetAngle - (wheelAngle % (2 * Math.PI));
@@ -250,28 +246,13 @@ async function doRegister(username, password, initialBalance) {
     }
 }
 
-logoutBtn.addEventListener('click', async () => {
-    if (!currentUser) return;
-    try {
-        await fetch(`/api/auth/logout?username=${encodeURIComponent(currentUser)}`, { method: 'POST' });
-    } catch (e) { /* ignore */ }
 
-    if (stompClient) { stompClient.disconnect(); stompClient = null; }
-
-    currentUser = null;
-    myBetsThisRound = {};
-    authScreen.style.display = 'block';
-    gameScreen.style.display = 'none';
-    document.getElementById('username').value = '';
-    document.getElementById('password').value = '';
-    authError.textContent = '';
-});
 
 // ===== GAME START =====
 function startGame() {
     authScreen.style.display = 'none';
     gameScreen.style.display = 'flex';
-    playerName.textContent = currentUser;
+    // playerName removed
     updateBalanceDisplay(currentBalance);
     connectWebSocket();
 
@@ -280,7 +261,7 @@ function startGame() {
         .then(data => {
             if (data.success) handleGameState(data);
         })
-        .catch(() => {});
+        .catch(() => { });
 }
 
 function updateBalanceDisplay(amount) {
@@ -314,41 +295,38 @@ function connectWebSocket() {
 let currentPhase = '';
 let pendingWinnerIndex = null;
 let pendingWinner = null;
+let isMinigamePlaying = false;
 
 function handleGameState(data) {
-    const phase = data.phase;
-    roundDisplay.textContent = `Round #${data.round || 1}`;
+    if (data.history && Array.isArray(data.history)) {
+        // Only re-render if the history actually changed to prevent flickering every second
+        if (JSON.stringify(historyItems) !== JSON.stringify(data.history)) {
+            historyItems = data.history;
+            renderLastResults();
+        }
+    }
 
+    const phase = data.phase;
     if (phase === 'betting') {
         currentPhase = 'betting';
-        phaseText.textContent = 'PLACE YOUR BETS';
+        phaseText.textContent = `PUNTATE APERTE: ${data.time_left}s`;
         phaseText.className = 'timer-phase betting';
-        timerDisplay.textContent = data.time_left;
 
-        if (data.time_left <= 3) {
-            timerDisplay.classList.add('warning');
-        } else {
-            timerDisplay.classList.remove('warning');
-        }
-
-        betButtons.forEach(b => b.disabled = false);
+        // betButtons removed
 
         // Reset round on fresh betting phase
         if (data.time_left >= 9) {
             clearChips();
             myBetsThisRound = {};
             wheelCenterText.innerHTML = 'CRAZY<br>TIME';
-            resultOverlay.style.display = 'none';
             minigameOverlay.style.display = 'none';
         }
 
     } else if (phase === 'spinning') {
         currentPhase = 'spinning';
-        phaseText.textContent = 'NO MORE BETS';
+        phaseText.textContent = 'SCOMMESSE CHIUSE';
         phaseText.className = 'timer-phase spinning';
-        timerDisplay.textContent = '🎰';
-        timerDisplay.classList.remove('warning');
-        betButtons.forEach(b => b.disabled = true);
+        // betButtons removed
 
         // If we received winner_index, spin to it
         if (data.winner_index !== undefined && !isSpinning) {
@@ -365,13 +343,7 @@ function handleGameState(data) {
         currentPhase = 'minigame';
         phaseText.textContent = `BONUS: ${data.minigame}`;
         phaseText.className = 'timer-phase minigame';
-        timerDisplay.textContent = '🎪';
-        betButtons.forEach(b => b.disabled = true);
-
-        // Show minigame overlay (animation will be triggered by handleGameResult)
-        if (minigameOverlay.style.display === 'none') {
-            showMinigameWaiting(data.minigame);
-        }
+    } else if (phase === 'cooldown') {
     }
 }
 
@@ -379,15 +351,12 @@ function handleGameState(data) {
 function handleGameResult(data) {
     wheelCenterText.innerHTML = data.winner || '?';
 
-    // Add to last results
-    addLastResult(data.winner, data.multiplier);
-
     // Calculate if player won
     const myBetAmount = myBetsThisRound[data.winner];
     const isWin = myBetAmount !== undefined;
     let winAmount = 0;
     if (isWin) {
-        winAmount = myBetAmount * data.multiplier;
+        winAmount = myBetAmount + (myBetAmount * data.multiplier);
     }
 
     const isMinigame = data.result_type === 'minigame';
@@ -411,51 +380,49 @@ function handleGameResult(data) {
 }
 
 function showResult(isWin, winner, multiplier, winAmount) {
-    if (!isWin) {
-        minigameOverlay.style.display = 'none';
-        return;
-    }
+    // Hide minigame overlay if it was open
+    minigameOverlay.style.display = 'none';
+    
+    // Create the epic multiplier animation element
+    const multAnim = document.createElement('div');
+    multAnim.className = 'epic-multiplier-anim';
+    multAnim.textContent = `${multiplier}X`;
+    document.body.appendChild(multAnim);
 
-    resultOverlay.style.display = 'flex';
-    resultOverlay.style.zIndex = '1000'; // Make sure it sits above minigame
-    resultTitle.textContent = 'VITTORIA!';
-    resultTitle.className = 'result-title win';
-    resultDesc.textContent = `Hai puntato su ${winner}`;
-    resultMultiplier.textContent = `x${multiplier} → +$${winAmount.toFixed(2)}`;
-    resultMultiplier.className = 'result-multiplier win-amount';
-
-    // Auto-hide after 5 seconds
+    // Clean up multiplier element after animation ends (3s)
     setTimeout(() => {
-        resultOverlay.style.display = 'none';
-        minigameOverlay.style.display = 'none'; // Hide minigame overlay when win is hidden
-    }, 5000);
+        multAnim.remove();
+    }, 3000);
+
+    // If the user actually won money, show the win amount trailing the multiplier
+    if (isWin && winAmount > 0) {
+        setTimeout(() => {
+            const winAnim = document.createElement('div');
+            winAnim.className = 'epic-win-anim';
+            winAnim.textContent = `+$${winAmount.toFixed(2)}`;
+            document.body.appendChild(winAnim);
+
+            setTimeout(() => {
+                winAnim.remove();
+            }, 3000);
+        }, 2800); // Play after the multiplier animation finishes
+    }
 }
 
-function addLastResult(winner, multiplier) {
-    lastResults.unshift({ winner, multiplier });
-    if (lastResults.length > 10) lastResults.pop();
-    renderLastResults();
-}
+const MAX_HISTORY = 21;
+let historyItems = [];
+
+// `addLastResult` removed since history is synced from backend
 
 function renderLastResults() {
-    lastResultsContainer.innerHTML = lastResults.map(r => {
-        const color = SEGMENT_COLORS[r.winner] || '#666';
-        return `<div class="last-result-chip" style="background:${color}">${r.winner} x${r.multiplier}</div>`;
+    lastResultsContainer.innerHTML = historyItems.map(r => {
+        const cssName = r.winner;
+        let display = r.multiplier > 1 ? `${r.multiplier}x` : (r.winner === 'CrazyTime' ? 'CT' : (r.winner === 'Pachinko' ? 'PACH' : (r.winner === 'CoinFlip' ? 'FLIP' : (r.winner === 'CashHunt' ? 'HUNT' : r.winner))));
+        return `<div class="history-item hist-${cssName}">${display}</div>`;
     }).join('');
 }
 
 // ===== MINIGAME ANIMATIONS =====
-
-function showMinigameWaiting(name) {
-    minigameOverlay.style.display = 'flex';
-    minigameTitle.textContent = name.toUpperCase();
-    minigameArea.innerHTML = `
-        <div style="font-size:3rem;margin-bottom:16px;">${getMinigameEmoji(name)}</div>
-        <div style="font-size:1.2rem;color:var(--text-dim);animation:pulse 1s infinite alternate;">
-            Preparazione in corso...
-        </div>
-    `;
-}
 
 function getMinigameEmoji(name) {
     const emojis = { Pachinko: '🔴', CoinFlip: '🪙', CashHunt: '🎯', CrazyTime: '🎡' };
@@ -463,24 +430,30 @@ function getMinigameEmoji(name) {
 }
 
 function showMinigameAnimation(name, multiplier, details, onComplete) {
+    isMinigamePlaying = true;
     minigameOverlay.style.display = 'flex';
     minigameTitle.textContent = name.toUpperCase();
 
+    const wrappedComplete = () => {
+        isMinigamePlaying = false;
+        onComplete();
+    };
+
     switch (name) {
         case 'Pachinko':
-            animatePachinko(multiplier, details, onComplete);
+            animatePachinko(multiplier, details, wrappedComplete);
             break;
         case 'CoinFlip':
-            animateCoinFlip(multiplier, details, onComplete);
+            animateCoinFlip(multiplier, details, wrappedComplete);
             break;
         case 'CashHunt':
-            animateCashHunt(multiplier, details, onComplete);
+            animateCashHunt(multiplier, details, wrappedComplete);
             break;
         case 'CrazyTime':
-            animateCrazyTime(multiplier, details, onComplete);
+            animateCrazyTime(multiplier, details, wrappedComplete);
             break;
         default:
-            setTimeout(onComplete, 2000);
+            setTimeout(wrappedComplete, 2000);
     }
 }
 
@@ -513,7 +486,7 @@ function animatePachinko(multiplier, details, onComplete) {
         <div class="pachinko-scene" style="width: 100%; max-width: 600px; margin: 0 auto; display: flex; flex-direction: column;">
             <!-- Top Drop Zone -->
             <div class="pachinko-drop-zones" id="pk-drop-zones">
-                ${Array.from({length: 16}).map((_,i) => `<div class="pk-dz" id="pk-dz-${i}"></div>`).join('')}
+                ${Array.from({ length: 16 }).map((_, i) => `<div class="pk-dz" id="pk-dz-${i}"></div>`).join('')}
             </div>
             
             <!-- Canvas Board -->
@@ -523,7 +496,7 @@ function animatePachinko(multiplier, details, onComplete) {
             
             <!-- Bottom Slots -->
             <div class="pachinko-slots" id="pk-slots">
-                ${Array.from({length: 8}).map((_,i) => `<div class="pachinko-slot" id="pk-slot-${i}">x?</div>`).join('')}
+                ${Array.from({ length: 8 }).map((_, i) => `<div class="pachinko-slot" id="pk-slot-${i}">x?</div>`).join('')}
             </div>
         </div>
     `;
@@ -536,23 +509,23 @@ function animatePachinko(multiplier, details, onComplete) {
     canvas.height = canvas.offsetHeight * (window.devicePixelRatio || 1);
     const ctx = canvas.getContext('2d');
     ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
-    
+
     const boardW = canvas.offsetWidth;
     const boardH = canvas.offsetHeight;
     const pegRows = 15;
     const cols = 16;
     const pegRadius = 3;
     const ballRadius = 8;
-    
+
     // Calculate peg positions
     const pegs = [];
-    for(let r = 0; r < pegRows; r++) {
+    for (let r = 0; r < pegRows; r++) {
         const numPegs = (r % 2 === 0) ? cols + 1 : cols;
         const rowY = (r + 1) * (boardH / (pegRows + 1.5));
         const spacingX = boardW / cols;
         const startX = (r % 2 === 0) ? 0 : spacingX / 2;
-        
-        for(let c = 0; c < numPegs; c++) {
+
+        for (let c = 0; c < numPegs; c++) {
             pegs.push({ x: startX + c * spacingX, y: rowY });
         }
     }
@@ -576,7 +549,7 @@ function animatePachinko(multiplier, details, onComplete) {
     let initialSlots = drops[0].slots;
     const possibleMults = [2, 3, 5, 7, 10, 15, 20, 25, 50, "DOUBLE"];
     let shuffleInterval = setInterval(() => {
-        for(let i=0; i<8; i++) {
+        for (let i = 0; i < 8; i++) {
             const r = possibleMults[Math.floor(Math.random() * possibleMults.length)];
             const slot = document.getElementById(`pk-slot-${i}`);
             slot.textContent = r === "DOUBLE" ? "DBL" : `x${r}`;
@@ -591,7 +564,7 @@ function animatePachinko(multiplier, details, onComplete) {
     }, 2500);
 
     function setSlots(slotsArr) {
-        for(let i=0; i<8; i++) {
+        for (let i = 0; i < 8; i++) {
             const slot = document.getElementById(`pk-slot-${i}`);
             const val = slotsArr[i];
             slot.textContent = val === "DOUBLE" ? "DBL" : `x${val}`;
@@ -604,7 +577,7 @@ function animatePachinko(multiplier, details, onComplete) {
     function playDrop(dropIndex) {
         if (dropIndex >= drops.length) return;
         const dropData = drops[dropIndex];
-        
+
         // 1. Drop zone animation
         let dzHighlightInterval = setInterval(() => {
             const allDz = document.querySelectorAll('.pk-dz');
@@ -624,7 +597,7 @@ function animatePachinko(multiplier, details, onComplete) {
             const dz = document.getElementById(`pk-dz-${dropData.drop_zone}`);
             dz.style.backgroundColor = '#ff00ff';
             dz.style.boxShadow = '0 0 15px #ff00ff';
-            
+
             // 2. Physics drop
             simulatePhysicsDrop(dropData, () => {
                 // Landed
@@ -652,17 +625,17 @@ function animatePachinko(multiplier, details, onComplete) {
     }
 
     function simulatePhysicsDrop(dropData, onLanded) {
-        const path = dropData.path; 
+        const path = dropData.path;
         const spacingX = boardW / cols;
         const startX = (dropData.drop_zone + 0.5) * spacingX;
         let bx = startX;
         let by = -ballRadius; // Start slightly above board
-        
+
         let currentStep = 0;
         let isAnimating = true;
         let targetX = bx;
         let targetY = boardH / (pegRows + 1.5);
-        
+
         const stepDuration = 550; // Slower drop (ms per peg bounce)
         let stepStartTime = performance.now();
 
@@ -679,7 +652,7 @@ function animatePachinko(multiplier, details, onComplete) {
                     onLanded();
                     return;
                 }
-                
+
                 stepStartTime = now;
                 bx = targetX;
                 by = targetY;
@@ -692,7 +665,7 @@ function animatePachinko(multiplier, details, onComplete) {
 
             const easeX = progress; // linear horizontal
             const easeY = progress; // linear vertical base
-            
+
             // Add a bounce arc to Y to simulate peg collision
             const bounceY = Math.sin(progress * Math.PI) * -15;
 
@@ -700,7 +673,7 @@ function animatePachinko(multiplier, details, onComplete) {
             const currY = by + (targetY - by) * easeY + bounceY;
 
             drawBoard();
-            
+
             // Draw Puck
             ctx.beginPath();
             ctx.arc(currX, currY, ballRadius, 0, Math.PI * 2);
@@ -709,7 +682,7 @@ function animatePachinko(multiplier, details, onComplete) {
             ctx.lineWidth = 2;
             ctx.strokeStyle = '#ff00ff';
             ctx.stroke();
-            
+
             // Glow
             ctx.shadowColor = '#ff00ff';
             ctx.shadowBlur = 10;
@@ -718,7 +691,7 @@ function animatePachinko(multiplier, details, onComplete) {
 
             requestAnimationFrame(animatePuck);
         }
-        
+
         requestAnimationFrame(animatePuck);
     }
 }
@@ -782,11 +755,11 @@ function animateCoinFlip(multiplier, details, onComplete) {
         dispMultA.textContent = `x${sideA}`;
         coinMultB.textContent = `x${sideB}`;
         dispMultB.textContent = `x${sideB}`;
-        
+
         // Blink to show they settled
         dispMultA.style.transform = "scale(1.2)";
         dispMultB.style.transform = "scale(1.2)";
-        
+
         // Make the coin appear
         coin.style.opacity = '1';
         coin.style.transform = 'scale(1)';
@@ -821,8 +794,8 @@ function animateCashHunt(multiplier, details, onComplete) {
     const defaultCell = details.default_cell || 0;
     const totalCells = cols * rows;
 
-    const emojis = ['🎯','🐰','⭐','🎪','🎲','🍀','💎','🦊','🎵','🎈','🔔','🌟','🎃','🍎','🎁','🦄','🐻','🎮','🏆','🎺','🌈','🍕','🎭','🦋'];
-    const scrollMults = [2,3,5,7,10,15,20,25,50,75,100,200];
+    const emojis = ['🎯', '🐰', '⭐', '🎪', '🎲', '🍀', '💎', '🦊', '🎵', '🎈', '🔔', '🌟', '🎃', '🍎', '🎁', '🦄', '🐻', '🎮', '🏆', '🎺', '🌈', '🍕', '🎭', '🦋'];
+    const scrollMults = [2, 3, 5, 7, 10, 15, 20, 25, 50, 75, 100, 200];
     let html = `
         <style>
             .ch-container { 
@@ -930,7 +903,7 @@ function animateCashHunt(multiplier, details, onComplete) {
     // Populate CSS scrolling layer
     let scrollHtml = '';
     // Make strip twice as wide to allow scrolling without tearing
-    const stripLength = cols * 3; 
+    const stripLength = cols * 3;
     for (let r = 0; r < rows; r++) {
         const isRight = r % 2 === 0;
         const animName = isRight ? 'scrollRightAnim' : 'scrollLeftAnim';
@@ -995,7 +968,7 @@ function animateCashHunt(multiplier, details, onComplete) {
             const elapsed = performance.now() - shuffleStartTime;
             if (elapsed >= shuffleDuration) {
                 allCells.forEach(c => { c.classList.remove('shuffle-slow', 'shuffle-fast'); });
-                
+
                 // CRITICAL: Scramble the actual multipliers behind the scenes!
                 for (let i = grid.length - 1; i > 0; i--) {
                     const j = Math.floor(Math.random() * (i + 1));
@@ -1225,7 +1198,7 @@ function fetchBalance() {
     fetch(`/api/wallet/balance?username=${encodeURIComponent(currentUser)}`)
         .then(r => r.json())
         .then(d => { if (d.success) updateBalanceDisplay(d.balance); })
-        .catch(() => {});
+        .catch(() => { });
 }
 
 // ===== DEV TOOLS =====
@@ -1239,13 +1212,27 @@ function forceResult(segment) {
         });
 }
 
-// ===== BETTING =====
-betButtons.forEach(btn => {
-    btn.addEventListener('click', async () => {
-        const segment = btn.getAttribute('data-segment');
-        const amount = betAmountInput.value;
+// ===== NEW IMAGE-BASED BETTING LOGIC =====
 
-        if (!amount || parseFloat(amount) <= 0) return;
+chipHitboxes.forEach(chip => {
+    chip.addEventListener('click', () => {
+        chipHitboxes.forEach(c => c.classList.remove('active-chip'));
+        chip.classList.add('active-chip');
+        selectedChipAmount = parseFloat(chip.dataset.amount);
+    });
+});
+
+betHitboxes.forEach(betBox => {
+    betBox.addEventListener('click', async () => {
+        if (currentPhase !== 'betting') {
+            showBetError('Le scommesse sono chiuse!');
+            return;
+        }
+
+        const segment = betBox.dataset.segment;
+        const amount = selectedChipAmount;
+
+        if (!amount || amount <= 0) return;
 
         try {
             const res = await fetch(`/api/wallet/place-bet?username=${encodeURIComponent(currentUser)}&amount=${amount}&segment=${encodeURIComponent(segment)}`, { method: 'POST' });
@@ -1254,8 +1241,10 @@ betButtons.forEach(btn => {
             if (data.success) {
                 updateBalanceDisplay(data.new_balance);
                 if (!myBetsThisRound[segment]) myBetsThisRound[segment] = 0;
-                myBetsThisRound[segment] += parseFloat(amount);
-                addChipToButton(btn, myBetsThisRound[segment]);
+                myBetsThisRound[segment] += amount;
+                totalBetThisRound += amount;
+                if (totalBetDisplay) totalBetDisplay.textContent = `$${totalBetThisRound.toFixed(2)}`;
+                addChipToButton(betBox, myBetsThisRound[segment]);
             } else {
                 showBetError(data.error);
             }
@@ -1265,29 +1254,98 @@ betButtons.forEach(btn => {
     });
 });
 
-// Amount buttons
-document.querySelectorAll('.amount-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-        const action = btn.getAttribute('data-action');
-        let val = parseFloat(betAmountInput.value) || 10;
-        if (action === 'half') val = Math.max(1, Math.floor(val / 2));
-        if (action === 'double') val = Math.min(val * 2, currentBalance);
-        betAmountInput.value = val;
-    });
-});
+// --- Undo Bets Logic ---
+const btnUndo = document.getElementById('btn-undo');
+if (btnUndo) {
+    btnUndo.addEventListener('click', async () => {
+        if (currentPhase !== 'betting') {
+            showBetError('Le scommesse sono chiuse!');
+            return;
+        }
 
-function addChipToButton(btn, totalAmount) {
-    let chip = btn.querySelector('.bet-chip');
+        if (Object.keys(myBetsThisRound).length === 0) return;
+
+        try {
+            const res = await fetch(`/api/wallet/undo-bets?username=${encodeURIComponent(currentUser)}`, { method: 'POST' });
+            const data = await res.json();
+            if (data.success) {
+                // Svuota lo stato locale
+                myBetsThisRound = {};
+                totalBetThisRound = 0;
+                if (totalBetDisplay) totalBetDisplay.textContent = `$0.00`;
+                
+                // Rimuove graficamente le fiches impilate
+                betHitboxes.forEach(hb => {
+                    const chip = hb.querySelector('.bet-stacked-chip');
+                    if (chip) chip.remove();
+                });
+                
+                // Il rimborso del saldo avverrà asincronamente tramite RabbitMQ (verrà ricevuto un aggiornamento balance se ricarichiamo, 
+                // ma per ora chiediamo un aggiornamento del wallet)
+                fetchWalletHistory(); // Aggiorna per sicurezza
+                setTimeout(() => {
+                    fetch(`/api/wallet/balance?username=${encodeURIComponent(currentUser)}`)
+                        .then(r => r.json())
+                        .then(d => { if (d.success) updateBalanceDisplay(d.balance); });
+                }, 500);
+            } else {
+                showBetError(data.error);
+            }
+        } catch (e) {
+            console.error(e);
+        }
+    });
+}
+
+// --- 2x Bets Logic ---
+const btn2x = document.getElementById('btn-2x');
+if (btn2x) {
+    btn2x.addEventListener('click', async () => {
+        if (currentPhase !== 'betting') {
+            showBetError('Le scommesse sono chiuse!');
+            return;
+        }
+
+        const betsToDouble = { ...myBetsThisRound };
+        if (Object.keys(betsToDouble).length === 0) return;
+
+        for (const [segment, amount] of Object.entries(betsToDouble)) {
+            if (amount <= 0) continue;
+            try {
+                const res = await fetch(`/api/wallet/place-bet?username=${encodeURIComponent(currentUser)}&amount=${amount}&segment=${encodeURIComponent(segment)}`, { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    updateBalanceDisplay(data.new_balance);
+                    myBetsThisRound[segment] += amount;
+                    totalBetThisRound += amount;
+                    if (totalBetDisplay) totalBetDisplay.textContent = `$${totalBetThisRound.toFixed(2)}`;
+                    
+                    const betBox = document.querySelector(`.bet-hitbox[data-segment="${segment}"]`);
+                    if (betBox) addChipToButton(betBox, myBetsThisRound[segment]);
+                } else {
+                    showBetError(data.error);
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        }
+    });
+}
+
+function addChipToButton(hitBox, totalAmount) {
+    let chip = hitBox.querySelector('.bet-stacked-chip');
     if (!chip) {
         chip = document.createElement('div');
-        chip.className = 'bet-chip';
-        btn.appendChild(chip);
+        chip.className = 'bet-stacked-chip';
+        hitBox.appendChild(chip);
     }
-    chip.textContent = `$${totalAmount}`;
+    chip.textContent = totalAmount % 1 === 0 ? totalAmount : totalAmount.toFixed(1);
 }
 
 function clearChips() {
-    document.querySelectorAll('.bet-chip').forEach(c => c.remove());
+    document.querySelectorAll('.bet-stacked-chip').forEach(c => c.remove());
+    totalBetThisRound = 0;
+    if (totalBetDisplay) totalBetDisplay.textContent = `$0.00`;
 }
 
 function showBetError(msg) {
@@ -1299,29 +1357,20 @@ function showBetError(msg) {
     setTimeout(() => el.remove(), 2500);
 }
 
-// ===== BET ALL =====
-betAllBtn.addEventListener('click', async () => {
-    if (betAllBtn.disabled) return;
-    const amount = betAmountInput.value;
-    if (!amount || parseFloat(amount) <= 0) return;
-    
-    const allSegments = ["1", "2", "5", "10", "Pachinko", "CoinFlip", "CashHunt", "CrazyTime"];
-    
-    // Disable temporarily
-    betAllBtn.disabled = true;
-    
-    for (let seg of allSegments) {
-        const btn = document.querySelector(`.bet-btn[data-segment="${seg}"]`);
-        if (btn && !btn.disabled) {
-            btn.click();
-            await new Promise(r => setTimeout(r, 150)); // stagger requests
-        }
-    }
-    
-    betAllBtn.disabled = false;
-});
 
-// Close result overlay on click
-resultOverlay.addEventListener('click', () => {
-    resultOverlay.style.display = 'none';
-});
+
+
+console.log("App.js caricato con successo!");
+
+// Bypass auth temporarily
+setTimeout(async () => {
+    try {
+        await fetch('/api/wallet/register?username=Tester&password=test1234&initialBalance=1000', { method: 'POST' });
+        await fetch('/api/auth/login?username=Tester&password=test1234', { method: 'POST' });
+    } catch (e) {
+        console.error("Register/Login error:", e);
+    }
+    currentUser = 'Tester';
+    currentBalance = 1000;
+    startGame();
+}, 500);

@@ -80,6 +80,17 @@ process_message(ResponseBody) ->
                 {ok, BetMap} ->
                     io:format("[WORKER] Bet ricevuta: ~p~n", [BetMap]),
                     case maps:get(<<"segment">>, BetMap, <<>>) of
+                        <<"UNDO_BETS">> ->
+                            Username = maps:get(<<"username">>, BetMap),
+                            io:format("[WORKER] Comando UNDO per utente: ~s~n", [Username]),
+                            TotalRefund = wheel_process:undo_bets(Username),
+                            if TotalRefund > 0 ->
+                                   io:format("[WORKER] Rimborso totale per ~s: ~p~n", [Username, TotalRefund]),
+                                   RefundMap = #{<<"username">> => Username, <<"amount">> => TotalRefund, <<"segment">> => <<"REFUND">>},
+                                   publish_refund(RefundMap);
+                               true ->
+                                   io:format("[WORKER] Nessuna scommessa da annullare per ~s~n", [Username])
+                            end;
                         <<"FORCE_", Seg/binary>> ->
                             io:format("[WORKER] Comando FORZATURA segmento: ~s~n", [Seg]),
                             wheel_process:force_segment(Seg);

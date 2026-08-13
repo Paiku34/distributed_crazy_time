@@ -13,7 +13,7 @@
 -module(wheel_process).
 -behaviour(gen_server).
 
--export([start_link/0, place_bet/1, get_state/0, force_segment/1]).
+-export([start_link/0, place_bet/1, get_state/0, force_segment/1, undo_bets/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 -define(BET_DURATION, 10).   %% secondi per piazzare le scommesse
@@ -24,7 +24,8 @@
     time_left = ?BET_DURATION,
     round = 1,
     bets = [],                %% [{Username, Amount, Segment}, ...]
-    forced_segment = undefined
+    forced_segment = undefined,
+    history = []              %% [{Segment, Multiplier}, ...]
 }).
 
 %%====================================================================
@@ -62,6 +63,9 @@ get_state() ->
 force_segment(Seg) ->
     gen_server:cast(?MODULE, {force_segment, Seg}).
 
+undo_bets(Username) ->
+    gen_server:call(?MODULE, {undo_bets, Username}).
+
 %%====================================================================
 %% Callbacks
 %%====================================================================
@@ -91,6 +95,20 @@ handle_call(get_state, _From, State) ->
     },
     {reply, Reply, State};
 
+handle_call({undo_bets, Username}, _From, State = #state{phase = betting, bets = Bets}) ->
+    % Trova tutte le scommesse dell'utente
+    UserBets = lists:filter(fun(B) -> maps:get(<<"username">>, B) == Username end, Bets),
+    OtherBets = lists:filter(fun(B) -> maps:get(<<"username">>, B) =/= Username end, Bets),
+    
+    % Calcola il totale da rimborsare
+    TotalRefund = lists:foldl(fun(B, Acc) -> Acc + maps:get(<<"amount">>, B) end, 0.0, UserBets),
+    io:format("[WHEEL] Scommesse annullate per ~s: totale ~p~n", [Username, TotalRefund]),
+    
+    {reply, TotalRefund, State#state{bets = OtherBets}};
+handle_call({undo_bets, _Username}, _From, State) ->
+    % Se non è in fase betting, non rimborsiamo (oppure gestiamo altrimenti)
+    {reply, 0.0, State};
+
 handle_call(_Req, _From, State) ->
     {reply, {error, unknown}, State}.
 
@@ -104,14 +122,14 @@ handle_cast(_Msg, State) ->
 %% --- TICK durante BETTING (countdown > 0) ---
 handle_info(tick, State = #state{phase = betting, time_left = T}) when T > 1 ->
     NewTime = T - 1,
-    publish_timer(NewTime, State#state.round),
+    publish_timer(NewTime, State#state.round, State#state.history),
     erlang:send_after(1000, self(), tick),
     {noreply, State#state{time_left = NewTime}};
 
 %% --- TICK durante BETTING (countdown = 1 → spin!) ---
 handle_info(tick, State = #state{phase = betting, time_left = 1}) ->
     io:format("~n--- ROUND #~p: NO MORE BETS! SPINNING... ---~n", [State#state.round]),
-    publish_timer(0, State#state.round),
+    publish_timer(0, State#state.round, State#state.history),
 
     Segments = wheel_segments(),
     
@@ -133,14 +151,14 @@ handle_info(tick, State = #state{phase = betting, time_left = 1}) ->
     case segment_type(WinnerSeg) of
         {multiplier, Value} ->
             %% Pubblica spinning state con winner_index per l'animazione
-            publish_spinning(State1#state.round, WinnerIndex, WinnerSeg),
+            publish_spinning(State1#state.round, WinnerIndex, WinnerSeg, State1#state.history),
             %% Dopo 10.5s (tempo per l'animazione), risolvi il round
             erlang:send_after(10500, self(), {resolve_multiplier, WinnerSeg, Value, WinnerIndex}),
             {noreply, State1#state{phase = spinning, time_left = 0}};
         {minigame, Module} ->
             io:format("[WHEEL] BONUS! Entriamo in fase minigame: ~p~n", [Module]),
             %% Pubblica spinning state con winner_index
-            publish_spinning(State1#state.round, WinnerIndex, WinnerSeg),
+            publish_spinning(State1#state.round, WinnerIndex, WinnerSeg, State1#state.history),
             %% Dopo 10.5 secondi (tempo per l'animazione della ruota nel frontend), avvia il minigioco
             erlang:send_after(10500, self(), {start_minigame, WinnerSeg, Module, WinnerIndex}),
             {noreply, State1#state{phase = spinning, time_left = 0}}
@@ -149,8 +167,9 @@ handle_info(tick, State = #state{phase = betting, time_left = 1}) ->
 %% --- RESOLVE MULTIPLIER (dopo animazione ruota) ---
 handle_info({resolve_multiplier, WinnerSeg, Value, WinnerIndex}, State) ->
     resolve_round(WinnerSeg, Value, WinnerIndex, State#state.bets, State#state.round),
+    NewHistory = lists:sublist([{WinnerSeg, Value} | State#state.history], 21),
     erlang:send_after(?COOLDOWN, self(), new_round),
-    {noreply, State#state{phase = cooldown, time_left = 0}};
+    {noreply, State#state{phase = cooldown, time_left = 0, history = NewHistory}};
 
 %% --- START MINIGAME (dopo che la ruota si è fermata nel frontend) ---
 handle_info({start_minigame, SegName, Module, WinnerIndex}, State) ->
@@ -158,7 +177,7 @@ handle_info({start_minigame, SegName, Module, WinnerIndex}, State) ->
     AllBets = State#state.bets,
 
     %% Pubblica minigame_start al frontend
-    publish_minigame_start(State#state.round, SegName),
+    publish_minigame_start(State#state.round, SegName, State#state.history),
 
     %% Gioca il minigioco (calcola l'esito)
     case Module:play(BonusBets) of
@@ -166,6 +185,7 @@ handle_info({start_minigame, SegName, Module, WinnerIndex}, State) ->
             io:format("[WHEEL] Mini-game ~p completato. Moltiplicatore: x~p~n", [Module, Multiplier]),
             %% Risolve subito il risultato e lo pubblica (così il frontend avvia l'animazione)
             resolve_round_with_bonus(SegName, Multiplier, Details, AllBets, WinnerIndex, State#state.round),
+            NewHistory = lists:sublist([{SegName, Multiplier} | State#state.history], 21),
             WaitTime = case Module of
                 pachinko ->
                     DropsList = maps:get(drops, Details, []),
@@ -179,17 +199,19 @@ handle_info({start_minigame, SegName, Module, WinnerIndex}, State) ->
             end,
             %% Attendi il tempo calcolato + 5s cooldown
             erlang:send_after(WaitTime + ?COOLDOWN, self(), new_round),
-            {noreply, State#state{phase = minigame, time_left = WaitTime div 1000}};
+            {noreply, State#state{phase = minigame, time_left = WaitTime div 1000, history = NewHistory}};
         {ok, Multiplier} ->
             io:format("[WHEEL] Mini-game ~p completato. Moltiplicatore: x~p~n", [Module, Multiplier]),
             resolve_round_with_bonus(SegName, Multiplier, #{}, AllBets, WinnerIndex, State#state.round),
+            NewHistory = lists:sublist([{SegName, Multiplier} | State#state.history], 21),
             erlang:send_after(14000 + ?COOLDOWN, self(), new_round),
-            {noreply, State#state{phase = minigame, time_left = 14}};
+            {noreply, State#state{phase = minigame, time_left = 14, history = NewHistory}};
         {error, Reason} ->
             io:format("[WHEEL] Errore mini-game ~p: ~p. Rimborso.~n", [Module, Reason]),
             resolve_round(SegName, 1, WinnerIndex, AllBets, State#state.round),
+            NewHistory = lists:sublist([{SegName, 1} | State#state.history], 21),
             erlang:send_after(?COOLDOWN, self(), new_round),
-            {noreply, State#state{phase = cooldown, time_left = 0}}
+            {noreply, State#state{phase = cooldown, time_left = 0, history = NewHistory}}
     end;
 
 %% (Non c'è più bisogno di finish_minigame perché lo facciamo sincrono)
@@ -200,9 +222,9 @@ handle_info(new_round, State) ->
     io:format("~n========================================~n"),
     io:format("  NUOVO ROUND #~p — BETTING APERTO~n", [NewRound]),
     io:format("========================================~n~n"),
-    publish_timer(?BET_DURATION, NewRound),
+    publish_timer(?BET_DURATION, NewRound, State#state.history),
     erlang:send_after(1000, self(), tick),
-    {noreply, #state{phase = betting, time_left = ?BET_DURATION, round = NewRound, bets = []}};
+    {noreply, State#state{phase = betting, time_left = ?BET_DURATION, round = NewRound, bets = []}};
 
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -308,26 +330,36 @@ json_value(L) when is_list(L) ->
     "[" ++ string:join(Items, ",") ++ "]";
 json_value(Other) -> "\"" ++ lists:flatten(io_lib:format("~p", [Other])) ++ "\"".
 
+%% Formatta la history in JSON list
+format_history(History) ->
+    Entries = lists:map(fun({Seg, Mult}) ->
+        io_lib:format("{\"winner\":\"~s\",\"multiplier\":~p}", [Seg, Mult])
+    end, History),
+    "[" ++ string:join([lists:flatten(E) || E <- Entries], ",") ++ "]".
+
 %% Pubblica il timer sulla state_queue
-publish_timer(TimeLeft, Round) ->
+publish_timer(TimeLeft, Round, History) ->
     Phase = if TimeLeft > 0 -> "betting"; true -> "spinning" end,
+    HistStr = format_history(History),
     Payload = lists:flatten(io_lib:format(
-        "{\"type\":\"timer\",\"round\":~p,\"time_left\":~p,\"phase\":\"~s\"}",
-        [Round, TimeLeft, Phase])),
+        "{\"type\":\"timer\",\"round\":~p,\"time_left\":~p,\"phase\":\"~s\",\"history\":~s}",
+        [Round, TimeLeft, Phase, HistStr])),
     publish_to_queue("state_queue", Payload).
 
 %% Pubblica stato spinning con winner_index
-publish_spinning(Round, WinnerIndex, WinnerSeg) ->
+publish_spinning(Round, WinnerIndex, WinnerSeg, History) ->
+    HistStr = format_history(History),
     Payload = lists:flatten(io_lib:format(
-        "{\"type\":\"timer\",\"round\":~p,\"time_left\":0,\"phase\":\"spinning\",\"winner_index\":~p,\"winner\":\"~s\"}",
-        [Round, WinnerIndex, WinnerSeg])),
+        "{\"type\":\"timer\",\"round\":~p,\"time_left\":0,\"phase\":\"spinning\",\"winner_index\":~p,\"winner\":\"~s\",\"history\":~s}",
+        [Round, WinnerIndex, WinnerSeg, HistStr])),
     publish_to_queue("state_queue", Payload).
 
 %% Pubblica stato minigame_start
-publish_minigame_start(Round, MinigameName) ->
+publish_minigame_start(Round, MinigameName, History) ->
+    HistStr = format_history(History),
     Payload = lists:flatten(io_lib:format(
-        "{\"type\":\"timer\",\"round\":~p,\"time_left\":7,\"phase\":\"minigame\",\"minigame\":\"~s\"}",
-        [Round, MinigameName])),
+        "{\"type\":\"timer\",\"round\":~p,\"time_left\":7,\"phase\":\"minigame\",\"minigame\":\"~s\",\"history\":~s}",
+        [Round, MinigameName, HistStr])),
     publish_to_queue("state_queue", Payload).
 
 %% Pubblica un messaggio su una coda RabbitMQ via HTTP Management API

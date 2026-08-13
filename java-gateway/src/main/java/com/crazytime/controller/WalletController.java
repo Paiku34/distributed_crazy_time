@@ -177,7 +177,7 @@ public class WalletController {
         betRepository.save(bet);
 
         // Invia il messaggio a RabbitMQ come JSON
-        String message = String.format(
+        String message = String.format(java.util.Locale.US,
             "{\"username\":\"%s\",\"amount\":%.2f,\"segment\":\"%s\"}",
             username, amount, segment);
         rabbitTemplate.convertAndSend("bets_queue", message);
@@ -189,6 +189,39 @@ public class WalletController {
             "amount", amount,
             "segment", segment,
             "new_balance", player.getBalance()
+        ));
+    }
+
+    /**
+     * POST /api/wallet/undo-bets?username=X
+     * Annulla le scommesse del round in corso inviando un comando speciale a RabbitMQ.
+     */
+    @PostMapping("/undo-bets")
+    public ResponseEntity<Map<String, Object>> undoBets(@RequestParam String username) {
+        Optional<Player> optionalPlayer = playerRepository.findByUsername(username);
+        if (optionalPlayer.isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                "success", false,
+                "error", "Utente non trovato"
+            ));
+        }
+
+        Player player = optionalPlayer.get();
+        if (!player.isLoggedIn()) {
+            return ResponseEntity.status(401).body(Map.of(
+                "success", false,
+                "error", "Devi effettuare il login"
+            ));
+        }
+
+        // Send undo action to bets_queue. Erlang will process and trigger a refund.
+        String message = String.format("{\"username\":\"%s\",\"amount\":0.0,\"segment\":\"UNDO_BETS\"}", username);
+        rabbitTemplate.convertAndSend("bets_queue", message);
+        log.info("Comando undo_bets inviato a RabbitMQ: {}", message);
+
+        return ResponseEntity.ok(Map.of(
+            "success", true,
+            "message", "Richiesta di annullamento inviata."
         ));
     }
 
