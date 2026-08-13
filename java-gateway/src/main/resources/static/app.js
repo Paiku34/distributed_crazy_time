@@ -318,7 +318,7 @@ function handleGameState(data) {
             clearChips();
             myBetsThisRound = {};
             wheelCenterText.innerHTML = 'CRAZY<br>TIME';
-            document.body.classList.remove('minigame-active', 'coinflip-active');
+            document.body.classList.remove('minigame-active', 'coinflip-active', 'cashhunt-active');
         }
 
     } else if (phase === 'spinning') {
@@ -379,7 +379,7 @@ function handleGameResult(data) {
 }
 
 function showResult(isWin, winner, multiplier, winAmount) {
-    document.body.classList.remove('minigame-active', 'coinflip-active');
+    document.body.classList.remove('minigame-active', 'coinflip-active', 'cashhunt-active');
 
     // Safety net: after the 1s CSS transition, forcefully hide the overlay so it can't block the wheel
     setTimeout(() => {
@@ -445,6 +445,10 @@ function showMinigameAnimation(name, multiplier, details, onComplete) {
         // Forza il reflow del browser per far funzionare l'animazione CSS
         void minigameOverlay.offsetWidth;
         document.body.classList.add('coinflip-active');
+    } else if (name === 'CashHunt') {
+        minigameOverlay.className = 'cashhunt-slide-overlay';
+        void minigameOverlay.offsetWidth;
+        document.body.classList.add('cashhunt-active');
     } else {
         // Fallback or other minigames (per user request: "lascia perdere gli altri minigiochi")
         minigameOverlay.className = 'fullscreen-overlay';
@@ -460,17 +464,11 @@ function showMinigameAnimation(name, multiplier, details, onComplete) {
     };
 
     switch (name) {
-        case 'Pachinko':
-            animatePachinko(multiplier, details, wrappedComplete);
-            break;
         case 'CoinFlip':
             animateCoinFlip(multiplier, details, wrappedComplete);
             break;
         case 'CashHunt':
             animateCashHunt(multiplier, details, wrappedComplete);
-            break;
-        case 'CrazyTime':
-            animateCrazyTime(multiplier, details, wrappedComplete);
             break;
         default:
             setTimeout(wrappedComplete, 2000);
@@ -487,237 +485,7 @@ function showMinigameResultMultiplier(multiplier) {
     */
 }
 
-// --- PACHINKO ---
-function animatePachinko(multiplier, details, onComplete) {
-    const drops = details.drops || [];
-    if (drops.length === 0) {
-        onComplete();
-        return;
-    }
 
-    let html = `
-        <style>
-            .pachinko-drop-zones { display: flex; width: 100%; margin-bottom: 10px; }
-            .pk-dz { flex: 1; height: 10px; background: rgba(255,255,255,0.1); margin: 0 1px; transition: background 0.1s; border-radius: 5px; }
-            .pachinko-slots { display: flex; width: 100%; height: 60px; margin-top: 10px; gap: 2px; }
-            .pachinko-slot { 
-                flex: 1; display: flex; align-items: center; justify-content: center; 
-                background: #1e1e38; border: 2px solid #8b5cf6; border-radius: 8px;
-                font-weight: 900; font-size: 1.5rem; color: white; transition: transform 0.3s, background 0.3s; 
-            }
-        </style>
-        <div class="pachinko-scene" style="width: 100%; max-width: 600px; margin: 0 auto; display: flex; flex-direction: column;">
-            <!-- Top Drop Zone -->
-            <div class="pachinko-drop-zones" id="pk-drop-zones">
-                ${Array.from({ length: 16 }).map((_, i) => `<div class="pk-dz" id="pk-dz-${i}"></div>`).join('')}
-            </div>
-            
-            <!-- Canvas Board -->
-            <div class="pachinko-board-container" style="position:relative; width: 100%; aspect-ratio: 1.5/1; background-color: #0a0a1a; background-image: url('img/pachinko.png'); background-size: cover; background-position: center; border-radius: 12px; border: 2px solid #ffffff20; overflow: hidden;">
-                <canvas id="pk-canvas" style="width:100%; height:100%; display:block;"></canvas>
-            </div>
-            
-            <!-- Bottom Slots -->
-            <div class="pachinko-slots" id="pk-slots">
-                ${Array.from({ length: 8 }).map((_, i) => `<div class="pachinko-slot" id="pk-slot-${i}">x?</div>`).join('')}
-            </div>
-        </div>
-    `;
-
-    minigameArea.innerHTML = html;
-
-    const canvas = document.getElementById('pk-canvas');
-    // Ensure actual canvas resolution matches CSS display size to avoid blur
-    canvas.width = canvas.offsetWidth * (window.devicePixelRatio || 1);
-    canvas.height = canvas.offsetHeight * (window.devicePixelRatio || 1);
-    const ctx = canvas.getContext('2d');
-    ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
-
-    const boardW = canvas.offsetWidth;
-    const boardH = canvas.offsetHeight;
-    const pegRows = 15;
-    const cols = 16;
-    const pegRadius = 3;
-    const ballRadius = 8;
-
-    // Calculate peg positions
-    const pegs = [];
-    for (let r = 0; r < pegRows; r++) {
-        const numPegs = (r % 2 === 0) ? cols + 1 : cols;
-        const rowY = (r + 1) * (boardH / (pegRows + 1.5));
-        const spacingX = boardW / cols;
-        const startX = (r % 2 === 0) ? 0 : spacingX / 2;
-
-        for (let c = 0; c < numPegs; c++) {
-            pegs.push({ x: startX + c * spacingX, y: rowY });
-        }
-    }
-
-    function drawBoard() {
-        ctx.clearRect(0, 0, boardW, boardH);
-        ctx.fillStyle = '#ffbade';
-        ctx.shadowColor = '#ffbade';
-        ctx.shadowBlur = 5;
-        pegs.forEach(p => {
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, pegRadius, 0, Math.PI * 2);
-            ctx.fill();
-        });
-        ctx.shadowBlur = 0;
-    }
-
-    drawBoard();
-
-    // Initial shuffle
-    let initialSlots = drops[0].slots;
-    const possibleMults = [2, 3, 5, 7, 10, 15, 20, 25, 50, "DOUBLE"];
-    let shuffleInterval = setInterval(() => {
-        for (let i = 0; i < 8; i++) {
-            const r = possibleMults[Math.floor(Math.random() * possibleMults.length)];
-            const slot = document.getElementById(`pk-slot-${i}`);
-            slot.textContent = r === "DOUBLE" ? "DBL" : `x${r}`;
-            slot.style.background = r === "DOUBLE" ? "linear-gradient(45deg, #ff0000, #ff7300)" : "";
-        }
-    }, 100);
-
-    setTimeout(() => {
-        clearInterval(shuffleInterval);
-        setSlots(initialSlots);
-        playDrop(0);
-    }, 2500);
-
-    function setSlots(slotsArr) {
-        for (let i = 0; i < 8; i++) {
-            const slot = document.getElementById(`pk-slot-${i}`);
-            const val = slotsArr[i];
-            slot.textContent = val === "DOUBLE" ? "DBL" : `x${val}`;
-            slot.style.background = val === "DOUBLE" ? "linear-gradient(45deg, #ff0000, #ff7300)" : "#1e1e38";
-            slot.style.transform = "scale(1.2)";
-            setTimeout(() => { slot.style.transform = "scale(1)"; }, 300);
-        }
-    }
-
-    function playDrop(dropIndex) {
-        if (dropIndex >= drops.length) return;
-        const dropData = drops[dropIndex];
-
-        // 1. Drop zone animation
-        let dzHighlightInterval = setInterval(() => {
-            const allDz = document.querySelectorAll('.pk-dz');
-            allDz.forEach(dz => dz.style.backgroundColor = 'rgba(255,255,255,0.1)');
-            const rDz = Math.floor(Math.random() * 16);
-            document.getElementById(`pk-dz-${rDz}`).style.backgroundColor = '#00ffcc';
-            document.getElementById(`pk-dz-${rDz}`).style.boxShadow = '0 0 10px #00ffcc';
-        }, 100);
-
-        setTimeout(() => {
-            clearInterval(dzHighlightInterval);
-            const allDz = document.querySelectorAll('.pk-dz');
-            allDz.forEach(dz => {
-                dz.style.backgroundColor = 'rgba(255,255,255,0.1)';
-                dz.style.boxShadow = 'none';
-            });
-            const dz = document.getElementById(`pk-dz-${dropData.drop_zone}`);
-            dz.style.backgroundColor = '#ff00ff';
-            dz.style.boxShadow = '0 0 15px #ff00ff';
-
-            // 2. Physics drop
-            simulatePhysicsDrop(dropData, () => {
-                // Landed
-                const isDouble = dropData.landed_value === "DOUBLE";
-                if (isDouble) {
-                    const landedSlot = document.getElementById(`pk-slot-${dropData.landed_index}`);
-                    landedSlot.style.transform = "scale(1.3)";
-                    landedSlot.style.boxShadow = "0 0 20px red";
-                    setTimeout(() => {
-                        landedSlot.style.transform = "scale(1)";
-                        landedSlot.style.boxShadow = "none";
-                        dz.style.backgroundColor = 'rgba(255,255,255,0.1)';
-                        if (dropIndex + 1 < drops.length) {
-                            setSlots(drops[dropIndex + 1].slots); // Show doubled
-                            setTimeout(() => playDrop(dropIndex + 1), 1000);
-                        }
-                    }, 1500);
-                } else {
-                    document.getElementById(`pk-slot-${dropData.landed_index}`).classList.add('winner-side');
-                    showMinigameResultMultiplier(multiplier);
-                    setTimeout(onComplete, 4000);
-                }
-            });
-        }, 2000);
-    }
-
-    function simulatePhysicsDrop(dropData, onLanded) {
-        const path = dropData.path;
-        const spacingX = boardW / cols;
-        const startX = (dropData.drop_zone + 0.5) * spacingX;
-        let bx = startX;
-        let by = -ballRadius; // Start slightly above board
-
-        let currentStep = 0;
-        let isAnimating = true;
-        let targetX = bx;
-        let targetY = boardH / (pegRows + 1.5);
-
-        const stepDuration = 550; // Slower drop (ms per peg bounce)
-        let stepStartTime = performance.now();
-
-        function animatePuck(now) {
-            if (!isAnimating) return;
-            const elapsed = now - stepStartTime;
-            let progress = elapsed / stepDuration;
-
-            if (progress >= 1) {
-                currentStep++;
-                if (currentStep > 15) {
-                    isAnimating = false;
-                    drawBoard(); // clear puck
-                    onLanded();
-                    return;
-                }
-
-                stepStartTime = now;
-                bx = targetX;
-                by = targetY;
-                progress = 0;
-
-                const dir = path[currentStep - 1]; // -1 or 1
-                targetY = (currentStep + 1) * (boardH / (pegRows + 1.5));
-                targetX = bx + (dir * spacingX / 2);
-            }
-
-            const easeX = progress; // linear horizontal
-            const easeY = progress; // linear vertical base
-
-            // Add a bounce arc to Y to simulate peg collision
-            const bounceY = Math.sin(progress * Math.PI) * -15;
-
-            const currX = bx + (targetX - bx) * easeX;
-            const currY = by + (targetY - by) * easeY + bounceY;
-
-            drawBoard();
-
-            // Draw Puck
-            ctx.beginPath();
-            ctx.arc(currX, currY, ballRadius, 0, Math.PI * 2);
-            ctx.fillStyle = '#fff';
-            ctx.fill();
-            ctx.lineWidth = 2;
-            ctx.strokeStyle = '#ff00ff';
-            ctx.stroke();
-
-            // Glow
-            ctx.shadowColor = '#ff00ff';
-            ctx.shadowBlur = 10;
-            ctx.fill();
-            ctx.shadowBlur = 0;
-
-            requestAnimationFrame(animatePuck);
-        }
-
-        requestAnimationFrame(animatePuck);
-    }
-}
 
 // --- COIN FLIP ---
 function animateCoinFlip(multiplier, details, onComplete) {
@@ -823,34 +591,51 @@ function animateCashHunt(multiplier, details, onComplete) {
     let html = `
         <style>
             .ch-container { 
-                width: 100%; max-width: 560px; margin: 0 auto; position: relative; 
-                background-image: url('img/cashhunt.png'); background-size: cover; background-position: center; border-radius: 8px; padding: 10px; box-sizing: border-box;
+                position: absolute; inset: 0; width: 100%; height: 100%;
+                background-image: url('img/cashhunt.png?v=${Date.now()}'); background-size: 100% 100%; background-position: center; overflow: hidden;
+            }
+            .ch-grid-positioner {
+                position: absolute; 
+                top: 6%; /* Regola questo valore per alzare o abbassare il box */
+                left: 35%; /* Regola questo valore per spostare il box a destra o sinistra */
+                width: 45%; /* Regola la larghezza del box */
+                height: 90%; /* Regola l'altezza del box */
+                background: rgba(16, 185, 129, 0.15); /* Sfondo verdognolo trasparente */
+                border: 3px solid rgba(16, 185, 129, 0.8); /* Bordo verde */
+                box-shadow: 0 0 30px rgba(16, 185, 129, 0.5), inset 0 0 20px rgba(16, 185, 129, 0.3);
+                border-radius: 12px;
+                padding: 10px;
+                box-sizing: border-box;
+                display: flex;
+                flex-direction: column;
             }
             .ch-title {
                 text-align: center; font-size: 2rem; font-weight: 900;
-                background: linear-gradient(90deg, #fbbf24, #ef4444, #fbbf24);
+                background: linear-gradient(90deg, #10b981, #34d399, #10b981);
                 -webkit-background-clip: text; -webkit-text-fill-color: transparent;
                 background-clip: text;
                 letter-spacing: 3px; text-transform: uppercase;
                 margin-bottom: 6px;
                 animation: chTitlePulse 1.5s ease-in-out infinite alternate;
+                position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
             }
             @keyframes chTitlePulse { 0% { opacity: 0.8; filter: brightness(1); } 100% { opacity: 1; filter: brightness(1.3); } }
             .ch-timer-bar { 
                 display: flex; align-items: center; justify-content: center; gap: 10px;
-                margin-bottom: 5px; font-size: 1rem; color: #fbbf24; font-weight: 800;
-                opacity: 0; transition: opacity 0.3s;
+                margin-bottom: 10px; font-size: 1rem; color: #10b981; font-weight: 800;
+                opacity: 0; transition: opacity 0.3s; height: 10%;
             }
             .ch-timer-bar.visible { opacity: 1; }
             .ch-timer-fill { width: 180px; height: 7px; background: rgba(255,255,255,0.1); border-radius: 4px; overflow: hidden; }
-            .ch-timer-fill-inner { height: 100%; background: linear-gradient(90deg, #fbbf24, #ef4444); width: 100%; transition: width 1s linear; border-radius: 4px; }
+            .ch-timer-fill-inner { height: 100%; background: linear-gradient(90deg, #10b981, #059669); width: 100%; transition: width 1s linear; border-radius: 4px; }
             
-            .ch-grid-wrapper { position: relative; border-radius: 6px; border: 2px solid rgba(139, 92, 246, 0.3); background: #0a0a1a; padding: 2px; }
+            .ch-grid-wrapper { flex: 1; position: relative; border-radius: 6px; border: 2px solid rgba(16, 185, 129, 0.3); background: rgba(6, 78, 59, 0.8); padding: 5px; overflow: hidden; }
             
             .ch-grid {
                 display: grid;
                 grid-template-columns: repeat(${cols}, 1fr);
-                gap: 1px; width: 100%;
+                grid-template-rows: repeat(${rows}, 1fr);
+                gap: 2px; width: 100%; height: 100%;
             }
             .ch-cell {
                 aspect-ratio: 1.4; display: flex; align-items: center; justify-content: center;
@@ -885,17 +670,23 @@ function animateCashHunt(multiplier, details, onComplete) {
             .ch-cell.shuffle-fast { animation: chShuffleFast 0.1s linear infinite; }
         </style>
         <div class="ch-container">
-            <div class="ch-title">💰 CASH HUNT 💰</div>
-            <div class="ch-timer-bar" id="ch-timer">
-                <span>⏱️ SCEGLI!</span>
-                <div class="ch-timer-fill"><div class="ch-timer-fill-inner" id="ch-timer-fill"></div></div>
-                <span id="ch-timer-sec">10</span>
+            <div class="ch-title">CASH HUNT</div>
+            
+            <!-- Box verde contenente la griglia da posizionare perfettamente sopra l'immagine -->
+            <div class="ch-grid-positioner" id="cashhunt-target-box">
+                <div class="ch-timer-bar" id="ch-timer">
+                    <span style="color: white; font-size: 0.8rem;">SCEGLI IL BERSAGLIO!</span>
+                    <div class="ch-timer-fill"><div class="ch-timer-fill-inner" id="ch-timer-fill"></div></div>
+                    <span id="ch-timer-sec" style="color: white; font-size: 0.8rem;">10</span>
+                </div>
+                
+                <div class="ch-grid-wrapper">
+                    <div class="ch-scroll-layer" id="ch-scroll-layer"></div>
+                    <div class="ch-grid" id="ch-grid">
+                    </div>
+                </div>
+                <div class="ch-msg" id="ch-msg" style="color: white; font-size: 0.8rem; margin-top: 5px;">Moltiplicatori in arrivo...</div>
             </div>
-            <div class="ch-grid-wrapper">
-                <div class="ch-scroll-layer" id="ch-scroll-layer"></div>
-                <div class="ch-grid" id="ch-grid"></div>
-            </div>
-            <div class="ch-msg" id="ch-msg">Moltiplicatori in arrivo...</div>
         </div>
     `;
 
@@ -1107,114 +898,7 @@ function animateCashHunt(multiplier, details, onComplete) {
 }
 
 
-// --- CRAZY TIME BONUS WHEEL ---
-function animateCrazyTime(multiplier, details, onComplete) {
-    const segments = details.segments || [5, 10, 15, 20, 25, 50, 100, 200];
-    const winnerIndex = details.winner_index !== undefined ? details.winner_index : 0;
-    const boost = details.boost || 'none';
-    const baseMult = details.base_multiplier || multiplier;
 
-    let html = `
-        <div class="crazytime-wheel-container">
-            <div class="crazytime-pointer">▼</div>
-            <canvas id="crazytime-canvas" width="280" height="280"></canvas>
-        </div>
-        <div id="ct-result" style="font-size:2rem;font-weight:900;color:white;margin-top:12px;"></div>
-    `;
-
-    minigameArea.innerHTML = html;
-
-    const ctCanvas = document.getElementById('crazytime-canvas');
-    const ctCtx = ctCanvas.getContext('2d');
-    const ctColors = ['#ef4444', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316'];
-    const numSegs = segments.length;
-    const arcAngle = (2 * Math.PI) / numSegs;
-
-    function drawCTWheel(rot) {
-        const dpr = window.devicePixelRatio || 1;
-        ctCanvas.width = 280 * dpr;
-        ctCanvas.height = 280 * dpr;
-        ctCtx.scale(dpr, dpr);
-        const cx = 140, cy = 140, r = 130;
-
-        ctCtx.clearRect(0, 0, 280, 280);
-        ctCtx.save();
-        ctCtx.translate(cx, cy);
-        ctCtx.rotate(rot);
-
-        for (let i = 0; i < numSegs; i++) {
-            const start = i * arcAngle - Math.PI / 2;
-            const end = start + arcAngle;
-
-            ctCtx.beginPath();
-            ctCtx.moveTo(0, 0);
-            ctCtx.arc(0, 0, r, start, end);
-            ctCtx.closePath();
-            ctCtx.fillStyle = ctColors[i % ctColors.length];
-            ctCtx.fill();
-            ctCtx.strokeStyle = 'rgba(0,0,0,0.3)';
-            ctCtx.lineWidth = 1;
-            ctCtx.stroke();
-
-            ctCtx.save();
-            const textA = start + arcAngle / 2;
-            ctCtx.rotate(textA);
-            ctCtx.translate(r * 0.65, 0);
-            ctCtx.rotate(Math.PI / 2);
-            ctCtx.fillStyle = 'white';
-            ctCtx.font = 'bold 14px Outfit';
-            ctCtx.textAlign = 'center';
-            ctCtx.fillText(`x${segments[i]}`, 0, 0);
-            ctCtx.restore();
-        }
-
-        // Center
-        ctCtx.beginPath();
-        ctCtx.arc(0, 0, 24, 0, Math.PI * 2);
-        ctCtx.fillStyle = '#1a1a2e';
-        ctCtx.fill();
-        ctCtx.strokeStyle = 'rgba(255,255,255,0.15)';
-        ctCtx.lineWidth = 2;
-        ctCtx.stroke();
-
-        ctCtx.restore();
-    }
-
-    // Spin animation
-    drawCTWheel(0);
-
-    setTimeout(() => {
-        const targetAngle = -(winnerIndex * arcAngle + arcAngle / 2);
-        const totalAngle = 4 * 2 * Math.PI + targetAngle;
-        const startTime = performance.now();
-        const spinDuration = 8000;
-        let ctAngle = 0;
-
-        function animateCT(now) {
-            const elapsed = now - startTime;
-            const progress = Math.min(elapsed / spinDuration, 1);
-            const eased = 1 - Math.pow(1 - progress, 4);
-            ctAngle = totalAngle * eased;
-            drawCTWheel(ctAngle);
-
-            if (progress < 1) {
-                requestAnimationFrame(animateCT);
-            } else {
-                // Show result
-                const resultEl = document.getElementById('ct-result');
-                if (boost !== 'none') {
-                    resultEl.innerHTML = `x${baseMult} → <span class="crazytime-boost">${boost.toUpperCase()}!</span> → x${multiplier}`;
-                } else {
-                    resultEl.textContent = `x${multiplier}`;
-                }
-                showMinigameResultMultiplier(multiplier);
-                setTimeout(onComplete, 4000);
-            }
-        }
-
-        requestAnimationFrame(animateCT);
-    }, 1500);
-}
 
 // ===== BALANCE =====
 function fetchBalance() {

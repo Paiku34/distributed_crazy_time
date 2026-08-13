@@ -820,6 +820,31 @@ body.coinflip-active .game-main {
     transition: transform 1s cubic-bezier(0.25, 1, 0.5, 1);
 }
 
+.cashhunt-slide-overlay {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%; /* 100% schermo per CashHunt */
+    background: #060a14;
+    z-index: 100;
+    transform: translateX(100%);
+    transition: transform 1s cubic-bezier(0.25, 1, 0.5, 1);
+    display: flex;
+    flex-direction: column;
+    box-shadow: -20px 0 50px rgba(0,0,0,0.8);
+    overflow: hidden;
+}
+
+body.cashhunt-active .cashhunt-slide-overlay {
+    transform: translateX(0);
+}
+
+body.cashhunt-active .game-main {
+    transform: translateX(-50vw); /* Sposta la ruota a sinistra mentre viene coperta */
+    transition: transform 1s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
 .game-main {
     transition: transform 1s cubic-bezier(0.25, 1, 0.5, 1);
 }
@@ -931,76 +956,7 @@ body.coinflip-active .game-main {
     position: relative;
 }
 
-/* --- Pachinko Animation --- */
-.pachinko-board {
-    width: 100%;
-    max-width: 400px;
-    position: relative;
-}
 
-.pachinko-pegs {
-    display: flex;
-    flex-direction: column;
-    gap: 18px;
-    margin-bottom: 20px;
-}
-
-.peg-row {
-    display: flex;
-    justify-content: center;
-    gap: 28px;
-}
-
-.peg {
-    width: 10px;
-    height: 10px;
-    background: rgba(255, 255, 255, 0.3);
-    border-radius: 50%;
-    transition: background 0.2s;
-}
-
-.peg.hit {
-    background: #fbbf24;
-    box-shadow: 0 0 10px rgba(251, 191, 36, 0.5);
-}
-
-.pachinko-ball {
-    width: 16px;
-    height: 16px;
-    background: radial-gradient(circle at 30% 30%, #ff6b6b, #ee4444);
-    border-radius: 50%;
-    position: absolute;
-    box-shadow: 0 0 12px rgba(238, 68, 68, 0.6);
-    z-index: 10;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.pachinko-slots {
-    display: flex;
-    gap: 4px;
-    justify-content: center;
-}
-
-.pachinko-slot {
-    padding: 8px 6px;
-    min-width: 40px;
-    text-align: center;
-    font-weight: 800;
-    font-size: 0.75rem;
-    background: rgba(255, 255, 255, 0.05);
-    border-radius: 6px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    color: var(--text-dim);
-    transition: all 0.3s;
-}
-
-.pachinko-slot.winner {
-    background: linear-gradient(135deg, #fbbf24, #f59e0b);
-    color: #1a1a2e;
-    border-color: #fbbf24;
-    box-shadow: 0 0 15px rgba(251, 191, 36, 0.5);
-    transform: scale(1.15);
-}
 
 /* --- CoinFlip Animation --- */
 .coinflip-scene {
@@ -1179,47 +1135,6 @@ body.coinflip-active .game-main {
     font-size: 1.3rem;
 }
 
-/* --- CrazyTime Bonus Wheel --- */
-.crazytime-wheel-container {
-    position: relative;
-    width: 280px;
-    height: 280px;
-    margin: 0 auto 20px;
-}
-
-.crazytime-pointer {
-    position: absolute;
-    top: -8px;
-    left: 50%;
-    transform: translateX(-50%);
-    font-size: 1.6rem;
-    color: #fbbf24;
-    z-index: 10;
-    filter: drop-shadow(0 2px 4px rgba(251, 191, 36, 0.5));
-}
-
-#crazytime-canvas {
-    width: 100%;
-    height: 100%;
-}
-
-.crazytime-boost {
-    margin-top: 16px;
-    font-size: 1.4rem;
-    font-weight: 900;
-    color: #fbbf24;
-    animation: boostPulse 0.5s ease infinite alternate;
-}
-
-@keyframes boostPulse {
-    from {
-        transform: scale(1);
-    }
-
-    to {
-        transform: scale(1.1);
-    }
-}
 
 
 
