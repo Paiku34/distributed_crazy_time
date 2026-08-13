@@ -73,7 +73,6 @@ let selectedChipAmount = 0.10;
 let totalBetThisRound = 0;
 
 const minigameOverlay = document.getElementById('minigame-overlay');
-const minigameTitle = document.getElementById('minigame-title');
 const minigameArea = document.getElementById('minigame-animation-area');
 
 // ===== BACKGROUND PARTICLES =====
@@ -319,7 +318,7 @@ function handleGameState(data) {
             clearChips();
             myBetsThisRound = {};
             wheelCenterText.innerHTML = 'CRAZY<br>TIME';
-            minigameOverlay.style.display = 'none';
+            document.body.classList.remove('minigame-active', 'coinflip-active');
         }
 
     } else if (phase === 'spinning') {
@@ -372,7 +371,7 @@ function handleGameResult(data) {
         // Direct multiplier — show result immediately after spin
         const delay = isSpinning ? 500 : 100;
         setTimeout(() => {
-            minigameOverlay.style.display = 'none';
+            document.body.classList.remove('minigame-active');
             showResult(isWin, data.winner, data.multiplier, winAmount);
             if (isWin) fetchBalance();
         }, delay);
@@ -380,9 +379,15 @@ function handleGameResult(data) {
 }
 
 function showResult(isWin, winner, multiplier, winAmount) {
-    // Hide minigame overlay if it was open
-    minigameOverlay.style.display = 'none';
-    
+    document.body.classList.remove('minigame-active', 'coinflip-active');
+
+    // Safety net: after the 1s CSS transition, forcefully hide the overlay so it can't block the wheel
+    setTimeout(() => {
+        if (!isMinigamePlaying) {
+            minigameOverlay.style.display = 'none';
+        }
+    }, 1000);
+
     // Create the epic multiplier animation element
     const multAnim = document.createElement('div');
     multAnim.className = 'epic-multiplier-anim';
@@ -431,8 +436,23 @@ function getMinigameEmoji(name) {
 
 function showMinigameAnimation(name, multiplier, details, onComplete) {
     isMinigamePlaying = true;
-    minigameOverlay.style.display = 'flex';
-    minigameTitle.textContent = name.toUpperCase();
+
+    // Bulletproof against cached index.html
+    minigameOverlay.style.display = '';
+
+    if (name === 'CoinFlip') {
+        minigameOverlay.className = 'coinflip-slide-overlay';
+        // Forza il reflow del browser per far funzionare l'animazione CSS
+        void minigameOverlay.offsetWidth;
+        document.body.classList.add('coinflip-active');
+    } else {
+        // Fallback or other minigames (per user request: "lascia perdere gli altri minigiochi")
+        minigameOverlay.className = 'fullscreen-overlay';
+        minigameOverlay.style.display = 'flex';
+        document.body.classList.add('minigame-active');
+    }
+
+    minigameArea.className = 'minigame-area-full';
 
     const wrappedComplete = () => {
         isMinigamePlaying = false;
@@ -458,10 +478,13 @@ function showMinigameAnimation(name, multiplier, details, onComplete) {
 }
 
 function showMinigameResultMultiplier(multiplier) {
+    // Disabilitato come richiesto: il moltiplicatore viene già mostrato nella ruota principale a fine round
+    /*
     const res = document.createElement('div');
     res.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:5rem;font-weight:900;color:#fbbf24;text-shadow:0 0 30px rgba(0,0,0,0.9);z-index:100;animation:popIn 0.5s ease;background:rgba(0,0,0,0.6);padding:20px 40px;border-radius:20px;border:3px solid #fbbf24;';
     res.textContent = `x${multiplier}`;
     minigameArea.appendChild(res);
+    */
 }
 
 // --- PACHINKO ---
@@ -703,28 +726,29 @@ function animateCoinFlip(multiplier, details, onComplete) {
     const winnerSide = details.winner_side || 'heads';
 
     let html = `
-        <div class="coinflip-container" style="position: relative; width: 100%; max-width: 600px; margin: 0 auto; aspect-ratio: 16/9; background-image: url('img/coinflip.png'); background-size: cover; background-position: center; border-radius: 8px; border: 2px solid #ef4444; overflow: hidden;">
+        <div class="coinflip-container" style="position: absolute; inset: 0; width: 100%; height: 100%; background-image: url('img/coinflip.png?v=${Date.now()}'); background-size: 100% 100%; background-position: center; overflow: hidden;">
             
-            <div class="coinflip-sides-display" style="position: absolute; top: 10%; left: 50%; transform: translateX(-50%); width: 60%; background: transparent; padding: 0;">
-                <div class="side-display" id="cf-side-a" style="border-left: 5px solid #ff4b4b; background: rgba(0,0,0,0.7); box-shadow: 0 0 10px black;">
-                    <div class="side-label" style="color: #ff4b4b;">ROSSO</div>
-                    <div class="side-mult" id="cf-disp-mult-a">x?</div>
-                </div>
-                <div class="side-display" id="cf-side-b" style="border-left: 5px solid #4b4bff; background: rgba(0,0,0,0.7); box-shadow: 0 0 10px black;">
-                    <div class="side-label" style="color: #4b4bff;">BLU</div>
-                    <div class="side-mult" id="cf-disp-mult-b">x?</div>
-                </div>
+            <!-- Nessun titolo centrale così non copre l'immagine -->
+
+            <!-- Moltiplicatori posizionati verticalmente (Sopra/Sotto) -->
+            <div id="cf-side-a" style="position: absolute; top: 28%; left: 42%; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 10; text-align: center;">
+                <div class="side-mult" id="cf-disp-mult-a" style="font-size: 1.5rem; font-weight: 800; color: #fff; text-shadow: 0 0 10px #000, 0 0 20px #ff4b4b;">x?</div>
+            </div>
+            
+            <div id="cf-side-b" style="position: absolute; top: 45%; left: 42%; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 10; text-align: center;">
+                <div class="side-mult" id="cf-disp-mult-b" style="font-size: 1.5rem; font-weight: 800; color: #fff; text-shadow: 0 0 10px #000, 0 0 20px #4b4bff;">x?</div>
             </div>
 
-            <div style="position: absolute; top: 65%; left: 50%; transform: translate(-50%, -50%);">
-                <div class="coinflip-coin" id="cf-coin" style="opacity: 0; transform: scale(0.5); transition: opacity 0.5s ease, transform 0.5s ease; box-shadow: 0 10px 30px rgba(0,0,0,0.8); border-radius: 50%;">
+            <!-- Moneta vera molto più piccola, posizionata nel box nero in basso -->
+            <div style="position: absolute; bottom: 32%; left: 55%; transform: translateX(-50%); z-index: 10;">
+                <div class="coinflip-coin" id="cf-coin" style="opacity: 0; transform: scale(0.5); transition: opacity 0.5s ease, transform 0.5s ease; box-shadow: 0 5px 20px rgba(0,0,0,0.9); border-radius: 50%; width: 90px; height: 90px;">
                     <div class="coin-side coin-heads" style="background: radial-gradient(circle at 30% 30%, #ff4b4b, #990000);">
-                        <span id="cf-coin-mult-a">x?</span>
-                        <span class="coin-label">ROSSO</span>
+                        <span id="cf-coin-mult-a" style="font-size: 1.5rem;">x?</span>
+                        <span class="coin-label" style="font-size: 0.6rem;">ROSSO</span>
                     </div>
                     <div class="coin-side coin-tails" style="background: radial-gradient(circle at 30% 30%, #4b4bff, #000099);">
-                        <span id="cf-coin-mult-b">x?</span>
-                        <span class="coin-label">BLU</span>
+                        <span id="cf-coin-mult-b" style="font-size: 1.5rem;">x?</span>
+                        <span class="coin-label" style="font-size: 0.6rem;">BLU</span>
                     </div>
                 </div>
             </div>
@@ -1273,13 +1297,13 @@ if (btnUndo) {
                 myBetsThisRound = {};
                 totalBetThisRound = 0;
                 if (totalBetDisplay) totalBetDisplay.textContent = `$0.00`;
-                
+
                 // Rimuove graficamente le fiches impilate
                 betHitboxes.forEach(hb => {
                     const chip = hb.querySelector('.bet-stacked-chip');
                     if (chip) chip.remove();
                 });
-                
+
                 // Il rimborso del saldo avverrà asincronamente tramite RabbitMQ (verrà ricevuto un aggiornamento balance se ricarichiamo, 
                 // ma per ora chiediamo un aggiornamento del wallet)
                 fetchWalletHistory(); // Aggiorna per sicurezza
@@ -1319,7 +1343,7 @@ if (btn2x) {
                     myBetsThisRound[segment] += amount;
                     totalBetThisRound += amount;
                     if (totalBetDisplay) totalBetDisplay.textContent = `$${totalBetThisRound.toFixed(2)}`;
-                    
+
                     const betBox = document.querySelector(`.bet-hitbox[data-segment="${segment}"]`);
                     if (betBox) addChipToButton(betBox, myBetsThisRound[segment]);
                 } else {

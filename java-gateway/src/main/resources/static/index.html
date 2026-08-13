@@ -140,7 +140,7 @@
                 <!-- Chips Background with Hitboxes -->
                 <div class="chips-area-container"
                     style="position: relative; width: 90vw; max-width: 500px; aspect-ratio: 6/1; top: -40px;">
-                    <img src="img/fish.png"
+                    <img src="img/fish.png?v=999"
                         style="position: absolute; top: 0; left: 0; width: 100%; height: auto; display: block; z-index: 1;">
 
                     <!-- Undo Button -->
@@ -194,13 +194,10 @@
             </div>
         </div>
 
-        <!-- Minigame Overlay -->
-        <div id="minigame-overlay" class="fullscreen-overlay" style="display: none;">
-            <div class="minigame-container glass-panel">
-                <h2 id="minigame-title" class="minigame-title">MINIGIOCO</h2>
-                <div id="minigame-animation-area" class="minigame-area">
-                    <!-- Animazioni iniettate da JS -->
-                </div>
+        <!-- Minigame Overlay (Split Screen) -->
+        <div id="minigame-overlay" class="minigame-slide-overlay">
+            <div id="minigame-animation-area" class="minigame-area-full">
+                <!-- Animazioni iniettate da JS -->
             </div>
         </div>
 
@@ -213,7 +210,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
 
     <!-- Script App -->
-    <script src="app.js?v=24"></script>
+    <script src="app.js?v=27"></script>
 </body>
 
 </html>
