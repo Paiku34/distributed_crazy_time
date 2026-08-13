@@ -449,6 +449,10 @@ function showMinigameAnimation(name, multiplier, details, onComplete) {
         minigameOverlay.className = 'cashhunt-slide-overlay';
         void minigameOverlay.offsetWidth;
         document.body.classList.add('cashhunt-active');
+    } else if (name === 'Pachinko') {
+        minigameOverlay.className = 'pachinko-slide-overlay';
+        void minigameOverlay.offsetWidth;
+        document.body.classList.add('pachinko-active');
     } else {
         // Fallback or other minigames (per user request: "lascia perdere gli altri minigiochi")
         minigameOverlay.className = 'fullscreen-overlay';
@@ -460,10 +464,14 @@ function showMinigameAnimation(name, multiplier, details, onComplete) {
 
     const wrappedComplete = () => {
         isMinigamePlaying = false;
+        document.body.classList.remove('pachinko-active', 'cashhunt-active', 'minigame-active');
         onComplete();
     };
 
     switch (name) {
+        case 'Pachinko':
+            animatePachinko(multiplier, details, wrappedComplete);
+            break;
         case 'CoinFlip':
             animateCoinFlip(multiplier, details, wrappedComplete);
             break;
@@ -898,6 +906,268 @@ function animateCashHunt(multiplier, details, onComplete) {
 }
 
 
+
+
+// --- PACHINKO ---
+function animatePachinko(multiplier, details, onComplete) {
+    const drops = details.drops || [];
+    if (drops.length === 0) {
+        onComplete();
+        return;
+    }
+
+    let html = `
+        <style>
+            .pk-container { 
+                position: absolute; inset: 0; width: 100%; height: 100%;
+                background-image: url('img/pachinko.png?v=${Date.now()}'); background-size: 100% 100%; background-position: center; overflow: hidden;
+            }
+            /* Box verde per il tabellone dei perni (puntini) e la fisica della pallina */
+            .pk-board-positioner {
+                position: absolute; 
+                top: 15%; /* Modifica per alzare/abbassare il box puntini */
+                left: 27%; /* Modifica per muovere il box puntini a destra/sinistra */
+                width: 45%; /* Modifica per allargare/restringere il box puntini */
+                height: 60%; /* Modifica l'altezza del box puntini */
+                background: transparent;
+                border: transparent;
+                box-sizing: border-box;
+                display: flex; flex-direction: column;
+            }
+            /* Box verde per i moltiplicatori finali in basso */
+            .pk-slots-positioner {
+                position: absolute; 
+                top: 73%; /* Modifica per alzare/abbassare i moltiplicatori */
+                left: 27%; /* Allinealo alla larghezza della board */
+                width: 45%; 
+                height: 12%; 
+                background: transparent; 
+                border: transparent;
+                box-sizing: border-box;
+                display: flex; gap: 4px; padding: 5px;
+            }
+            .pachinko-drop-zones { display: flex; width: 100%; height: 15px; margin-bottom: 5px; }
+            .pk-dz { flex: 1; height: 100%; background: rgba(255,255,255,0.1); margin: 0 1px; transition: background 0.1s; border-radius: 5px; }
+            
+            .pachinko-slot { 
+                flex: 1; display: flex; align-items: center; justify-content: center; 
+                background: rgba(30, 30, 56, 0.9); border: 2px solid #8b5cf6; border-radius: 4px;
+                font-weight: 900; font-size: 1rem; color: white; transition: transform 0.3s, background 0.3s; 
+            }
+            .pachinko-slot.winner-side {
+                background: linear-gradient(135deg, #fbbf24, #f59e0b) !important;
+                color: #1a1a2e; border-color: #fbbf24;
+                box-shadow: 0 0 15px rgba(251, 191, 36, 0.5);
+                transform: scale(1.15);
+            }
+        </style>
+        <div class="pk-container">
+            <!-- Box per perni e dropzone -->
+            <div class="pk-board-positioner">
+                <div class="pachinko-drop-zones" id="pk-drop-zones">
+                    ${Array.from({ length: 16 }).map((_, i) => `<div class="pk-dz" id="pk-dz-${i}"></div>`).join('')}
+                </div>
+                <div style="flex: 1; position: relative; width: 100%;">
+                    <canvas id="pk-canvas" style="width: 100%; height: 100%; display: block;"></canvas>
+                </div>
+            </div>
+            
+            <!-- Box per i moltiplicatori -->
+            <div class="pk-slots-positioner" id="pk-slots">
+                ${Array.from({ length: 8 }).map((_, i) => `<div class="pachinko-slot" id="pk-slot-${i}">x?</div>`).join('')}
+            </div>
+        </div>
+    `;
+
+    minigameArea.innerHTML = html;
+
+    const canvas = document.getElementById('pk-canvas');
+    canvas.width = canvas.offsetWidth * (window.devicePixelRatio || 1);
+    canvas.height = canvas.offsetHeight * (window.devicePixelRatio || 1);
+    const ctx = canvas.getContext('2d');
+    ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+
+    const boardW = canvas.offsetWidth;
+    const boardH = canvas.offsetHeight;
+    const pegRows = 15;
+    const cols = 16;
+    const pegRadius = 4;
+    const ballRadius = 10;
+
+    const pegs = [];
+    for (let r = 0; r < pegRows; r++) {
+        const numPegs = (r % 2 === 0) ? cols + 1 : cols;
+        const rowY = (r + 1) * (boardH / (pegRows + 1.5));
+        const spacingX = boardW / cols;
+        const startX = (r % 2 === 0) ? 0 : spacingX / 2;
+        for (let c = 0; c < numPegs; c++) {
+            pegs.push({ x: startX + c * spacingX, y: rowY });
+        }
+    }
+
+    function drawBoard() {
+        ctx.clearRect(0, 0, boardW, boardH);
+        ctx.fillStyle = 'rgba(255, 255, 255, 0)'; // Trasparenza per i perni virtuali
+        ctx.shadowColor = 'rgba(255, 255, 255, 0)';
+        ctx.shadowBlur = 5;
+        pegs.forEach(p => {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, pegRadius, 0, Math.PI * 2);
+            ctx.fill();
+        });
+        ctx.shadowBlur = 0;
+    }
+    drawBoard();
+
+    let initialSlots = drops[0].slots;
+    const possibleMults = [2, 3, 5, 7, 10, 15, 20, 25, 50, "DOUBLE"];
+    let shuffleInterval = setInterval(() => {
+        for (let i = 0; i < 8; i++) {
+            const r = possibleMults[Math.floor(Math.random() * possibleMults.length)];
+            const slot = document.getElementById(`pk-slot-${i}`);
+            slot.textContent = r === "DOUBLE" ? "DBL" : `x${r}`;
+            slot.style.background = r === "DOUBLE" ? "linear-gradient(45deg, #ff0000, #ff7300)" : "rgba(30, 30, 56, 0.9)";
+        }
+    }, 100);
+
+    setTimeout(() => {
+        clearInterval(shuffleInterval);
+        setSlots(initialSlots);
+        playDrop(0);
+    }, 2500);
+
+    function setSlots(slotsArr) {
+        for (let i = 0; i < 8; i++) {
+            const slot = document.getElementById(`pk-slot-${i}`);
+            const val = slotsArr[i];
+            slot.textContent = val === "DOUBLE" ? "DBL" : `x${val}`;
+            slot.style.background = val === "DOUBLE" ? "linear-gradient(45deg, #ff0000, #ff7300)" : "rgba(30, 30, 56, 0.9)";
+            slot.style.transform = "scale(1.1)";
+            setTimeout(() => { slot.style.transform = "scale(1)"; }, 300);
+        }
+    }
+
+    function playDrop(dropIndex) {
+        if (dropIndex >= drops.length) return;
+        const dropData = drops[dropIndex];
+
+        let dzHighlightInterval = setInterval(() => {
+            document.querySelectorAll('.pk-dz').forEach(dz => dz.style.backgroundColor = 'rgba(255,255,255,0.1)');
+            const rDz = Math.floor(Math.random() * 16);
+            const dzEl = document.getElementById(`pk-dz-${rDz}`);
+            if (dzEl) {
+                dzEl.style.backgroundColor = '#00ffcc';
+                dzEl.style.boxShadow = '0 0 10px #00ffcc';
+            }
+        }, 100);
+
+        setTimeout(() => {
+            clearInterval(dzHighlightInterval);
+            document.querySelectorAll('.pk-dz').forEach(dz => {
+                dz.style.backgroundColor = 'rgba(255,255,255,0.1)';
+                dz.style.boxShadow = 'none';
+            });
+            const dz = document.getElementById(`pk-dz-${dropData.drop_zone}`);
+            if (dz) {
+                dz.style.backgroundColor = '#ff00ff';
+                dz.style.boxShadow = '0 0 15px #ff00ff';
+            }
+
+            simulatePhysicsDrop(dropData, () => {
+                const isDouble = dropData.landed_value === "DOUBLE";
+                if (isDouble) {
+                    const landedSlot = document.getElementById(`pk-slot-${dropData.landed_index}`);
+                    if (landedSlot) {
+                        landedSlot.style.transform = "scale(1.2)";
+                        landedSlot.style.boxShadow = "0 0 20px red";
+                    }
+                    setTimeout(() => {
+                        if (landedSlot) {
+                            landedSlot.style.transform = "scale(1)";
+                            landedSlot.style.boxShadow = "none";
+                        }
+                        if (dz) dz.style.backgroundColor = 'rgba(255,255,255,0.1)';
+                        if (dropIndex + 1 < drops.length) {
+                            setSlots(drops[dropIndex + 1].slots);
+                            setTimeout(() => playDrop(dropIndex + 1), 1000);
+                        }
+                    }, 1500);
+                } else {
+                    const winnerSlot = document.getElementById(`pk-slot-${dropData.landed_index}`);
+                    if (winnerSlot) winnerSlot.classList.add('winner-side');
+                    showMinigameResultMultiplier(multiplier);
+                    setTimeout(onComplete, 4000);
+                }
+            });
+        }, 2000);
+    }
+
+    function simulatePhysicsDrop(dropData, onLanded) {
+        const path = dropData.path;
+        const spacingX = boardW / cols;
+        const startX = (dropData.drop_zone + 0.5) * spacingX;
+        let bx = startX;
+        let by = -ballRadius;
+
+        let currentStep = 0;
+        let isAnimating = true;
+        let targetX = bx;
+        let targetY = boardH / (pegRows + 1.5);
+
+        const stepDuration = 467; // 15% faster
+        let stepStartTime = performance.now();
+
+        function animatePuck(now) {
+            if (!isAnimating) return;
+            const elapsed = now - stepStartTime;
+            let progress = elapsed / stepDuration;
+
+            if (progress >= 1) {
+                currentStep++;
+                if (currentStep > 15) {
+                    isAnimating = false;
+                    drawBoard();
+                    onLanded();
+                    return;
+                }
+
+                stepStartTime = now;
+                bx = targetX;
+                by = targetY;
+                progress = 0;
+
+                const dir = path[currentStep - 1] || (Math.random() > 0.5 ? 1 : -1);
+                targetY = (currentStep + 1) * (boardH / (pegRows + 1.5));
+                targetX = bx + (dir * spacingX / 2);
+            }
+
+            const easeX = progress;
+            const easeY = progress;
+            const bounceY = Math.sin(progress * Math.PI) * -15;
+
+            const currX = bx + (targetX - bx) * easeX;
+            const currY = by + (targetY - by) * easeY + bounceY;
+
+            drawBoard();
+
+            ctx.beginPath();
+            ctx.arc(currX, currY, ballRadius, 0, Math.PI * 2);
+            ctx.fillStyle = '#fff';
+            ctx.fill();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#ff00ff';
+            ctx.stroke();
+
+            ctx.shadowColor = '#ff00ff';
+            ctx.shadowBlur = 10;
+            ctx.fill();
+            ctx.shadowBlur = 0;
+
+            requestAnimationFrame(animatePuck);
+        }
+        requestAnimationFrame(animatePuck);
+    }
+}
 
 
 // ===== BALANCE =====
