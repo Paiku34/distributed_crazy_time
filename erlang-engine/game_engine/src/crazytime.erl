@@ -9,7 +9,7 @@
 -module(crazytime).
 -behaviour(gen_server).
 
--export([start_link/0, play/1]).
+-export([start_link/0, play/1, compute_payouts/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 start_link() ->
@@ -23,22 +23,32 @@ init([]) ->
     {ok, #{}}.
 
 handle_call({play, Bets}, _From, State) ->
-    %% La ruota secondaria del Crazy Time ha moltiplicatori molto alti
-    Segments = [5, 10, 15, 20, 25, 50, 100, 200],
-    Weights  = [25, 20, 18, 15, 10,  7,   4,   1],  %% su 100
-    WinnerIdx = weighted_random_index(Weights),
-    BaseMultiplier = lists:nth(WinnerIdx, Segments),
-    %% Possibilità di un "Double" o "Triple" che raddoppia/triplica
-    {FinalMultiplier, Boost} = maybe_boost(BaseMultiplier),
+    Segments = [200, 25, 50, 20, 25, 50, 15, 100, 50, 10, 25, 10, 50, 100, 20, 50, 15, 25, 50, 10, 25, <<"DOUBLE">>, 20, 10, 15, 50, 10, 25, 100, 50, 10, 25, 20, 15, 50, 100, 25, 50, 10, 25, 10, 25, 10, 50, 10, 25, 15, 25, 50, 10, 20, 50, 25, 100, 50, 15, 25, 50, 10, 25, 50, 10, 25, 15],
+    Len = length(Segments),
+    WinnerIdx = rand:uniform(Len),
+    
+    %% Helper function to resolve segment value
+    ResolveVal = fun(Idx) ->
+        %% Modulo circolare 1-indexed
+        RealIdx = if Idx < 1 -> Len + Idx; Idx > Len -> Idx - Len; true -> Idx end,
+        Val = lists:nth(RealIdx, Segments),
+        case Val of <<"DOUBLE">> -> 100; Num -> Num end
+    end,
+
+    BlueMult = ResolveVal(WinnerIdx),
+    GreenMult = ResolveVal(WinnerIdx - 1),
+    YellowMult = ResolveVal(WinnerIdx + 1),
+
     Details = #{
-        base_multiplier => BaseMultiplier,
-        boost => Boost,
+        blue_multiplier => BlueMult,
+        green_multiplier => GreenMult,
+        yellow_multiplier => YellowMult,
         segments => Segments,
         winner_index => WinnerIdx - 1
     },
-    io:format("[CRAZYTIME] Ruota secondaria! Base=x~p, Boost=~s, Finale=x~p (~p scommesse)~n",
-              [BaseMultiplier, Boost, FinalMultiplier, length(Bets)]),
-    {reply, {ok, FinalMultiplier, Details}, State};
+    io:format("[CRAZYTIME] Ruota secondaria! Blue=x~p, Green=x~p, Yellow=x~p~n",
+              [BlueMult, GreenMult, YellowMult]),
+    {reply, {async_minigame, Details}, State};
 
 handle_call(_Req, _From, State) ->
     {reply, {error, unknown_request}, State}.
@@ -48,22 +58,36 @@ handle_info(_Info, State) -> {noreply, State}.
 terminate(_Reason, _State) -> ok.
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
-%% Internal
-weighted_random_index(Weights) ->
-    Total = lists:sum(Weights),
-    R = rand:uniform(Total),
-    pick_index(Weights, R, 0, 1).
+%% compute_payouts/3
+%% Called by wheel_process after the 16s wait
+compute_payouts(Details, Bets, Choices) ->
+    %% FORCE RECOMPILE
+    io:format("[CRAZYTIME] Calcolo vincite per ~p scommesse...~n", [length(Bets)]),
+    BlueMult = maps:get(blue_multiplier, Details),
+    GreenMult = maps:get(green_multiplier, Details),
+    YellowMult = maps:get(yellow_multiplier, Details),
 
-pick_index([W | _], R, Acc, Idx) when R =< Acc + W ->
-    Idx;
-pick_index([W | Ws], R, Acc, Idx) ->
-    pick_index(Ws, R, Acc + W, Idx + 1).
+    Result = lists:filtermap(fun(Bet) ->
+        Seg = maps:get(<<"segment">>, Bet, <<>>),
+        case Seg of
+            <<"CrazyTime">> ->
+                Username = maps:get(<<"username">>, Bet, <<"unknown">>),
+                Amount = maps:get(<<"amount">>, Bet, 0),
+                
+                %% Determine which multiplier this user gets
+                UserChoice = maps:get(Username, Choices, <<"blue">>),
+                UserMult = case UserChoice of
+                    <<"green">> -> GreenMult;
+                    <<"yellow">> -> YellowMult;
+                    _ -> BlueMult
+                end,
 
-%% 20% di probabilità di Double (x2), 5% di Triple (x3)
-maybe_boost(Mult) ->
-    Roll = rand:uniform(100),
-    if
-        Roll =< 5  -> {Mult * 3, <<"triple">>};
-        Roll =< 25 -> {Mult * 2, <<"double">>};
-        true        -> {Mult, <<"none">>}
-    end.
+                {true, #{
+                    username => Username,
+                    bet => Amount,
+                    payout => Amount + (Amount * UserMult)
+                }};
+            _ -> false
+        end
+    end, Bets).
+

@@ -79,30 +79,39 @@ process_message(ResponseBody) ->
             case parse_bet_json(PayloadStr) of
                 {ok, BetMap} ->
                     io:format("[WORKER] Bet ricevuta: ~p~n", [BetMap]),
-                    case maps:get(<<"segment">>, BetMap, <<>>) of
-                        <<"UNDO_BETS">> ->
-                            Username = maps:get(<<"username">>, BetMap),
-                            io:format("[WORKER] Comando UNDO per utente: ~s~n", [Username]),
-                            TotalRefund = wheel_process:undo_bets(Username),
-                            if TotalRefund > 0 ->
-                                   io:format("[WORKER] Rimborso totale per ~s: ~p~n", [Username, TotalRefund]),
-                                   RefundMap = #{<<"username">> => Username, <<"amount">> => TotalRefund, <<"segment">> => <<"REFUND">>},
-                                   publish_refund(RefundMap);
-                               true ->
-                                   io:format("[WORKER] Nessuna scommessa da annullare per ~s~n", [Username])
-                            end;
-                        <<"FORCE_", Seg/binary>> ->
-                            io:format("[WORKER] Comando FORZATURA segmento: ~s~n", [Seg]),
-                            wheel_process:force_segment(Seg);
+                    case maps:get(<<"type">>, BetMap, <<"bet">>) of
+                        <<"force_segment">> ->
+                            wheel_process:force_segment(maps:get(<<"segment">>, BetMap));
+                        <<"minigame_choice">> ->
+                            wheel_process:submit_choice(
+                                maps:get(<<"username">>, BetMap), 
+                                maps:get(<<"choice">>, BetMap));
                         _ ->
-                            case wheel_process:place_bet(BetMap) of
-                                {ok, accepted} ->
-                                    io:format("[WORKER] Bet accettata dal wheel_process.~n");
-                                {error, betting_closed} ->
-                                    io:format("[WORKER] Bet RIFIUTATA — scommesse chiuse. Invio rimborso.~n"),
-                                    publish_refund(BetMap);
-                                Other ->
-                                    io:format("[WORKER] Risposta wheel_process: ~p~n", [Other])
+                            case maps:get(<<"segment">>, BetMap, <<>>) of
+                                <<"UNDO_BETS">> ->
+                                    Username = maps:get(<<"username">>, BetMap),
+                                    io:format("[WORKER] Comando UNDO per utente: ~s~n", [Username]),
+                                    TotalRefund = wheel_process:undo_bets(Username),
+                                    if TotalRefund > 0 ->
+                                           io:format("[WORKER] Rimborso totale per ~s: ~p~n", [Username, TotalRefund]),
+                                           RefundMap = #{<<"username">> => Username, <<"amount">> => TotalRefund, <<"segment">> => <<"REFUND">>},
+                                           publish_refund(RefundMap);
+                                       true ->
+                                           io:format("[WORKER] Nessuna scommessa da annullare per ~s~n", [Username])
+                                    end;
+                                <<"FORCE_", Seg/binary>> ->
+                                    io:format("[WORKER] Comando FORZATURA segmento: ~s~n", [Seg]),
+                                    wheel_process:force_segment(Seg);
+                                _ ->
+                                    case wheel_process:place_bet(BetMap) of
+                                        {ok, accepted} ->
+                                            io:format("[WORKER] Bet accettata dal wheel_process.~n");
+                                        {error, betting_closed} ->
+                                            io:format("[WORKER] Bet RIFIUTATA — scommesse chiuse. Invio rimborso.~n"),
+                                            publish_refund(BetMap);
+                                        Other ->
+                                            io:format("[WORKER] Risposta wheel_process: ~p~n", [Other])
+                                    end
                             end
                     end;
                 {error, Reason} ->
@@ -125,19 +134,42 @@ extract_payload(ResponseBody) ->
 %% Parser semplice per JSON
 parse_bet_json(JsonStr) ->
     try
-        Username = extract_string_field(JsonStr, "username"),
-        Amount = extract_number_field(JsonStr, "amount"),
-        Segment = extract_string_field(JsonStr, "segment"),
-        case {Username, Amount, Segment} of
-            {{ok, U}, {ok, A}, {ok, S}} ->
-                {ok, #{<<"username">> => list_to_binary(U),
-                       <<"amount">> => A,
-                       <<"segment">> => list_to_binary(S)}};
+        TypeMatch = extract_string_field(JsonStr, "type"),
+        Type = case TypeMatch of {ok, T} -> list_to_binary(T); _ -> <<>> end,
+        
+        UsernameMatch = extract_string_field(JsonStr, "username"),
+        Username = case UsernameMatch of {ok, U} -> list_to_binary(U); _ -> <<"unknown">> end,
+        
+        case Type of
+            <<"minigame_choice">> ->
+                ChoiceMatch = extract_string_field(JsonStr, "choice"),
+                Choice = case ChoiceMatch of {ok, C} -> list_to_binary(C); _ -> <<"blue">> end,
+                {ok, #{<<"type">> => Type,
+                       <<"username">> => Username,
+                       <<"choice">> => Choice}};
+            <<"force_segment">> ->
+                SegmentMatch = extract_string_field(JsonStr, "segment"),
+                Segment = case SegmentMatch of {ok, S} -> list_to_binary(S); _ -> <<>> end,
+                {ok, #{<<"type">> => Type,
+                       <<"segment">> => Segment}};
             _ ->
-                {error, missing_fields}
+                AmountMatch = extract_number_field(JsonStr, "amount"),
+                SegmentMatch = extract_string_field(JsonStr, "segment"),
+                case {AmountMatch, SegmentMatch} of
+                    {{ok, A}, {ok, S}} ->
+                        {ok, #{<<"type">> => Type,
+                               <<"username">> => Username,
+                               <<"amount">> => A,
+                               <<"segment">> => list_to_binary(S)}};
+                    _ ->
+                        io:format("[WORKER] DEBUG: missing_fields in JSON: ~p~n", [JsonStr]),
+                        {error, {missing_fields, JsonStr}}
+                end
         end
     catch
-        _:Err -> {error, Err}
+        Class:Err:Stack -> 
+            io:format("[WORKER] EXCEPTION in parse_bet_json: ~p:~p~nStacktrace: ~p~n", [Class, Err, Stack]),
+            {error, Err}
     end.
 
 extract_string_field(Json, FieldName) ->

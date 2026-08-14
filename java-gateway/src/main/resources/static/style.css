@@ -800,14 +800,15 @@ body {
     top: 0;
     left: 0;
     bottom: 0;
-    width: 40%; /* 40% schermo per CoinFlip */
+    width: 40%;
+    /* 40% schermo per CoinFlip */
     background: #060a14;
     z-index: 100;
     transform: translateX(-100%);
     transition: transform 1s cubic-bezier(0.25, 1, 0.5, 1);
     display: flex;
     flex-direction: column;
-    box-shadow: 20px 0 50px rgba(0,0,0,0.8);
+    box-shadow: 20px 0 50px rgba(0, 0, 0, 0.8);
     overflow: hidden;
 }
 
@@ -816,7 +817,8 @@ body.coinflip-active .coinflip-slide-overlay {
 }
 
 body.coinflip-active .game-main {
-    transform: translateX(20vw); /* Centra la ruota nel restante 60% */
+    transform: translateX(20vw);
+    /* Centra la ruota nel restante 60% */
     transition: transform 1s cubic-bezier(0.25, 1, 0.5, 1);
 }
 
@@ -825,14 +827,15 @@ body.coinflip-active .game-main {
     top: 0;
     right: 0;
     bottom: 0;
-    width: 100%; /* 100% schermo per CashHunt */
+    width: 100%;
+    /* 100% schermo per CashHunt */
     background: #060a14;
     z-index: 100;
     transform: translateX(100%);
     transition: transform 1s cubic-bezier(0.25, 1, 0.5, 1);
     display: flex;
     flex-direction: column;
-    box-shadow: -20px 0 50px rgba(0,0,0,0.8);
+    box-shadow: -20px 0 50px rgba(0, 0, 0, 0.8);
     overflow: hidden;
 }
 
@@ -841,7 +844,8 @@ body.cashhunt-active .cashhunt-slide-overlay {
 }
 
 body.cashhunt-active .game-main {
-    transform: translateX(-50vw); /* Sposta la ruota a sinistra mentre viene coperta */
+    transform: translateX(-50vw);
+    /* Sposta la ruota a sinistra mentre viene coperta */
     transition: transform 1s cubic-bezier(0.25, 1, 0.5, 1);
 }
 
@@ -850,14 +854,15 @@ body.cashhunt-active .game-main {
     top: 0;
     right: 0;
     bottom: 0;
-    width: 100%; /* 100% schermo per Pachinko */
+    width: 100%;
+    /* 100% schermo per Pachinko */
     background: #060a14;
     z-index: 100;
     transform: translateX(100%);
     transition: transform 1s cubic-bezier(0.25, 1, 0.5, 1);
     display: flex;
     flex-direction: column;
-    box-shadow: -20px 0 50px rgba(0,0,0,0.8);
+    box-shadow: -20px 0 50px rgba(0, 0, 0, 0.8);
     overflow: hidden;
 }
 
@@ -866,7 +871,8 @@ body.pachinko-active .pachinko-slide-overlay {
 }
 
 body.pachinko-active .game-main {
-    transform: translateX(-50vw); /* Sposta la ruota a sinistra mentre viene coperta */
+    transform: translateX(-50vw);
+    /* Sposta la ruota a sinistra mentre viene coperta */
     transition: transform 1s cubic-bezier(0.25, 1, 0.5, 1);
 }
 
@@ -885,8 +891,13 @@ body.pachinko-active .game-main {
 }
 
 @keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
+    from {
+        opacity: 0;
+    }
+
+    to {
+        opacity: 1;
+    }
 }
 
 /* Result */
@@ -1323,7 +1334,7 @@ body.pachinko-active .game-main {
     font-size: 8rem;
     font-weight: 900;
     color: #fbbf24;
-    text-shadow: 
+    text-shadow:
         0 0 20px rgba(251, 191, 36, 0.8),
         0 0 40px rgba(239, 68, 68, 0.6),
         3px 3px 0 #000;
@@ -1333,11 +1344,29 @@ body.pachinko-active .game-main {
 }
 
 @keyframes epicPopRotate {
-    0% { transform: translate(-50%, -50%) scale(0) rotate(-180deg); opacity: 0; }
-    20% { transform: translate(-50%, -50%) scale(1.2) rotate(10deg); opacity: 1; }
-    30% { transform: translate(-50%, -50%) scale(1) rotate(-5deg); }
-    80% { transform: translate(-50%, -50%) scale(1) rotate(0deg); opacity: 1; }
-    100% { transform: translate(-50%, -50%) scale(2) rotate(0deg); opacity: 0; }
+    0% {
+        transform: translate(-50%, -50%) scale(0) rotate(-180deg);
+        opacity: 0;
+    }
+
+    20% {
+        transform: translate(-50%, -50%) scale(1.2) rotate(10deg);
+        opacity: 1;
+    }
+
+    30% {
+        transform: translate(-50%, -50%) scale(1) rotate(-5deg);
+    }
+
+    80% {
+        transform: translate(-50%, -50%) scale(1) rotate(0deg);
+        opacity: 1;
+    }
+
+    100% {
+        transform: translate(-50%, -50%) scale(2) rotate(0deg);
+        opacity: 0;
+    }
 }
 
 .epic-win-anim {
@@ -1347,8 +1376,9 @@ body.pachinko-active .game-main {
     transform: translate(-50%, -50%);
     font-size: 4rem;
     font-weight: 800;
-    color: #10b981; /* Green */
-    text-shadow: 
+    color: #10b981;
+    /* Green */
+    text-shadow:
         0 0 20px rgba(16, 185, 129, 0.8),
         3px 3px 0 #000;
     z-index: 9998;
@@ -1358,8 +1388,224 @@ body.pachinko-active .game-main {
 }
 
 @keyframes epicWinFloat {
-    0% { transform: translate(-50%, 0); opacity: 0; }
-    20% { transform: translate(-50%, -60%); opacity: 1; }
-    80% { transform: translate(-50%, -80%); opacity: 1; }
-    100% { transform: translate(-50%, -100%); opacity: 0; }
+    0% {
+        transform: translate(-50%, 0);
+        opacity: 0;
+    }
+
+    20% {
+        transform: translate(-50%, -60%);
+        opacity: 1;
+    }
+
+    80% {
+        transform: translate(-50%, -80%);
+        opacity: 1;
+    }
+
+    100% {
+        transform: translate(-50%, -100%);
+        opacity: 0;
+    }
+}
+
+/* =========================================================
+   MINIGIOCO: CRAZY TIME
+   ========================================================= */
+
+body.crazytime-active .game-main,
+body.crazytime-active #last-results,
+body.crazytime-active .bets-area-container,
+body.crazytime-active .chips-area-container {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 1s ease;
+}
+
+/* Golden Flash Animation for transitions */
+.golden-flash-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: radial-gradient(circle, #fff7a1 0%, #fbbf24 40%, rgba(251, 191, 36, 0.8) 100%);
+    z-index: 99999;
+    opacity: 0;
+    pointer-events: none;
+    mix-blend-mode: hard-light;
+}
+
+.golden-flash-overlay.flash-active {
+    animation: goldenFlashAnim 1.5s ease-in-out forwards;
+}
+
+@keyframes goldenFlashAnim {
+    0% {
+        opacity: 0;
+        pointer-events: auto;
+    }
+
+    30% {
+        opacity: 1;
+        background: #ffffff;
+    }
+
+    50% {
+        opacity: 1;
+        background: radial-gradient(circle, #fff7a1 0%, #fbbf24 60%, rgba(251, 191, 36, 0) 100%);
+    }
+
+    100% {
+        opacity: 0;
+        pointer-events: none;
+    }
+}
+
+.ct-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 1s ease;
+    pointer-events: none;
+}
+
+.ct-overlay.visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* Circular container for the wheel to mask black background */
+.ct-wheel-container {
+    position: absolute;
+    width: 80vh;
+    height: 80vh;
+    max-width: 90vw;
+    max-height: 90vw;
+    border-radius: 50%;
+    border: 5px solid #fbbf24;
+    box-shadow: 0 0 50px rgba(251, 191, 36, 0.5);
+    overflow: hidden;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: transparent;
+}
+
+.ct-wheel-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transform: rotate(0deg);
+    transition: transform 10.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.ct-flappers {
+    position: absolute;
+    top: -20px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 40%;
+    display: flex;
+    justify-content: space-between;
+    z-index: 10;
+}
+
+.ct-flapper {
+    width: 30px;
+    height: 40px;
+    background: white;
+    clip-path: polygon(50% 100%, 0 0, 100% 0);
+    filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.5));
+    transform-origin: top center;
+    transition: transform 0.2s;
+    opacity: 0.3;
+}
+
+.ct-flapper.selected {
+    opacity: 1;
+    transform: scale(1.2);
+}
+
+.ct-flapper.green {
+    background: #10b981;
+}
+
+.ct-flapper.blue {
+    background: #3b82f6;
+}
+
+.ct-flapper.yellow {
+    background: #fbbf24;
+}
+
+.ct-popup {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(15, 20, 40, 0.95);
+    border: 2px solid #fbbf24;
+    border-radius: 20px;
+    padding: 30px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    z-index: 200;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8);
+    backdrop-filter: blur(10px);
+}
+
+.ct-popup h2 {
+    color: white;
+    margin-bottom: 20px;
+    font-size: 1.5rem;
+}
+
+.ct-popup-timer {
+    font-size: 3rem;
+    font-weight: 900;
+    color: #fbbf24;
+    margin-bottom: 20px;
+    text-shadow: 0 0 20px rgba(251, 191, 36, 0.5);
+}
+
+.ct-popup-choices {
+    display: flex;
+    gap: 20px;
+}
+
+.ct-choice-btn {
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    cursor: pointer;
+    border: 3px solid rgba(255, 255, 255, 0.2);
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.ct-choice-btn:hover {
+    transform: scale(1.1);
+}
+
+.ct-choice-btn.green {
+    background: #10b981;
+    box-shadow: 0 0 20px rgba(16, 185, 129, 0.5);
+}
+
+.ct-choice-btn.blue {
+    background: #3b82f6;
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.5);
+}
+
+.ct-choice-btn.yellow {
+    background: #fbbf24;
+    box-shadow: 0 0 20px rgba(251, 191, 36, 0.5);
 }

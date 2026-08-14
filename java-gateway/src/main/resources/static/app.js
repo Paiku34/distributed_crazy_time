@@ -318,7 +318,8 @@ function handleGameState(data) {
             clearChips();
             myBetsThisRound = {};
             wheelCenterText.innerHTML = 'CRAZY<br>TIME';
-            document.body.classList.remove('minigame-active', 'coinflip-active', 'cashhunt-active');
+            document.body.classList.remove('minigame-active', 'coinflip-active', 'cashhunt-active', 'crazytime-active');
+            minigameOverlay.classList.remove('visible');
         }
 
     } else if (phase === 'spinning') {
@@ -342,6 +343,14 @@ function handleGameState(data) {
         currentPhase = 'minigame';
         phaseText.textContent = `BONUS: ${data.minigame}`;
         phaseText.className = 'timer-phase minigame';
+        
+        // Start async minigame immediately if it has details (e.g. CrazyTime)
+        if (data.details && !window.activeMinigame) {
+            window.activeMinigame = data.minigame;
+            showMinigameAnimation(data.minigame, 0, data.details, () => {
+                window.activeMinigame = null;
+            });
+        }
     } else if (phase === 'cooldown') {
     }
 }
@@ -354,19 +363,36 @@ function handleGameResult(data) {
     const myBetAmount = myBetsThisRound[data.winner];
     const isWin = myBetAmount !== undefined;
     let winAmount = 0;
+    
     if (isWin) {
-        winAmount = myBetAmount + (myBetAmount * data.multiplier);
+        if (data.payouts && Array.isArray(data.payouts)) {
+            const myPayout = data.payouts.find(p => p.username === window.currentUser);
+            if (myPayout) {
+                winAmount = myPayout.payout;
+            } else {
+                winAmount = myBetAmount + (myBetAmount * data.multiplier);
+            }
+        } else {
+            winAmount = myBetAmount + (myBetAmount * data.multiplier);
+        }
     }
 
     const isMinigame = data.result_type === 'minigame';
     const details = data.details || {};
 
     if (isMinigame && data.winner) {
-        // Show minigame animation first, then result
-        showMinigameAnimation(data.winner, data.multiplier, details, () => {
+        if (window.activeMinigame === data.winner) {
+            // Minigame already running asynchronously, just show the final result
             showResult(isWin, data.winner, data.multiplier, winAmount);
             if (isWin) fetchBalance();
-        });
+            window.activeMinigame = null;
+        } else {
+            // Show minigame animation first, then result
+            showMinigameAnimation(data.winner, data.multiplier, details, () => {
+                showResult(isWin, data.winner, data.multiplier, winAmount);
+                if (isWin) fetchBalance();
+            });
+        }
     } else {
         // Direct multiplier — show result immediately after spin
         const delay = isSpinning ? 500 : 100;
@@ -453,6 +479,10 @@ function showMinigameAnimation(name, multiplier, details, onComplete) {
         minigameOverlay.className = 'pachinko-slide-overlay';
         void minigameOverlay.offsetWidth;
         document.body.classList.add('pachinko-active');
+    } else if (name === 'CrazyTime') {
+        minigameOverlay.className = 'ct-overlay';
+        void minigameOverlay.offsetWidth;
+        document.body.classList.add('crazytime-active');
     } else {
         // Fallback or other minigames (per user request: "lascia perdere gli altri minigiochi")
         minigameOverlay.className = 'fullscreen-overlay';
@@ -464,7 +494,8 @@ function showMinigameAnimation(name, multiplier, details, onComplete) {
 
     const wrappedComplete = () => {
         isMinigamePlaying = false;
-        document.body.classList.remove('pachinko-active', 'cashhunt-active', 'minigame-active');
+        document.body.classList.remove('pachinko-active', 'cashhunt-active', 'crazytime-active', 'minigame-active');
+        minigameOverlay.classList.remove('visible');
         onComplete();
     };
 
@@ -478,8 +509,12 @@ function showMinigameAnimation(name, multiplier, details, onComplete) {
         case 'CashHunt':
             animateCashHunt(multiplier, details, wrappedComplete);
             break;
+        case 'CrazyTime':
+            animateCrazyTime(multiplier, details, wrappedComplete);
+            break;
         default:
             setTimeout(wrappedComplete, 2000);
+            console.log("No custom animation for", name);
     }
 }
 
@@ -608,9 +643,9 @@ function animateCashHunt(multiplier, details, onComplete) {
                 left: 35%; /* Regola questo valore per spostare il box a destra o sinistra */
                 width: 45%; /* Regola la larghezza del box */
                 height: 90%; /* Regola l'altezza del box */
-                background: rgba(16, 185, 129, 0.15); /* Sfondo verdognolo trasparente */
-                border: 3px solid rgba(16, 185, 129, 0.8); /* Bordo verde */
-                box-shadow: 0 0 30px rgba(16, 185, 129, 0.5), inset 0 0 20px rgba(16, 185, 129, 0.3);
+                background: transparent;
+                border: none;
+                box-shadow: none;
                 border-radius: 12px;
                 padding: 10px;
                 box-sizing: border-box;
@@ -1114,7 +1149,7 @@ function animatePachinko(multiplier, details, onComplete) {
         let targetX = bx;
         let targetY = boardH / (pegRows + 1.5);
 
-        const stepDuration = 467; // 15% faster
+        const stepDuration = 397; // 15% faster than 467
         let stepStartTime = performance.now();
 
         function animatePuck(now) {
@@ -1335,8 +1370,136 @@ function showBetError(msg) {
     setTimeout(() => el.remove(), 2500);
 }
 
+/* =========================================================================
+   CRAZY TIME ANIMATION
+   ========================================================================= */
+function animateCrazyTime(multiplier, details, onComplete) {
+    const overlay = document.getElementById('minigame-overlay');
+    const goldenFlash = document.getElementById('golden-flash');
+    
+    // Add golden flash animation
+    goldenFlash.classList.add('flash-active');
+    
+    // Wait for the flash to cover the screen before showing the wheel
+    setTimeout(() => {
+        // Show crazytime layout
+        document.body.classList.add('crazytime-active');
+        overlay.classList.add('visible'); // Show the minigame layer
+        
+        // Inject HTML
+        minigameArea.innerHTML = `
+            <div class="ct-wheel-container" id="ct-wheel-container">
+                <div class="ct-flappers">
+                    <div class="ct-flapper green" id="ct-flapper-green"></div>
+                    <div class="ct-flapper blue" id="ct-flapper-blue"></div>
+                    <div class="ct-flapper yellow" id="ct-flapper-yellow"></div>
+                </div>
+                <img src="img/minigame_crazy_time.png?v=99" class="ct-wheel-img" id="ct-wheel-img" alt="Crazy Time Wheel">
+            </div>
+            
+            <div class="ct-popup" id="ct-popup">
+                <h2>Scegli il tuo Flapper</h2>
+                <div class="ct-popup-timer" id="ct-timer">5</div>
+                <div class="ct-popup-choices">
+                    <div class="ct-choice-btn green" data-color="green"></div>
+                    <div class="ct-choice-btn blue" data-color="blue"></div>
+                    <div class="ct-choice-btn yellow" data-color="yellow"></div>
+                </div>
+            </div>
+        `;
 
+        const wheelImg = document.getElementById('ct-wheel-img');
+        const timerEl = document.getElementById('ct-timer');
+        const popup = document.getElementById('ct-popup');
+        const choiceBtns = document.querySelectorAll('.ct-choice-btn');
+        
+        let selectedFlapper = 'blue'; // default
+        let timeLeft = 5;
+        let timerInt;
 
+        // Handle clicks on popup
+        choiceBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                if (timeLeft > 0) {
+                    selectedFlapper = btn.dataset.color;
+                    choiceBtns.forEach(b => {
+                        b.style.opacity = '0.3';
+                        b.style.transform = 'scale(0.9)';
+                    });
+                    btn.style.opacity = '1';
+                    btn.style.transform = 'scale(1.1)';
+                }
+            });
+        });
+
+        // Start countdown
+        timerInt = setInterval(() => {
+            timeLeft--;
+            if (timeLeft > 0) {
+                timerEl.textContent = timeLeft;
+            } else {
+                finishSelection();
+            }
+        }, 1000);
+
+        let selectionDone = false;
+        function finishSelection() {
+            if(selectionDone) return;
+            selectionDone = true;
+            clearInterval(timerInt);
+            popup.style.display = 'none';
+
+            // Send choice to backend
+            if (currentUser) {
+                fetch(`/api/game/choice?username=${encodeURIComponent(currentUser)}&minigame=CrazyTime&choice=${encodeURIComponent(selectedFlapper)}`, {
+                    method: 'POST'
+                }).catch(e => console.error("Errore invio scelta", e));
+            }
+
+            // Highlight chosen flapper
+            document.getElementById(`ct-flapper-${selectedFlapper}`).classList.add('selected');
+            
+            setTimeout(() => {
+                startSpin();
+            }, 500); // slight delay before spin
+        }
+
+        function startSpin() {
+            const winnerIndex = details.winner_index !== undefined ? details.winner_index : 0;
+            const segmentAngle = 360 / 64; 
+            
+            let targetAngle = -(winnerIndex * segmentAngle);
+            targetAngle -= (360 * 5); // 5 giri completi
+            
+            // Random offset all'interno del segmento
+            const randomOffset = (Math.random() - 0.5) * (segmentAngle * 0.8);
+            targetAngle += randomOffset;
+
+            wheelImg.style.transform = `rotate(${targetAngle}deg)`;
+
+            // Wait for spin to finish (10.5s transition in CSS)
+            setTimeout(() => {
+                let finalMultiplier = details[`${selectedFlapper}_multiplier`] || multiplier;
+                showMinigameResultMultiplier(finalMultiplier);
+                
+                // End of game: Trigger flash again to restore
+                goldenFlash.classList.remove('flash-active');
+                void goldenFlash.offsetWidth; // force reflow
+                goldenFlash.classList.add('flash-active');
+
+                setTimeout(() => {
+                    document.body.classList.remove('crazytime-active');
+                    overlay.classList.remove('visible');
+                    minigameArea.innerHTML = ''; // Cleanup
+                    goldenFlash.classList.remove('flash-active');
+                    onComplete(finalMultiplier);
+                }, 750); // Restore exactly when flash is totally white
+
+            }, 10500);
+        }
+
+    }, 750); // The flash reaches its peak at ~750ms (50% of 1.5s)
+}
 
 console.log("App.js caricato con successo!");
 

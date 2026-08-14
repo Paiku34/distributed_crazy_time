@@ -4,23 +4,20 @@ import com.crazytime.entity.Bet;
 import com.crazytime.entity.Player;
 import com.crazytime.repository.BetRepository;
 import com.crazytime.repository.PlayerRepository;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * Ascolta results_queue per elaborare i pagamenti ai giocatori vincenti.
  * Aggiorna lo status delle Bet (WON/LOST) e accredita i payout.
- *
- * Use case PDF: "The System must: Maintain and update the Players' wallet balances securely"
  */
 @Component
 public class PayoutListener {
@@ -33,39 +30,59 @@ public class PayoutListener {
     @Autowired
     private BetRepository betRepository;
 
+    @Autowired
+    private ObjectMapper objectMapper;
+
     public void processPayouts(String message) {
         log.info("Processando payout dal risultato: {}", message);
         try {
-            // Estrai il segmento vincente dal risultato
-            String winner = extractField(message, "winner");
-            String multiplierStr = extractField(message, "multiplier");
-
-            if (winner == null || multiplierStr == null) {
-                log.warn("Risultato senza winner o multiplier: {}", message);
+            JsonNode root = objectMapper.readTree(message);
+            String winner = root.has("winner") ? root.get("winner").asText() : null;
+            
+            if (winner == null) {
+                log.warn("Risultato senza winner: {}", message);
                 return;
             }
 
-            BigDecimal multiplier = new BigDecimal(multiplierStr);
-
+            JsonNode payoutsNode = root.get("payouts");
+            
             // Trova tutte le bet PENDING e aggiorna il loro status
             List<Bet> pendingBets = betRepository.findByStatus("PENDING");
             for (Bet bet : pendingBets) {
                 if (bet.getSegment().equals(winner)) {
-                    // VINCITA (restituisce la puntata iniziale + la vincita)
-                    BigDecimal winnings = bet.getAmount().multiply(multiplier);
-                    BigDecimal payout = bet.getAmount().add(winnings);
+                    // Cerca il payout specifico calcolato da Erlang
+                    BigDecimal finalPayout = null;
+                    
+                    if (payoutsNode != null && payoutsNode.isArray()) {
+                        for (JsonNode p : payoutsNode) {
+                            if (p.get("username").asText().equals(bet.getUsername())) {
+                                if (p.has("payout")) {
+                                    finalPayout = new BigDecimal(p.get("payout").asText());
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (finalPayout == null) {
+                        // Fallback al calcolo base se payouts non è presente
+                        String multStr = root.has("multiplier") ? root.get("multiplier").asText() : "1";
+                        BigDecimal winnings = bet.getAmount().multiply(new BigDecimal(multStr));
+                        finalPayout = bet.getAmount().add(winnings);
+                    }
+                    
                     bet.setStatus("WON");
-                    bet.setPayout(payout);
+                    bet.setPayout(finalPayout);
                     betRepository.save(bet);
 
                     // Accredita la vincita al giocatore
                     Optional<Player> optPlayer = playerRepository.findByUsername(bet.getUsername());
                     if (optPlayer.isPresent()) {
                         Player player = optPlayer.get();
-                        player.setBalance(player.getBalance().add(payout));
+                        player.setBalance(player.getBalance().add(finalPayout));
                         playerRepository.save(player);
                         log.info("Payout di ${} accreditato a {} (bet su {})",
-                                payout, bet.getUsername(), bet.getSegment());
+                                finalPayout, bet.getUsername(), bet.getSegment());
                     }
                 } else {
                     // PERDITA
@@ -75,13 +92,7 @@ public class PayoutListener {
                 }
             }
         } catch (Exception e) {
-            log.error("Errore processando payout: {}", e.getMessage());
+            log.error("Errore processando payout: {}", e.getMessage(), e);
         }
-    }
-
-    private String extractField(String json, String field) {
-        Pattern p = Pattern.compile("\"" + field + "\"\\s*:\\s*\"?([^,\"\\}]+)\"?");
-        Matcher m = p.matcher(json);
-        return m.find() ? m.group(1).trim() : null;
     }
 }
