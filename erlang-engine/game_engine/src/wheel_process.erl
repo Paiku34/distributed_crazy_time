@@ -116,6 +116,9 @@ handle_call({undo_bets, _Username}, _From, State) ->
 handle_call(_Req, _From, State) ->
     {reply, {error, unknown}, State}.
 
+handle_cast({force_segment, <<"NONE">>}, State) ->
+    io:format("[WHEEL] Annullamento forzatura segmento (esito casuale)~n"),
+    {noreply, State#state{forced_segment = undefined}};
 handle_cast({force_segment, Seg}, State) ->
     io:format("[WHEEL] Forzando segmento per il prossimo giro: ~s~n", [Seg]),
     {noreply, State#state{forced_segment = Seg}};

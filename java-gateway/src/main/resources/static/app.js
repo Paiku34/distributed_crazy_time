@@ -67,6 +67,7 @@ const lastResultsContainer = document.getElementById('last-results');
 
 const chipHitboxes = document.querySelectorAll('.chip-hitbox');
 const betHitboxes = document.querySelectorAll('.bet-hitbox');
+const betAllHitboxes = document.querySelectorAll('.bet-all-hitbox');
 const totalBetDisplay = document.getElementById('total-bet-display');
 
 let selectedChipAmount = 0.10;
@@ -126,6 +127,7 @@ drawWheel(0);
 function spinWheel(targetIndex, duration, onComplete) {
     if (isSpinning) return;
     isSpinning = true;
+    clearDevSelection();
 
     const arcAngle = (2 * Math.PI) / NUM_SEGMENTS;
 
@@ -324,6 +326,7 @@ function handleGameState(data) {
 
     } else if (phase === 'spinning') {
         currentPhase = 'spinning';
+        clearDevSelection();
         phaseText.textContent = 'SCOMMESSE CHIUSE';
         phaseText.className = 'timer-phase spinning';
         // betButtons removed
@@ -1215,14 +1218,45 @@ function fetchBalance() {
 }
 
 // ===== DEV TOOLS =====
-function forceResult(segment) {
-    fetch(`/api/wallet/force-result?segment=${encodeURIComponent(segment)}`, { method: 'POST' })
-        .then(r => r.json())
-        .then(d => {
-            if (d.success) {
-                console.log(`[DEV] Prossimo segmento forzato: ${segment}`);
-            }
-        });
+let activeDevSegment = null;
+
+function clearDevSelection() {
+    activeDevSegment = null;
+    document.querySelectorAll('.dev-btn').forEach(btn => btn.classList.remove('active-dev-btn'));
+}
+
+function forceResult(segment, btnElement) {
+    if (activeDevSegment === segment) {
+        // Se già attivo, lo deseleziona ed annulla la forzatura
+        clearDevSelection();
+        fetch('/api/wallet/force-result?segment=NONE', { method: 'POST' })
+            .then(r => r.json())
+            .then(d => {
+                if (d.success) {
+                    console.log('[DEV] Forzatura annullata (esito casuale)');
+                }
+            });
+    } else {
+        // Seleziona il nuovo esito forzato
+        clearDevSelection();
+        activeDevSegment = segment;
+
+        let targetBtn = btnElement;
+        if (!targetBtn) {
+            targetBtn = document.querySelector(`.dev-btn[data-segment="${segment}"]`);
+        }
+        if (targetBtn) {
+            targetBtn.classList.add('active-dev-btn');
+        }
+
+        fetch(`/api/wallet/force-result?segment=${encodeURIComponent(segment)}`, { method: 'POST' })
+            .then(r => r.json())
+            .then(d => {
+                if (d.success) {
+                    console.log(`[DEV] Prossimo segmento forzato: ${segment}`);
+                }
+            });
+    }
 }
 
 // ===== NEW IMAGE-BASED BETTING LOGIC =====
@@ -1263,6 +1297,50 @@ betHitboxes.forEach(betBox => {
             }
         } catch (e) {
             console.error(e);
+        }
+    });
+});
+
+// --- Bet on All (Central Buttons) Logic ---
+const betGroups = {
+    numbers: ['1', '2', '5', '10'],
+    bonus: ['CoinFlip', 'Pachinko', 'CashHunt', 'CrazyTime']
+};
+
+betAllHitboxes.forEach(allBox => {
+    allBox.addEventListener('click', async () => {
+        if (currentPhase !== 'betting') {
+            showBetError('Le scommesse sono chiuse!');
+            return;
+        }
+
+        const groupKey = allBox.dataset.group;
+        const segments = betGroups[groupKey];
+        if (!segments) return;
+
+        const amount = selectedChipAmount;
+        if (!amount || amount <= 0) return;
+
+        for (const segment of segments) {
+            try {
+                const res = await fetch(`/api/wallet/place-bet?username=${encodeURIComponent(currentUser)}&amount=${amount}&segment=${encodeURIComponent(segment)}`, { method: 'POST' });
+                const data = await res.json();
+
+                if (data.success) {
+                    updateBalanceDisplay(data.new_balance);
+                    if (!myBetsThisRound[segment]) myBetsThisRound[segment] = 0;
+                    myBetsThisRound[segment] += amount;
+                    totalBetThisRound += amount;
+                    if (totalBetDisplay) totalBetDisplay.textContent = `$${totalBetThisRound.toFixed(2)}`;
+
+                    const betBox = document.querySelector(`.bet-hitbox[data-segment="${segment}"]`);
+                    if (betBox) addChipToButton(betBox, myBetsThisRound[segment]);
+                } else {
+                    showBetError(data.error);
+                }
+            } catch (e) {
+                console.error(e);
+            }
         }
     });
 });

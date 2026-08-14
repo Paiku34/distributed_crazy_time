@@ -1234,6 +1234,33 @@ body.pachinko-active .game-main {
     background: rgba(250, 204, 21, 0.4);
 }
 
+.bet-all-hitbox {
+    position: absolute;
+    cursor: pointer;
+    background: rgba(255, 255, 255, 0);
+    border-radius: 50%;
+    transition: background 0.2s, box-shadow 0.2s, transform 0.1s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.bet-all-hitbox:hover {
+    background: rgba(255, 215, 0, 0.3);
+    box-shadow: 0 0 18px rgba(255, 215, 0, 0.8), inset 0 0 8px rgba(255, 255, 255, 0.5);
+}
+
+.bet-all-hitbox:active {
+    transform: scale(0.9);
+}
+
+.dev-btn.active-dev-btn {
+    border-color: #fbbf24 !important;
+    box-shadow: 0 0 12px #fbbf24, inset 0 0 6px rgba(255, 255, 255, 0.6) !important;
+    transform: scale(1.08);
+    font-weight: bold;
+}
+
 /* Chip stacked inside bet-hitbox */
 .bet-stacked-chip {
     width: 25px;
