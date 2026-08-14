@@ -1,0 +1,8 @@
+# File di istruzioni e comandi locali
+istruzioni_curl_mac.txt
+comandi_avvio.md
+
+# Log e file temporanei
+log.txt
+*.log
+.DS_Store
