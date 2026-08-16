@@ -1,7 +1,10 @@
 package com.crazytime.controller;
 
+import com.crazytime.dto.AuthResponse;
+import com.crazytime.dto.LoginRequest;
+import com.crazytime.dto.RegisterRequest;
 import com.crazytime.entity.Player;
-import com.crazytime.repository.PlayerRepository;
+import com.crazytime.service.AuthService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.InjectMocks;
@@ -10,23 +13,15 @@ import org.mockito.MockitoAnnotations;
 import org.springframework.http.ResponseEntity;
 
 import java.math.BigDecimal;
-import java.util.Map;
-import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
-/**
- * Test per AuthController — Login e Logout.
- * Use cases dal PDF:
- *   - "An Unlogged User can: Login to the service as a Player"
- *   - "A Logged Player can: Logout"
- */
 public class AuthControllerTest {
 
     @Mock
-    private PlayerRepository playerRepository;
+    private AuthService authService;
 
     @InjectMocks
     private AuthController authController;
@@ -36,97 +31,39 @@ public class AuthControllerTest {
         MockitoAnnotations.openMocks(this);
     }
 
-    // --- LOGIN ---
-
     @Test
     public void testLoginSuccess() {
-        Player player = new Player("alice", "pass1234", new BigDecimal("100.00"));
-        when(playerRepository.findByUsername("alice")).thenReturn(Optional.of(player));
+        Player player = new Player("alice", "hashed", new BigDecimal("100.00"));
+        player.setSessionToken("token-123");
+        when(authService.login("alice", "pass1234")).thenReturn(player);
 
-        ResponseEntity<Map<String, Object>> response = authController.login("alice", "pass1234");
+        ResponseEntity<AuthResponse> response = authController.login(new LoginRequest("alice", "pass1234"));
 
         assertEquals(200, response.getStatusCode().value());
-        assertTrue((Boolean) response.getBody().get("success"));
-        assertEquals("alice", response.getBody().get("username"));
-        assertTrue(player.isLoggedIn());
-        verify(playerRepository, times(1)).save(player);
-    }
-
-    @Test
-    public void testLoginUserNotFound() {
-        when(playerRepository.findByUsername("ghost")).thenReturn(Optional.empty());
-
-        ResponseEntity<Map<String, Object>> response = authController.login("ghost", "pass1234");
-
-        assertEquals(400, response.getStatusCode().value());
-        assertFalse((Boolean) response.getBody().get("success"));
-        assertEquals("Utente non trovato", response.getBody().get("error"));
+        assertTrue(response.getBody().success());
+        assertEquals("token-123", response.getBody().token());
     }
 
     @Test
     public void testLoginWrongPassword() {
-        Player player = new Player("alice", "pass1234", new BigDecimal("100.00"));
-        when(playerRepository.findByUsername("alice")).thenReturn(Optional.of(player));
+        when(authService.login("alice", "wrongpass")).thenThrow(new IllegalArgumentException("Password errata"));
 
-        ResponseEntity<Map<String, Object>> response = authController.login("alice", "wrongpass");
+        ResponseEntity<AuthResponse> response = authController.login(new LoginRequest("alice", "wrongpass"));
 
         assertEquals(401, response.getStatusCode().value());
-        assertFalse((Boolean) response.getBody().get("success"));
-        assertEquals("Password errata", response.getBody().get("error"));
+        assertFalse(response.getBody().success());
+        assertEquals("Password errata", response.getBody().error());
     }
 
     @Test
-    public void testLoginAlreadyLoggedIn() {
-        Player player = new Player("alice", "pass1234", new BigDecimal("100.00"));
-        player.setLoggedIn(true);
-        when(playerRepository.findByUsername("alice")).thenReturn(Optional.of(player));
+    public void testRegisterSuccess() {
+        Player player = new Player("alice", "hashed", new BigDecimal("100.00"));
+        when(authService.register(eq("alice"), eq("pass1234"), any())).thenReturn(player);
 
-        ResponseEntity<Map<String, Object>> response = authController.login("alice", "pass1234");
+        ResponseEntity<AuthResponse> response = authController.register(new RegisterRequest("alice", "pass1234", new BigDecimal("100.00")));
 
         assertEquals(200, response.getStatusCode().value());
-        assertTrue((Boolean) response.getBody().get("success"));
-        // Should return "Utente già loggato" message
-        assertEquals("Utente già loggato", response.getBody().get("message"));
-        // Should NOT call save again (player was already logged in)
-        verify(playerRepository, never()).save(any(Player.class));
-    }
-
-    // --- LOGOUT ---
-
-    @Test
-    public void testLogoutSuccess() {
-        Player player = new Player("alice", "pass1234", new BigDecimal("100.00"));
-        player.setLoggedIn(true);
-        when(playerRepository.findByUsername("alice")).thenReturn(Optional.of(player));
-
-        ResponseEntity<Map<String, Object>> response = authController.logout("alice");
-
-        assertEquals(200, response.getStatusCode().value());
-        assertTrue((Boolean) response.getBody().get("success"));
-        assertFalse(player.isLoggedIn());
-        verify(playerRepository, times(1)).save(player);
-    }
-
-    @Test
-    public void testLogoutUserNotFound() {
-        when(playerRepository.findByUsername("ghost")).thenReturn(Optional.empty());
-
-        ResponseEntity<Map<String, Object>> response = authController.logout("ghost");
-
-        assertEquals(400, response.getStatusCode().value());
-        assertFalse((Boolean) response.getBody().get("success"));
-    }
-
-    @Test
-    public void testLogoutUserNotLoggedIn() {
-        Player player = new Player("alice", "pass1234", new BigDecimal("100.00"));
-        player.setLoggedIn(false);
-        when(playerRepository.findByUsername("alice")).thenReturn(Optional.of(player));
-
-        ResponseEntity<Map<String, Object>> response = authController.logout("alice");
-
-        assertEquals(400, response.getStatusCode().value());
-        assertFalse((Boolean) response.getBody().get("success"));
-        assertEquals("Utente non è loggato", response.getBody().get("error"));
+        assertTrue(response.getBody().success());
+        assertEquals("alice", response.getBody().username());
     }
 }

@@ -59,6 +59,30 @@
     <!-- ====== GAME SCREEN ====== -->
     <div id="game-screen" style="display: none; width: 100vw; height: 100vh; overflow: hidden; position: relative;">
 
+        <!-- Top Right Menu Toggle -->
+        <button id="menu-toggle-btn" class="menu-toggle">
+            <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+        </button>
+
+        <!-- Side Panel -->
+        <div id="side-panel" class="side-panel">
+            <div class="side-panel-header">
+                <h3>Menu Utente</h3>
+                <button id="close-menu-btn" class="close-btn">&times;</button>
+            </div>
+            <div class="side-panel-content">
+                <div class="user-info-box">
+                    <span class="user-label">Utente:</span>
+                    <span id="side-username" class="user-value">...</span>
+                </div>
+                <div class="user-info-box">
+                    <span class="user-label">Saldo Attuale:</span>
+                    <span id="side-balance" class="user-value">$0.00</span>
+                </div>
+                <button id="logout-btn" class="glow-btn logout-btn">Logout</button>
+            </div>
+        </div>
+
         <!-- Bottom Left Logo & Balance (Moved to game-screen level for absolute bottom left positioning) -->
         <div class="hud-bottom-left" style="position: absolute; bottom: 20px; left: 20px; z-index: 50;">
             <img src="img/crazy_time_logo.png" alt="Crazy Time"
@@ -182,7 +206,7 @@
 
         <!-- Dev Tools (Forcing Outcomes) -->
         <div class="dev-panel glass-panel"
-            style="position:fixed; top:20px; right:20px; padding:10px; z-index:9999; display:flex; gap:5px; align-items:center; flex-direction:column; background:rgba(0,0,0,0.8); border: 1px solid rgba(255,255,255,0.2);">
+            style="position:fixed; top:20px; left:20px; padding:10px; z-index:9999; display:flex; gap:5px; align-items:center; flex-direction:column; background:rgba(0,0,0,0.8); border: 1px solid rgba(255,255,255,0.2);">
             <div style="color:#aaa; font-size:12px; margin-bottom:5px; font-weight:bold;">FORZA PROSSIMO GIRO (DEV)
             </div>
             <div style="display:flex; gap:5px; flex-wrap:wrap; max-width:220px; justify-content:center;">

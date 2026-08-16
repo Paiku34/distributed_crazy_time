@@ -38,6 +38,55 @@ const SEGMENT_TEXT_SHORT = {
 let currentUser = null;
 let currentBalance = 0;
 let stompClient = null;
+let shouldReconnect = true;
+
+async function authFetch(url, options = {}) {
+    const token = sessionStorage.getItem('token');
+    options.headers = options.headers || {};
+    if (token) {
+        options.headers['Authorization'] = `Bearer ${token}`;
+    }
+    
+    if (options.body && typeof options.body === 'object' && !(options.body instanceof FormData)) {
+        options.body = JSON.stringify(options.body);
+        options.headers['Content-Type'] = 'application/json';
+    }
+
+    try {
+        const response = await fetch(url, options);
+        if (response.status === 401) {
+            handleSessionInvalidated();
+            return { ok: false, status: 401, json: async () => ({ success: false, error: "Non autorizzato" }) };
+        }
+        return response;
+    } catch (e) {
+        throw e;
+    }
+}
+
+function handleSessionInvalidated(msg) {
+    shouldReconnect = false;
+    if (stompClient) {
+        stompClient.disconnect();
+    }
+    sessionStorage.removeItem('token');
+    currentUser = null;
+    
+    let reason = "La sessione è scaduta o ti sei loggato da un altro dispositivo.";
+    if (msg && msg.body) {
+        try {
+            const data = JSON.parse(msg.body);
+            if (data.reason === 'new_login') {
+                reason = "Ti sei connesso da un altro dispositivo.";
+            }
+        } catch(e){}
+    }
+    alert(reason);
+    
+    authScreen.style.display = 'block';
+    gameScreen.style.display = 'none';
+}
+
 let myBetsThisRound = {};
 let wheelAngle = 0;
 let isSpinning = false;
@@ -218,11 +267,17 @@ authForm.addEventListener('submit', async (e) => {
 
 async function doLogin(username, password) {
     try {
-        const res = await fetch(`/api/auth/login?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`, { method: 'POST' });
+        const res = await fetch(`/api/auth/login`, { 
+            method: 'POST', 
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({username, password}) 
+        });
         const data = await res.json();
         if (data.success) {
+            sessionStorage.setItem('token', data.token);
             currentUser = data.username;
             currentBalance = data.balance;
+            shouldReconnect = true;
             startGame();
         } else {
             authError.textContent = data.error || 'Login fallito';
@@ -234,7 +289,11 @@ async function doLogin(username, password) {
 
 async function doRegister(username, password, initialBalance) {
     try {
-        const res = await fetch(`/api/wallet/register?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&initialBalance=${initialBalance}`, { method: 'POST' });
+        const res = await fetch(`/api/auth/register`, { 
+            method: 'POST', 
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({username, password, initialBalance}) 
+        });
         const data = await res.json();
         if (data.success) {
             authError.textContent = '';
@@ -253,11 +312,13 @@ async function doRegister(username, password, initialBalance) {
 function startGame() {
     authScreen.style.display = 'none';
     gameScreen.style.display = 'flex';
+    const sideUsername = document.getElementById('side-username');
+    if(sideUsername) sideUsername.textContent = currentUser;
     // playerName removed
     updateBalanceDisplay(currentBalance);
     connectWebSocket();
 
-    fetch('/api/game/state')
+    authFetch('/api/game/state')
         .then(res => res.json())
         .then(data => {
             if (data.success) handleGameState(data);
@@ -268,15 +329,21 @@ function startGame() {
 function updateBalanceDisplay(amount) {
     currentBalance = parseFloat(amount);
     playerBalance.textContent = `$${currentBalance.toFixed(2)}`;
+    const sideBalance = document.getElementById('side-balance');
+    if(sideBalance) sideBalance.textContent = `$${currentBalance.toFixed(2)}`;
 }
 
 // ===== WEBSOCKET =====
 function connectWebSocket() {
-    const socket = new SockJS('/ws');
+    if (!shouldReconnect) return;
+    const token = sessionStorage.getItem('token');
+    const socket = new SockJS('/ws' + (token ? '?token=' + token : ''));
     stompClient = Stomp.over(socket);
     stompClient.debug = null;
 
     stompClient.connect({}, function () {
+        stompClient.subscribe('/user/queue/session', handleSessionInvalidated);
+
         stompClient.subscribe('/topic/game-timer', function (msg) {
             const data = JSON.parse(msg.body);
             handleGameState(data);
@@ -1211,7 +1278,7 @@ function animatePachinko(multiplier, details, onComplete) {
 // ===== BALANCE =====
 function fetchBalance() {
     if (!currentUser) return;
-    fetch(`/api/wallet/balance?username=${encodeURIComponent(currentUser)}`)
+    authFetch(`/api/wallet/balance`)
         .then(r => r.json())
         .then(d => { if (d.success) updateBalanceDisplay(d.balance); })
         .catch(() => { });
@@ -1229,7 +1296,7 @@ function forceResult(segment, btnElement) {
     if (activeDevSegment === segment) {
         // Se già attivo, lo deseleziona ed annulla la forzatura
         clearDevSelection();
-        fetch('/api/wallet/force-result?segment=NONE', { method: 'POST' })
+        authFetch('/api/wallet/force-result?segment=NONE', { method: 'POST' })
             .then(r => r.json())
             .then(d => {
                 if (d.success) {
@@ -1249,7 +1316,7 @@ function forceResult(segment, btnElement) {
             targetBtn.classList.add('active-dev-btn');
         }
 
-        fetch(`/api/wallet/force-result?segment=${encodeURIComponent(segment)}`, { method: 'POST' })
+        authFetch(`/api/wallet/force-result?segment=${encodeURIComponent(segment)}`, { method: 'POST' })
             .then(r => r.json())
             .then(d => {
                 if (d.success) {
@@ -1282,7 +1349,7 @@ betHitboxes.forEach(betBox => {
         if (!amount || amount <= 0) return;
 
         try {
-            const res = await fetch(`/api/wallet/place-bet?username=${encodeURIComponent(currentUser)}&amount=${amount}&segment=${encodeURIComponent(segment)}`, { method: 'POST' });
+            const res = await authFetch(`/api/wallet/place-bet`, { method: 'POST', body: {amount, segment} });
             const data = await res.json();
 
             if (data.success) {
@@ -1323,7 +1390,7 @@ betAllHitboxes.forEach(allBox => {
 
         for (const segment of segments) {
             try {
-                const res = await fetch(`/api/wallet/place-bet?username=${encodeURIComponent(currentUser)}&amount=${amount}&segment=${encodeURIComponent(segment)}`, { method: 'POST' });
+                const res = await authFetch(`/api/wallet/place-bet`, { method: 'POST', body: {amount, segment} });
                 const data = await res.json();
 
                 if (data.success) {
@@ -1357,7 +1424,7 @@ if (btnUndo) {
         if (Object.keys(myBetsThisRound).length === 0) return;
 
         try {
-            const res = await fetch(`/api/wallet/undo-bets?username=${encodeURIComponent(currentUser)}`, { method: 'POST' });
+            const res = await authFetch(`/api/wallet/undo-bets`, { method: 'POST' });
             const data = await res.json();
             if (data.success) {
                 // Svuota lo stato locale
@@ -1373,9 +1440,9 @@ if (btnUndo) {
 
                 // Il rimborso del saldo avverrà asincronamente tramite RabbitMQ (verrà ricevuto un aggiornamento balance se ricarichiamo, 
                 // ma per ora chiediamo un aggiornamento del wallet)
-                fetchWalletHistory(); // Aggiorna per sicurezza
+                
                 setTimeout(() => {
-                    fetch(`/api/wallet/balance?username=${encodeURIComponent(currentUser)}`)
+                    authFetch(`/api/wallet/balance`)
                         .then(r => r.json())
                         .then(d => { if (d.success) updateBalanceDisplay(d.balance); });
                 }, 500);
@@ -1403,7 +1470,7 @@ if (btn2x) {
         for (const [segment, amount] of Object.entries(betsToDouble)) {
             if (amount <= 0) continue;
             try {
-                const res = await fetch(`/api/wallet/place-bet?username=${encodeURIComponent(currentUser)}&amount=${amount}&segment=${encodeURIComponent(segment)}`, { method: 'POST' });
+                const res = await authFetch(`/api/wallet/place-bet`, { method: 'POST', body: {amount, segment} });
                 const data = await res.json();
                 if (data.success) {
                     updateBalanceDisplay(data.new_balance);
@@ -1529,8 +1596,9 @@ function animateCrazyTime(multiplier, details, onComplete) {
 
             // Send choice to backend
             if (currentUser) {
-                fetch(`/api/game/choice?username=${encodeURIComponent(currentUser)}&minigame=CrazyTime&choice=${encodeURIComponent(selectedFlapper)}`, {
-                    method: 'POST'
+                authFetch(`/api/game/choice`, {
+                    method: 'POST',
+                    body: {minigame: 'CrazyTime', choice: selectedFlapper}
                 }).catch(e => console.error("Errore invio scelta", e));
             }
 
@@ -1581,15 +1649,43 @@ function animateCrazyTime(multiplier, details, onComplete) {
 
 console.log("App.js caricato con successo!");
 
-// Bypass auth temporarily
-setTimeout(async () => {
-    try {
-        await fetch('/api/wallet/register?username=Tester&password=test1234&initialBalance=1000', { method: 'POST' });
-        await fetch('/api/auth/login?username=Tester&password=test1234', { method: 'POST' });
-    } catch (e) {
-        console.error("Register/Login error:", e);
-    }
-    currentUser = 'Tester';
-    currentBalance = 1000;
-    startGame();
-}, 500);
+// ===== SIDE PANEL LOGIC =====
+const menuToggleBtn = document.getElementById('menu-toggle-btn');
+const closeMenuBtn = document.getElementById('close-menu-btn');
+const sidePanel = document.getElementById('side-panel');
+const logoutBtn = document.getElementById('logout-btn');
+
+if (menuToggleBtn && closeMenuBtn && sidePanel) {
+    menuToggleBtn.addEventListener('click', () => {
+        sidePanel.classList.add('open');
+    });
+
+    closeMenuBtn.addEventListener('click', () => {
+        sidePanel.classList.remove('open');
+    });
+}
+
+if (logoutBtn) {
+    logoutBtn.addEventListener('click', () => {
+        // Disconnect STOMP
+        if (stompClient) {
+            stompClient.disconnect();
+            stompClient = null;
+        }
+        // Clear session
+        sessionStorage.removeItem('token');
+        currentUser = null;
+        shouldReconnect = false;
+        
+        // Hide panel & game screen, show auth screen
+        if (sidePanel) sidePanel.classList.remove('open');
+        const gameScreen = document.getElementById('game-screen');
+        const authScreen = document.getElementById('auth-screen');
+        if (gameScreen) gameScreen.style.display = 'none';
+        if (authScreen) authScreen.style.display = 'block';
+        const authForm = document.getElementById('auth-form');
+        if (authForm) authForm.reset();
+        
+        console.log("Logout effettuato");
+    });
+}

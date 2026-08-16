@@ -2,10 +2,7 @@ package com.crazytime.entity;
 
 import jakarta.persistence.*;
 import java.math.BigDecimal;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
+import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "players")
@@ -24,15 +21,18 @@ public class Player {
     @Column(nullable = false)
     private BigDecimal balance;
 
-    @Column(nullable = false)
-    private boolean loggedIn = false;
+    @Column(unique = true, nullable = true)
+    private String sessionToken;
+
+    @Column(nullable = true)
+    private LocalDateTime sessionCreatedAt;
 
     // Costruttore vuoto obbligatorio per JPA
     public Player() {}
 
-    public Player(String username, String password, BigDecimal balance) {
+    public Player(String username, String passwordHash, BigDecimal balance) {
         this.username = username;
-        this.passwordHash = hashPassword(password);
+        this.passwordHash = passwordHash;
         this.balance = balance;
     }
 
@@ -45,22 +45,8 @@ public class Player {
     public void setPasswordHash(String passwordHash) { this.passwordHash = passwordHash; }
     public BigDecimal getBalance() { return balance; }
     public void setBalance(BigDecimal balance) { this.balance = balance; }
-    public boolean isLoggedIn() { return loggedIn; }
-    public void setLoggedIn(boolean loggedIn) { this.loggedIn = loggedIn; }
-
-    /** Verifica che la password in chiaro corrisponda all'hash memorizzato */
-    public boolean checkPassword(String plainPassword) {
-        return this.passwordHash.equals(hashPassword(plainPassword));
-    }
-
-    /** Hash SHA-256 semplice per la password */
-    public static String hashPassword(String password) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(password.getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(hash);
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("SHA-256 non disponibile", e);
-        }
-    }
+    public String getSessionToken() { return sessionToken; }
+    public void setSessionToken(String sessionToken) { this.sessionToken = sessionToken; }
+    public LocalDateTime getSessionCreatedAt() { return sessionCreatedAt; }
+    public void setSessionCreatedAt(LocalDateTime sessionCreatedAt) { this.sessionCreatedAt = sessionCreatedAt; }
 }

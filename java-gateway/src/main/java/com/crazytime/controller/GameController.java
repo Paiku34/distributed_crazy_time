@@ -1,16 +1,15 @@
 package com.crazytime.controller;
 
+import com.crazytime.dto.GameChoiceRequest;
+import com.crazytime.entity.Player;
 import com.crazytime.rabbitmq.GameStateCache;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.amqp.core.AmqpTemplate;
 import java.util.Map;
 
-/**
- * Controller per lo stato del gioco.
- */
 @RestController
 @RequestMapping("/api/game")
 public class GameController {
@@ -19,12 +18,8 @@ public class GameController {
     private GameStateCache gameStateCache;
 
     @Autowired
-    private RabbitTemplate rabbitTemplate;
+    private AmqpTemplate rabbitTemplate;
 
-    /**
-     * GET /api/game/state
-     * Restituisce fase corrente, tempo rimanente, numero round.
-     */
     @GetMapping("/state")
     public ResponseEntity<Map<String, Object>> getGameState() {
         return ResponseEntity.ok(Map.of(
@@ -32,23 +27,21 @@ public class GameController {
             "phase", gameStateCache.getPhase(),
             "time_left", gameStateCache.getTimeLeft(),
             "round", gameStateCache.getRound(),
-            "last_result", gameStateCache.getLastResult()
+            "last_result", gameStateCache.getLastResult() != null ? gameStateCache.getLastResult() : "None"
         ));
     }
 
-    /**
-     * POST /api/game/choice
-     * Invia la scelta del minigioco a Erlang.
-     */
     @PostMapping("/choice")
     public ResponseEntity<Map<String, Object>> makeChoice(
-            @RequestParam String username,
-            @RequestParam String minigame,
-            @RequestParam String choice) {
+            @RequestAttribute("player") Player player,
+            @RequestBody GameChoiceRequest request) {
         
+        String minigame = request.minigame();
+        String choice = request.choice();
+
         String jsonPayload = String.format(
             "{\"type\":\"minigame_choice\",\"username\":\"%s\",\"minigame\":\"%s\",\"choice\":\"%s\"}",
-            username.replace("\"", "\\\""), 
+            player.getUsername().replace("\"", "\\\""), 
             minigame.replace("\"", "\\\""), 
             choice.replace("\"", "\\\"")
         );
