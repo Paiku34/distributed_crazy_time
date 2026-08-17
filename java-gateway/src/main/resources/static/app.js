@@ -83,6 +83,17 @@ function handleSessionInvalidated(msg) {
     }
     alert(reason);
     
+    // Reset auth form to clean login state
+    document.getElementById('username').value = '';
+    document.getElementById('password').value = '';
+    document.getElementById('initial-balance').value = '1000';
+    authError.textContent = '';
+    isLoginMode = true;
+    tabLogin.classList.add('active');
+    tabRegister.classList.remove('active');
+    registerFields.style.display = 'none';
+    authBtnText.textContent = 'Entra nel Gioco';
+    
     authScreen.style.display = 'block';
     gameScreen.style.display = 'none';
 }
@@ -1689,3 +1700,215 @@ if (logoutBtn) {
         console.log("Logout effettuato");
     });
 }
+
+// ===== BET HISTORY LOGIC =====
+const historyBtn = document.getElementById('history-btn');
+const historyOverlay = document.getElementById('history-overlay');
+const closeHistoryBtn = document.getElementById('close-history-btn');
+const historyList = document.getElementById('history-list');
+const historySummary = document.getElementById('history-summary');
+const historyFilterBtns = document.querySelectorAll('.history-filter-btn');
+
+let allBetsData = [];
+let currentHistoryFilter = 'all';
+
+const SEGMENT_DISPLAY_NAMES = {
+    '1': 'Numero 1',
+    '2': 'Numero 2',
+    '5': 'Numero 5',
+    '10': 'Numero 10',
+    'Pachinko': 'Pachinko',
+    'CoinFlip': 'Coin Flip',
+    'CashHunt': 'Cash Hunt',
+    'CrazyTime': 'Crazy Time'
+};
+
+const STATUS_LABELS = {
+    'WON': 'Vinta',
+    'LOST': 'Persa',
+    'PENDING': 'In Corso',
+    'REFUNDED': 'Rimborsata'
+};
+
+function formatHistoryDate(isoStr) {
+    try {
+        const d = new Date(isoStr);
+        const now = new Date();
+        const diffMs = now - d;
+        const diffMin = Math.floor(diffMs / 60000);
+        const diffHrs = Math.floor(diffMs / 3600000);
+
+        const time = d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+        
+        if (diffMin < 1) return 'Adesso';
+        if (diffMin < 60) return `${diffMin} min fa`;
+        if (diffHrs < 24) return `${diffHrs}h fa — ${time}`;
+        
+        const date = d.toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit' });
+        return `${date} — ${time}`;
+    } catch (e) {
+        return isoStr;
+    }
+}
+
+function renderHistoryCards(bets) {
+    if (!bets || bets.length === 0) {
+        historyList.innerHTML = `
+            <div class="history-empty">
+                <span class="empty-icon">🎰</span>
+                <span class="empty-text">Nessuna puntata trovata</span>
+            </div>`;
+        return;
+    }
+
+    historyList.innerHTML = bets.map((bet, i) => {
+        const segColor = SEGMENT_COLORS[bet.segment] || '#64748b';
+        const segLabel = SEGMENT_TEXT_SHORT[bet.segment] || bet.segment;
+        const segName = SEGMENT_DISPLAY_NAMES[bet.segment] || bet.segment;
+        const status = bet.status || 'PENDING';
+        const statusLabel = STATUS_LABELS[status] || status;
+        const payout = parseFloat(bet.payout) || 0;
+        const amount = parseFloat(bet.amount) || 0;
+
+        let payoutClass = 'pending';
+        let payoutText = 'In attesa...';
+        if (status === 'WON') {
+            payoutClass = 'won';
+            payoutText = `+$${payout.toFixed(2)}`;
+        } else if (status === 'LOST') {
+            payoutClass = 'lost';
+            payoutText = `-$${amount.toFixed(2)}`;
+        } else if (status === 'REFUNDED') {
+            payoutClass = 'refunded';
+            payoutText = `↩ $${amount.toFixed(2)}`;
+        }
+
+        return `
+            <div class="history-card" style="animation-delay: ${i * 0.04}s">
+                <div class="history-card-segment" style="background: ${segColor}">${segLabel}</div>
+                <div class="history-card-info">
+                    <span class="segment-name">${segName}</span>
+                    <span class="bet-time">${formatHistoryDate(bet.timestamp)}</span>
+                </div>
+                <div class="history-card-amounts">
+                    <span class="bet-amount">$${amount.toFixed(2)}</span>
+                    <span class="bet-payout ${payoutClass}">${payoutText}</span>
+                    <span class="history-status-badge ${status}">${statusLabel}</span>
+                </div>
+            </div>`;
+    }).join('');
+}
+
+function renderHistorySummary(bets) {
+    if (!bets || bets.length === 0) {
+        historySummary.innerHTML = '';
+        return;
+    }
+
+    let totalBet = 0, totalWon = 0, totalLost = 0;
+    bets.forEach(b => {
+        const amount = parseFloat(b.amount) || 0;
+        const payout = parseFloat(b.payout) || 0;
+        totalBet += amount;
+        if (b.status === 'WON') totalWon += payout;
+        if (b.status === 'LOST') totalLost += amount;
+    });
+    const net = totalWon - totalLost;
+
+    historySummary.innerHTML = `
+        <div class="history-summary-item">
+            <span class="summary-label">Puntato</span>
+            <span class="summary-value total-bet">$${totalBet.toFixed(2)}</span>
+        </div>
+        <div class="history-summary-item">
+            <span class="summary-label">Vinto</span>
+            <span class="summary-value total-won">$${totalWon.toFixed(2)}</span>
+        </div>
+        <div class="history-summary-item">
+            <span class="summary-label">Perso</span>
+            <span class="summary-value total-lost">$${totalLost.toFixed(2)}</span>
+        </div>
+        <div class="history-summary-item">
+            <span class="summary-label">Netto</span>
+            <span class="summary-value net-result">${net >= 0 ? '+' : ''}$${net.toFixed(2)}</span>
+        </div>`;
+}
+
+function applyHistoryFilter(filter) {
+    currentHistoryFilter = filter;
+    const filtered = filter === 'all' ? allBetsData : allBetsData.filter(b => b.status === filter);
+    renderHistoryCards(filtered);
+    renderHistorySummary(filtered);
+}
+
+async function loadBetHistory() {
+    historyList.innerHTML = `
+        <div class="history-loading">
+            <div class="spinner"></div>
+            <p>Caricamento storico...</p>
+        </div>`;
+    historySummary.innerHTML = '';
+
+    try {
+        const res = await authFetch('/api/wallet/history');
+        if (!res.ok) throw new Error('Errore nel caricamento');
+        const data = await res.json();
+        
+        if (data.success && data.bets) {
+            allBetsData = data.bets;
+            applyHistoryFilter(currentHistoryFilter);
+        } else {
+            historyList.innerHTML = `
+                <div class="history-empty">
+                    <span class="empty-icon">⚠️</span>
+                    <span class="empty-text">Errore nel caricamento dello storico</span>
+                </div>`;
+        }
+    } catch (err) {
+        console.error('Errore caricamento storico:', err);
+        historyList.innerHTML = `
+            <div class="history-empty">
+                <span class="empty-icon">⚠️</span>
+                <span class="empty-text">Impossibile caricare lo storico</span>
+            </div>`;
+    }
+}
+
+// Open history overlay
+if (historyBtn && historyOverlay) {
+    historyBtn.addEventListener('click', () => {
+        sidePanel.classList.remove('open');
+        historyOverlay.classList.add('open');
+        currentHistoryFilter = 'all';
+        historyFilterBtns.forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.filter === 'all');
+        });
+        loadBetHistory();
+    });
+}
+
+// Close history overlay
+if (closeHistoryBtn && historyOverlay) {
+    closeHistoryBtn.addEventListener('click', () => {
+        historyOverlay.classList.remove('open');
+    });
+}
+
+// Close on background click
+if (historyOverlay) {
+    historyOverlay.addEventListener('click', (e) => {
+        if (e.target === historyOverlay) {
+            historyOverlay.classList.remove('open');
+        }
+    });
+}
+
+// Filter tabs
+historyFilterBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+        historyFilterBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        applyHistoryFilter(btn.dataset.filter);
+    });
+});
+

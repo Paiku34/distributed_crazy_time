@@ -6,3 +6,6 @@ comandi_avvio.md
 log.txt
 *.log
 .DS_Store
+
+# Database H2 persistente
+java-gateway/data/
