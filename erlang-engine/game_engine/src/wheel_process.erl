@@ -190,13 +190,18 @@ handle_info({start_minigame, SegName, Module, WinnerIndex}, State) ->
     %% Gioca il minigioco (calcola l'esito)
     case Module:play(BonusBets) of
         {async_minigame, Details} ->
-            io:format("[WHEEL] Mini-game ~p in corso (attesa scelte utente per 16s)...~n", [Module]),
+            WaitTimeAsync = case Module of 
+                crazytime -> 16000; 
+                cashhunt -> 30000; 
+                _ -> 16000 
+            end,
+            TimeLeftSec = WaitTimeAsync div 1000,
+            io:format("[WHEEL] Mini-game ~p in corso (attesa scelte utente per ~ps)...~n", [Module, TimeLeftSec]),
             %% Invia stato minigame con details
             publish_minigame_start(State#state.round, SegName, WinnerIndex, Details, State#state.history),
-            %% Schedula la risoluzione vera e propria tra 16 secondi (5s scelta + 11s animazione ruota)
-            WaitTimeAsync = 16000,
+            %% Schedula la risoluzione vera e propria
             erlang:send_after(WaitTimeAsync, self(), {resolve_async_minigame, SegName, Details, BonusBets, WinnerIndex}),
-            {noreply, State#state{phase = minigame, time_left = 16}};
+            {noreply, State#state{phase = minigame, time_left = TimeLeftSec}};
         {ok, Multiplier, Details} ->
             publish_minigame_start(State#state.round, SegName, State#state.history),
             io:format("[WHEEL] Mini-game ~p completato. Moltiplicatore: x~p~n", [Module, Multiplier]),
@@ -235,14 +240,29 @@ handle_info({start_minigame, SegName, Module, WinnerIndex}, State) ->
 
 handle_info({resolve_async_minigame, SegName, Details, BonusBets, WinnerIndex}, State) ->
     io:format("[WHEEL] Risoluzione async minigame ~p! Calcolo vincite...~n", [SegName]),
-    Payouts = crazytime:compute_payouts(Details, BonusBets, State#state.minigame_choices),
+    
+    Payouts = case SegName of
+        <<"CrazyTime">> -> crazytime:compute_payouts(Details, BonusBets, State#state.minigame_choices);
+        <<"CashHunt">> -> cashhunt:compute_payouts(Details, BonusBets, State#state.minigame_choices);
+        _ -> []
+    end,
+    
+    io:format("[DEBUG] resolve_async_minigame - SegName: ~p, BonusBets length: ~p, Payouts length: ~p~n", [SegName, length(BonusBets), length(Payouts)]),
+    
     %% Publish the final results with payouts to results_queue
     Payload = build_result_json(SegName, <<"minigame">>, 0, WinnerIndex, Details, Payouts, State#state.round),
     publish_to_queue("results_queue", Payload),
     
-    %% Add to history (just picking blue_multiplier for history display)
-    BlueMult = maps:get(blue_multiplier, Details),
-    NewHistory = lists:sublist([{SegName, BlueMult} | State#state.history], 21),
+    %% Add to history
+    HistoryMult = case SegName of
+        <<"CrazyTime">> -> maps:get(blue_multiplier, Details, 0);
+        <<"CashHunt">> -> 
+            Grid = maps:get(grid, Details, []),
+            DefaultCell = maps:get(default_cell, Details, 0),
+            if length(Grid) > DefaultCell -> lists:nth(DefaultCell + 1, Grid); true -> 0 end;
+        _ -> 0
+    end,
+    NewHistory = lists:sublist([{SegName, HistoryMult} | State#state.history], 21),
     
     erlang:send_after(?COOLDOWN, self(), new_round),
     {noreply, State#state{phase = cooldown, time_left = 0, history = NewHistory}};

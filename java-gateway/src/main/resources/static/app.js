@@ -445,11 +445,13 @@ function handleGameResult(data) {
     const isWin = myBetAmount !== undefined;
     let winAmount = 0;
     
+    let myMultiplier = data.multiplier;
     if (isWin) {
         if (data.payouts && Array.isArray(data.payouts)) {
-            const myPayout = data.payouts.find(p => p.username === window.currentUser);
+            const myPayout = data.payouts.find(p => p.username === currentUser);
             if (myPayout) {
                 winAmount = myPayout.payout;
+                myMultiplier = (winAmount - myBetAmount) / myBetAmount;
             } else {
                 winAmount = myBetAmount + (myBetAmount * data.multiplier);
             }
@@ -464,13 +466,13 @@ function handleGameResult(data) {
     if (isMinigame && data.winner) {
         if (window.activeMinigame === data.winner) {
             // Minigame already running asynchronously, just show the final result
-            showResult(isWin, data.winner, data.multiplier, winAmount);
+            showResult(isWin, data.winner, myMultiplier, winAmount);
             if (isWin) fetchBalance();
             window.activeMinigame = null;
         } else {
             // Show minigame animation first, then result
-            showMinigameAnimation(data.winner, data.multiplier, details, () => {
-                showResult(isWin, data.winner, data.multiplier, winAmount);
+            showMinigameAnimation(data.winner, myMultiplier, details, () => {
+                showResult(isWin, data.winner, myMultiplier, winAmount);
                 if (isWin) fetchBalance();
             });
         }
@@ -479,7 +481,7 @@ function handleGameResult(data) {
         const delay = isSpinning ? 500 : 100;
         setTimeout(() => {
             document.body.classList.remove('minigame-active');
-            showResult(isWin, data.winner, data.multiplier, winAmount);
+            showResult(isWin, data.winner, myMultiplier, winAmount);
             if (isWin) fetchBalance();
         }, delay);
     }
@@ -705,6 +707,7 @@ function animateCoinFlip(multiplier, details, onComplete) {
 // --- CASH HUNT ---
 function animateCashHunt(multiplier, details, onComplete) {
     const grid = details.grid || [];
+    const initialGrid = details.initial_grid || grid;
     const cols = details.cols || 9;
     const rows = details.rows || 12;
     const defaultCell = details.default_cell || 0;
@@ -833,7 +836,7 @@ function animateCashHunt(multiplier, details, onComplete) {
         cell.className = 'ch-cell';
         cell.dataset.idx = i;
         cell.id = `ch-c-${i}`;
-        const val = grid[i] || 5;
+        const val = initialGrid[i] || 5;
         cell.innerHTML = `<div class="ch-mult" id="ch-m-${i}">x${val}</div><div class="ch-emoji" id="ch-e-${i}"></div>`;
         gridEl.appendChild(cell);
         colorMult(cell.querySelector('.ch-mult'), val);
@@ -908,11 +911,8 @@ function animateCashHunt(multiplier, details, onComplete) {
             if (elapsed >= shuffleDuration) {
                 allCells.forEach(c => { c.classList.remove('shuffle-slow', 'shuffle-fast'); });
 
-                // CRITICAL: Scramble the actual multipliers behind the scenes!
-                for (let i = grid.length - 1; i > 0; i--) {
-                    const j = Math.floor(Math.random() * (i + 1));
-                    [grid[i], grid[j]] = [grid[j], grid[i]];
-                }
+                // CRITICAL: Removed local scramble to keep frontend grid synchronized with the server's grid
+                // (Backend already provides the final shuffled grid)
 
                 startPhase5();
                 return;
@@ -974,6 +974,13 @@ function animateCashHunt(multiplier, details, onComplete) {
                 cell.style.cursor = 'default';
             });
 
+            // Send choice to backend
+            if (currentUser) {
+                fetch(`/api/game/choice?username=${encodeURIComponent(currentUser)}&minigame=CashHunt&choice=${pickedIndex}`, {
+                    method: 'POST'
+                }).catch(e => console.error("Errore invio scelta", e));
+            }
+
             startPhase6(pickedIndex);
         }, pickDuration * 1000);
     }
@@ -981,17 +988,9 @@ function animateCashHunt(multiplier, details, onComplete) {
     // === PHASE 6: Reveal all cells ===
     function startPhase6(pickedIndex) {
         msgEl.textContent = '\u{1F389} Rivelazione!';
-
-        // CRITICAL: Force the picked cell to contain the server's chosen multiplier
-        let mIdx = grid.indexOf(multiplier);
-        if (mIdx !== -1 && mIdx !== pickedIndex) {
-            // Swap to put multiplier exactly where user clicked
-            let temp = grid[pickedIndex];
-            grid[pickedIndex] = grid[mIdx];
-            grid[mIdx] = temp;
-        } else if (mIdx === -1) {
-            grid[pickedIndex] = multiplier;
-        }
+        
+        // Calcola il vero moltiplicatore vinto dall'utente in base alla griglia
+        const realMultiplier = grid[pickedIndex] || 5;
 
         // Update DOM with new scrambled grid
         for (let i = 0; i < totalCells; i++) {
@@ -1014,8 +1013,8 @@ function animateCashHunt(multiplier, details, onComplete) {
             const winnerCell = document.getElementById(`ch-c-${pickedIndex}`);
             if (winnerCell) winnerCell.classList.add('winner-cell');
 
-            msgEl.textContent = `\u{1F3C6} Hai vinto: x${multiplier}!`;
-            showMinigameResultMultiplier(multiplier);
+            msgEl.textContent = `\u{1F3C6} Hai vinto: x${realMultiplier}!`;
+            showMinigameResultMultiplier(realMultiplier);
             setTimeout(onComplete, 4000);
         }, rows * 50 + 800);
     }

@@ -10,6 +10,7 @@
 
 -export([start_link/0, play/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
+-export([compute_payouts/3]).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
@@ -24,23 +25,65 @@ init([]) ->
 handle_call({play, Bets}, _From, State) ->
     %% Griglia 9 colonne x 12 righe = 108 celle
     Grid = generate_grid(),
-    %% Mescola la griglia
-    Shuffled = [X || {_, X} <- lists:sort([{rand:uniform(), V} || V <- Grid])],
+    %% Mescola la griglia iniziale (mostrata prima dello shuffle)
+    InitialGrid = [X || {_, X} <- lists:sort([{rand:uniform(), V} || V <- Grid])],
+    %% Mescola nuovamente la griglia (valori reali finali su cui il server paga)
+    FinalGrid = [X || {_, X} <- lists:sort([{rand:uniform(), V} || V <- Grid])],
     %% Il server sceglie una cella di default (per chi non sceglie)
     DefaultCell = rand:uniform(108) - 1,
-    Multiplier = lists:nth(DefaultCell + 1, Shuffled),
+    
     Details = #{
-        grid => Shuffled,
+        initial_grid => InitialGrid,
+        grid => FinalGrid,
         cols => 9,
         rows => 12,
         default_cell => DefaultCell
     },
-    io:format("[CASHHUNT] Griglia 9x12 generata. Cella default #~p -> x~p (~p scommesse)~n",
-              [DefaultCell, Multiplier, length(Bets)]),
-    {reply, {ok, Multiplier, Details}, State};
+    io:format("[CASHHUNT] Griglia 9x12 generata. Cella default #~p. Attendiamo scelte utente... (~p scommesse)~n",
+              [DefaultCell, length(Bets)]),
+    {reply, {async_minigame, Details}, State};
 
 handle_call(_Req, _From, State) ->
     {reply, {error, unknown_request}, State}.
+
+%% compute_payouts/3
+%% Called by wheel_process after the wait time (19s)
+compute_payouts(Details, Bets, Choices) ->
+    Grid = maps:get(grid, Details),
+    DefaultCell = maps:get(default_cell, Details),
+    
+    lists:filtermap(fun(Bet) ->
+        Seg = maps:get(<<"segment">>, Bet, <<>>),
+        case Seg of
+            <<"CashHunt">> ->
+                Username = maps:get(<<"username">>, Bet, <<"unknown">>),
+                Amount = maps:get(<<"amount">>, Bet, 0),
+                
+                %% Determine which cell this user gets
+                UserChoiceStr = maps:get(Username, Choices, undefined),
+                CellIndex = case UserChoiceStr of
+                    undefined -> DefaultCell;
+                    ChoiceStr -> 
+                        %% Parse string to integer
+                        try binary_to_integer(ChoiceStr) of
+                            Int when Int >= 0, Int < 108 -> Int;
+                            _ -> DefaultCell
+                        catch
+                            _:_ -> DefaultCell
+                        end
+                end,
+                
+                %% Get the multiplier for that cell
+                UserMult = lists:nth(CellIndex + 1, Grid),
+
+                {true, #{
+                    username => Username,
+                    bet => Amount,
+                    payout => Amount + (Amount * UserMult)
+                }};
+            _ -> false
+        end
+    end, Bets).
 
 handle_cast(_Msg, State) -> {noreply, State}.
 handle_info(_Info, State) -> {noreply, State}.
