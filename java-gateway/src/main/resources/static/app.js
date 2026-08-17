@@ -954,6 +954,14 @@ function animateCashHunt(multiplier, details, onComplete) {
                 }
                 pickedIndex = cellIdx;
                 this.classList.add('picked');
+
+                // Invia la scelta al server IMMEDIATAMENTE per evitare problemi di latenza
+                if (currentUser) {
+                    authFetch(`/api/game/choice`, {
+                        method: 'POST',
+                        body: {minigame: 'CashHunt', choice: pickedIndex.toString()}
+                    }).catch(e => console.error("Errore invio scelta", e));
+                }
             });
         });
 
@@ -974,11 +982,15 @@ function animateCashHunt(multiplier, details, onComplete) {
                 cell.style.cursor = 'default';
             });
 
-            // Send choice to backend
-            if (currentUser) {
-                fetch(`/api/game/choice?username=${encodeURIComponent(currentUser)}&minigame=CashHunt&choice=${pickedIndex}`, {
-                    method: 'POST'
-                }).catch(e => console.error("Errore invio scelta", e));
+            // Send default choice to backend solo se non ha mai cliccato
+            if (pickedIndex < 0) {
+                pickedIndex = defaultCell;
+                if (currentUser) {
+                    authFetch(`/api/game/choice`, {
+                        method: 'POST',
+                        body: {minigame: 'CashHunt', choice: pickedIndex.toString()}
+                    }).catch(e => console.error("Errore invio scelta", e));
+                }
             }
 
             startPhase6(pickedIndex);
@@ -1583,6 +1595,14 @@ function animateCrazyTime(multiplier, details, onComplete) {
                     });
                     btn.style.opacity = '1';
                     btn.style.transform = 'scale(1.1)';
+
+                    // Invia la scelta al server IMMEDIATAMENTE
+                    if (currentUser) {
+                        authFetch(`/api/game/choice`, {
+                            method: 'POST',
+                            body: {minigame: 'CrazyTime', choice: selectedFlapper}
+                        }).catch(e => console.error("Errore invio scelta", e));
+                    }
                 }
             });
         });
