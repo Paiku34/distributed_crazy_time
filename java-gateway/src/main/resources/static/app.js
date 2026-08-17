@@ -451,7 +451,7 @@ function handleGameResult(data) {
             const myPayout = data.payouts.find(p => p.username === currentUser);
             if (myPayout) {
                 winAmount = myPayout.payout;
-                myMultiplier = (winAmount - myBetAmount) / myBetAmount;
+                myMultiplier = Math.round((winAmount - myBetAmount) / myBetAmount);
             } else {
                 winAmount = myBetAmount + (myBetAmount * data.multiplier);
             }
