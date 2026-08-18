@@ -34,16 +34,24 @@ public class Bet {
     @Column
     private BigDecimal payout;
 
+    @Column
+    private Integer round;
+
     // Costruttore vuoto per JPA
     public Bet() {}
 
     public Bet(String username, BigDecimal amount, String segment) {
+        this(username, amount, segment, 0);
+    }
+
+    public Bet(String username, BigDecimal amount, String segment, Integer round) {
         this.username = username;
         this.amount = amount;
         this.segment = segment;
         this.timestamp = LocalDateTime.now();
         this.status = "PENDING";
         this.payout = BigDecimal.ZERO;
+        this.round = round != null ? round : 0;
     }
 
     // Getters e Setters
@@ -61,4 +69,6 @@ public class Bet {
     public void setStatus(String status) { this.status = status; }
     public BigDecimal getPayout() { return payout; }
     public void setPayout(BigDecimal payout) { this.payout = payout; }
+    public Integer getRound() { return round; }
+    public void setRound(Integer round) { this.round = round; }
 }
