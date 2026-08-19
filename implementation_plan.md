@@ -17,6 +17,7 @@ The Distributed Crazy Time project is a real-time betting web app with a hybrid 
 ---
 
 ## Phase 0: Bug Fixes (Existing Codebase) (dovrebbero essere a posto ma ricontrollare)
+(manca da vedere che nelle scelte default ricevo come bonus -1x)
 
 **Goal**: Fix all bugs, race conditions, logic errors, and security issues found during the comprehensive code review. These must be fixed **before** adding distributed features, as they would compound with the increased complexity.
 
