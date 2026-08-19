@@ -61,6 +61,29 @@ public class WalletControllerTest {
     }
 
     @Test
+    public void testPlaceBetSlipMultipleItemsSuccess() {
+        when(playerRepository.findById(1L)).thenReturn(Optional.of(mockPlayer));
+        
+        List<PlaceBetRequest> slip = List.of(
+            new PlaceBetRequest(new BigDecimal("10.00"), "Pachinko"),
+            new PlaceBetRequest(new BigDecimal("5.00"), "10"),
+            new PlaceBetRequest(new BigDecimal("5.00"), "Pachinko") // duplicate segment to test aggregation
+        );
+
+        ResponseEntity<Map<String, Object>> response = walletController.placeBet(mockPlayer, slip);
+        
+        assertEquals(200, response.getStatusCode().value());
+        assertTrue((Boolean) response.getBody().get("success"));
+        // Total should be 20.00 (15 on Pachinko + 5 on 10)
+        assertEquals(new BigDecimal("80.00"), mockPlayer.getBalance());
+        assertEquals(new BigDecimal("20.00"), response.getBody().get("total_amount"));
+        verify(playerRepository, times(1)).save(mockPlayer);
+        // 2 distinct segments saved (Pachinko and 10)
+        verify(betRepository, times(2)).save(any(Bet.class));
+        verify(rabbitTemplate, times(2)).convertAndSend(eq("bets_queue"), anyString());
+    }
+
+    @Test
     public void testPlaceBetInsufficientFunds() {
         mockPlayer.setBalance(new BigDecimal("10.00"));
         when(playerRepository.findById(1L)).thenReturn(Optional.of(mockPlayer));

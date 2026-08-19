@@ -68,30 +68,63 @@ public class WalletController {
     // FIX 0.1.1 + 0.1.5 + 0.1.6: @Transactional + pessimistic locking + phase check
     @Transactional
     @PostMapping("/place-bet")
+    @org.springframework.transaction.annotation.Transactional
     public ResponseEntity<Map<String, Object>> placeBet(
             @RequestAttribute("player") Player player,
-            @RequestBody PlaceBetRequest request) {
+            @RequestBody com.fasterxml.jackson.databind.JsonNode requestBody) {
 
-        BigDecimal amount = request.amount();
-        String segment = request.segment();
-
-        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+        List<PlaceBetRequest> rawItems = new java.util.ArrayList<>();
+        if (requestBody.isArray()) {
+            for (com.fasterxml.jackson.databind.JsonNode node : requestBody) {
+                BigDecimal amount = node.has("amount") ? new BigDecimal(node.get("amount").asText()) : null;
+                String segment = node.has("segment") ? node.get("segment").asText() : null;
+                rawItems.add(new PlaceBetRequest(amount, segment));
+            }
+        } else if (requestBody.isObject()) {
+            BigDecimal amount = requestBody.has("amount") ? new BigDecimal(requestBody.get("amount").asText()) : null;
+            String segment = requestBody.has("segment") ? requestBody.get("segment").asText() : null;
+            rawItems.add(new PlaceBetRequest(amount, segment));
+        } else {
             return ResponseEntity.badRequest().body(Map.of(
                 "success", false,
-                "error", "L'importo deve essere maggiore di zero"
+                "error", "Formato richiesta non valido"
+            ));
+        }
+
+        if (rawItems.isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                "success", false,
+                "error", "Nessuna scommessa fornita"
             ));
         }
 
         List<String> validSegments = List.of("1", "2", "5", "10", "Pachinko", "CoinFlip", "CashHunt", "CrazyTime");
-        if (!validSegments.contains(segment)) {
-            return ResponseEntity.badRequest().body(Map.of(
-                "success", false,
-                "error", "Segmento non valido. Valori ammessi: " + validSegments
-            ));
+        
+        // Aggrega scommesse per lo stesso segmento e convalida
+        Map<String, BigDecimal> aggregatedBets = new java.util.LinkedHashMap<>();
+        for (PlaceBetRequest item : rawItems) {
+            BigDecimal amount = item.amount();
+            String segment = item.segment();
+
+            if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+                return ResponseEntity.badRequest().body(Map.of(
+                    "success", false,
+                    "error", "L'importo deve essere maggiore di zero"
+                ));
+            }
+
+            if (segment == null || !validSegments.contains(segment)) {
+                return ResponseEntity.badRequest().body(Map.of(
+                    "success", false,
+                    "error", "Segmento non valido. Valori ammessi: " + validSegments
+                ));
+            }
+
+            aggregatedBets.merge(segment, amount, BigDecimal::add);
         }
 
         // FIX 0.1.6: Check game phase before accepting bets
-        String phase = gameStateCache.getPhase();
+        String phase = gameStateCache != null ? gameStateCache.getPhase() : "betting";
         if (!"betting".equals(phase)) {
             return ResponseEntity.badRequest().body(Map.of(
                 "success", false,
@@ -99,11 +132,14 @@ public class WalletController {
             ));
         }
 
+        BigDecimal totalAmount = aggregatedBets.values().stream()
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
         // FIX 0.1.1: Use pessimistic locking to prevent double-spending
         Player updatedPlayer = playerRepository.findByUsernameForUpdate(player.getUsername())
                 .orElseThrow(() -> new RuntimeException("Player not found"));
 
-        if (updatedPlayer.getBalance().compareTo(amount) < 0) {
+        if (updatedPlayer.getBalance().compareTo(totalAmount) < 0) {
             return ResponseEntity.badRequest().body(Map.of(
                 "success", false,
                 "error", "Saldo insufficiente",
@@ -111,38 +147,58 @@ public class WalletController {
             ));
         }
 
-        updatedPlayer.setBalance(updatedPlayer.getBalance().subtract(amount));
+        // Scalata atomica del totale dal saldo
+        updatedPlayer.setBalance(updatedPlayer.getBalance().subtract(totalAmount));
         playerRepository.save(updatedPlayer);
 
-        Bet bet = new Bet(updatedPlayer.getUsername(), amount, segment);
-        betRepository.save(bet);
+        // Salvataggio di 1 singola riga per segmento nel DB e invio a RabbitMQ
+        int currentRound = gameStateCache != null ? gameStateCache.getRound() : 0;
+        List<Map<String, Object>> savedBetsInfo = new java.util.ArrayList<>();
+        for (Map.Entry<String, BigDecimal> entry : aggregatedBets.entrySet()) {
+            String segment = entry.getKey();
+            BigDecimal segAmount = entry.getValue();
 
-        String message = String.format(java.util.Locale.US,
-            "{\"username\":\"%s\",\"amount\":%.2f,\"segment\":\"%s\"}",
-            updatedPlayer.getUsername(), amount, segment);
-        rabbitTemplate.convertAndSend("bets_queue", message);
-        log.info("Bet inviata a RabbitMQ: {}", message);
+            Bet bet = new Bet(updatedPlayer.getUsername(), segAmount, segment, currentRound);
+            betRepository.save(bet);
+
+            String message = String.format(java.util.Locale.US,
+                "{\"username\":\"%s\",\"amount\":%.2f,\"segment\":\"%s\"}",
+                updatedPlayer.getUsername(), segAmount, segment);
+            rabbitTemplate.convertAndSend("bets_queue", message);
+            log.info("Bet inviata a RabbitMQ: {}", message);
+
+            savedBetsInfo.add(Map.of(
+                "id", bet.getId(),
+                "segment", segment,
+                "amount", segAmount,
+                "round", currentRound
+            ));
+        }
 
         return ResponseEntity.ok(Map.of(
             "success", true,
             "username", updatedPlayer.getUsername(),
-            "amount", amount,
-            "segment", segment,
-            "new_balance", updatedPlayer.getBalance()
+            "total_amount", totalAmount,
+            "new_balance", updatedPlayer.getBalance(),
+            "bets", savedBetsInfo
         ));
+    }
+
+    public ResponseEntity<Map<String, Object>> placeBet(Player player, PlaceBetRequest request) {
+        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        return placeBet(player, mapper.valueToTree(request));
+    }
+
+    public ResponseEntity<Map<String, Object>> placeBet(Player player, List<PlaceBetRequest> requests) {
+        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        return placeBet(player, mapper.valueToTree(requests));
     }
 
     @PostMapping("/undo-bets")
     public ResponseEntity<Map<String, Object>> undoBets(@RequestAttribute("player") Player player) {
-        Player updatedPlayer = reloadPlayer(player);
-        
-        String message = String.format("{\"username\":\"%s\",\"amount\":0.0,\"segment\":\"UNDO_BETS\"}", updatedPlayer.getUsername());
-        rabbitTemplate.convertAndSend("bets_queue", message);
-        log.info("Comando undo_bets inviato a RabbitMQ: {}", message);
-
         return ResponseEntity.ok(Map.of(
             "success", true,
-            "message", "Richiesta di annullamento inviata."
+            "message", "Annullamento gestito localmente nella schedina (Bet Slip)."
         ));
     }
 
@@ -153,6 +209,7 @@ public class WalletController {
         List<Bet> bets = betRepository.findByUsernameOrderByTimestampDesc(updatedPlayer.getUsername());
         List<Map<String, Object>> betList = bets.stream().map(b -> Map.<String, Object>of(
             "id", b.getId(),
+            "round", b.getRound() != null ? b.getRound() : 0,
             "amount", b.getAmount(),
             "segment", b.getSegment(),
             "status", b.getStatus() != null ? b.getStatus() : "PENDING",

@@ -1867,12 +1867,82 @@ body.crazytime-active .chips-area-container {
     border-radius: 3px;
 }
 
+/* History Round Grouping */
+.history-round-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 14px;
+    padding: 12px 14px;
+    margin-bottom: 6px;
+    transition: all 0.2s ease;
+    animation: historyFadeIn 0.3s ease backwards;
+}
+
+.history-round-group:hover {
+    background: rgba(255, 255, 255, 0.035);
+    border-color: rgba(255, 255, 255, 0.09);
+}
+
+.history-round-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    margin-bottom: 2px;
+}
+
+.history-round-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.history-round-badge {
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(217, 119, 6, 0.25));
+    border: 1px solid rgba(245, 158, 11, 0.4);
+    color: #fbbf24;
+    font-size: 0.75rem;
+    font-weight: 800;
+    padding: 3px 8px;
+    border-radius: 6px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+.history-round-count {
+    color: #94a3b8;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.history-round-meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.history-round-time {
+    color: #64748b;
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+.history-round-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
 /* History Card */
 .history-card {
     background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 12px;
-    padding: 14px 16px;
+    border-radius: 10px;
+    padding: 10px 14px;
     display: flex;
     align-items: center;
     gap: 14px;

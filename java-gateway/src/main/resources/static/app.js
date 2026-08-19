@@ -99,6 +99,8 @@ function handleSessionInvalidated(msg) {
 }
 
 let myBetsThisRound = {};
+let betSlip = {};
+let isBetSlipSubmitted = false;
 let wheelAngle = 0;
 let isSpinning = false;
 let spinAnimationId = null;
@@ -337,11 +339,71 @@ function startGame() {
         .catch(() => { });
 }
 
+function getBetSlipTotal() {
+    return Object.values(betSlip).reduce((sum, val) => sum + (parseFloat(val) || 0), 0);
+}
+
+function getAvailableBalance() {
+    return Math.max(0, currentBalance - getBetSlipTotal());
+}
+
+function updateChipAvailability() {
+    const avail = getAvailableBalance();
+    chipHitboxes.forEach(chip => {
+        const amount = parseFloat(chip.dataset.amount);
+        if (amount > avail + 0.001) {
+            chip.style.opacity = '0.35';
+            chip.style.filter = 'grayscale(80%)';
+            chip.style.cursor = 'not-allowed';
+        } else {
+            chip.style.opacity = '1';
+            chip.style.filter = 'none';
+            chip.style.cursor = 'pointer';
+        }
+    });
+}
+
 function updateBalanceDisplay(amount) {
     currentBalance = parseFloat(amount);
     playerBalance.textContent = `$${currentBalance.toFixed(2)}`;
     const sideBalance = document.getElementById('side-balance');
     if(sideBalance) sideBalance.textContent = `$${currentBalance.toFixed(2)}`;
+    updateChipAvailability();
+}
+
+async function submitBetSlip() {
+    if (isBetSlipSubmitted) return;
+    const entries = Object.entries(betSlip).filter(([_, amt]) => amt > 0);
+    if (entries.length === 0) return;
+
+    isBetSlipSubmitted = true;
+    const payload = entries.map(([segment, amount]) => ({
+        segment: segment,
+        amount: parseFloat(amount.toFixed(2))
+    }));
+
+    try {
+        const res = await authFetch('/api/wallet/place-bet', {
+            method: 'POST',
+            body: payload
+        });
+        const data = await res.json();
+        if (data.success) {
+            updateBalanceDisplay(data.new_balance);
+            myBetsThisRound = { ...betSlip };
+            console.log('[BET SLIP] Scommesse confermate con successo:', data);
+        } else {
+            showBetError(data.error || 'Errore durante la scommessa');
+            if (currentPhase === 'betting') {
+                isBetSlipSubmitted = false;
+            }
+        }
+    } catch (e) {
+        console.error('[BET SLIP] Errore connessione:', e);
+        if (currentPhase === 'betting') {
+            isBetSlipSubmitted = false;
+        }
+    }
 }
 
 // ===== WEBSOCKET =====
@@ -391,19 +453,28 @@ function handleGameState(data) {
         phaseText.textContent = `PUNTATE APERTE: ${data.time_left}s`;
         phaseText.className = 'timer-phase betting';
 
-        // betButtons removed
-
         // Reset round on fresh betting phase
         if (data.time_left >= 9) {
             clearChips();
+            betSlip = {};
             myBetsThisRound = {};
+            isBetSlipSubmitted = false;
             wheelCenterText.innerHTML = 'CRAZY<br>TIME';
             document.body.classList.remove('minigame-active', 'coinflip-active', 'cashhunt-active', 'crazytime-active');
             minigameOverlay.classList.remove('visible');
+            updateChipAvailability();
+        }
+
+        // Invio automatico della schedina a 1s dalla fine del countdown (mitiga jitter di rete)
+        if (data.time_left <= 1 && !isBetSlipSubmitted && Object.keys(betSlip).length > 0) {
+            submitBetSlip();
         }
 
     } else if (phase === 'spinning') {
         currentPhase = 'spinning';
+        if (!isBetSlipSubmitted && Object.keys(betSlip).length > 0) {
+            submitBetSlip();
+        }
         clearDevSelection();
         phaseText.textContent = 'SCOMMESSE CHIUSE';
         phaseText.className = 'timer-phase spinning';
@@ -1347,20 +1418,29 @@ function forceResult(segment, btnElement) {
     }
 }
 
-// ===== NEW IMAGE-BASED BETTING LOGIC =====
+// ===== BET SLIP INTERACTION LOGIC =====
 
 chipHitboxes.forEach(chip => {
     chip.addEventListener('click', () => {
+        const amount = parseFloat(chip.dataset.amount);
+        if (amount > getAvailableBalance() + 0.001) {
+            showBetError('Saldo insufficiente per questa fiche!');
+            return;
+        }
         chipHitboxes.forEach(c => c.classList.remove('active-chip'));
         chip.classList.add('active-chip');
-        selectedChipAmount = parseFloat(chip.dataset.amount);
+        selectedChipAmount = amount;
     });
 });
 
 betHitboxes.forEach(betBox => {
-    betBox.addEventListener('click', async () => {
+    betBox.addEventListener('click', () => {
         if (currentPhase !== 'betting') {
             showBetError('Le scommesse sono chiuse!');
+            return;
+        }
+        if (isBetSlipSubmitted) {
+            showBetError('Schedina già inviata per questo round!');
             return;
         }
 
@@ -1369,23 +1449,19 @@ betHitboxes.forEach(betBox => {
 
         if (!amount || amount <= 0) return;
 
-        try {
-            const res = await authFetch(`/api/wallet/place-bet`, { method: 'POST', body: {amount, segment} });
-            const data = await res.json();
-
-            if (data.success) {
-                updateBalanceDisplay(data.new_balance);
-                if (!myBetsThisRound[segment]) myBetsThisRound[segment] = 0;
-                myBetsThisRound[segment] += amount;
-                totalBetThisRound += amount;
-                if (totalBetDisplay) totalBetDisplay.textContent = `$${totalBetThisRound.toFixed(2)}`;
-                addChipToButton(betBox, myBetsThisRound[segment]);
-            } else {
-                showBetError(data.error);
-            }
-        } catch (e) {
-            console.error(e);
+        if (amount > getAvailableBalance() + 0.001) {
+            showBetError('Saldo insufficiente!');
+            return;
         }
+
+        // Aggiunge localmente alla schedina (Bet Slip)
+        if (!betSlip[segment]) betSlip[segment] = 0;
+        betSlip[segment] = parseFloat((betSlip[segment] + amount).toFixed(2));
+        
+        totalBetThisRound = getBetSlipTotal();
+        if (totalBetDisplay) totalBetDisplay.textContent = `$${totalBetThisRound.toFixed(2)}`;
+        addChipToButton(betBox, betSlip[segment]);
+        updateChipAvailability();
     });
 });
 
@@ -1396,9 +1472,13 @@ const betGroups = {
 };
 
 betAllHitboxes.forEach(allBox => {
-    allBox.addEventListener('click', async () => {
+    allBox.addEventListener('click', () => {
         if (currentPhase !== 'betting') {
             showBetError('Le scommesse sono chiuse!');
+            return;
+        }
+        if (isBetSlipSubmitted) {
+            showBetError('Schedina già inviata per questo round!');
             return;
         }
 
@@ -1409,105 +1489,103 @@ betAllHitboxes.forEach(allBox => {
         const amount = selectedChipAmount;
         if (!amount || amount <= 0) return;
 
-        for (const segment of segments) {
-            try {
-                const res = await authFetch(`/api/wallet/place-bet`, { method: 'POST', body: {amount, segment} });
-                const data = await res.json();
-
-                if (data.success) {
-                    updateBalanceDisplay(data.new_balance);
-                    if (!myBetsThisRound[segment]) myBetsThisRound[segment] = 0;
-                    myBetsThisRound[segment] += amount;
-                    totalBetThisRound += amount;
-                    if (totalBetDisplay) totalBetDisplay.textContent = `$${totalBetThisRound.toFixed(2)}`;
-
-                    const betBox = document.querySelector(`.bet-hitbox[data-segment="${segment}"]`);
-                    if (betBox) addChipToButton(betBox, myBetsThisRound[segment]);
-                } else {
-                    showBetError(data.error);
-                }
-            } catch (e) {
-                console.error(e);
-            }
+        const totalNeeded = amount * segments.length;
+        if (totalNeeded > getAvailableBalance() + 0.001) {
+            showBetError('Saldo insufficiente per scommettere su tutti!');
+            return;
         }
+
+        for (const segment of segments) {
+            if (!betSlip[segment]) betSlip[segment] = 0;
+            betSlip[segment] = parseFloat((betSlip[segment] + amount).toFixed(2));
+            const betBox = document.querySelector(`.bet-hitbox[data-segment="${segment}"]`);
+            if (betBox) addChipToButton(betBox, betSlip[segment]);
+        }
+
+        totalBetThisRound = getBetSlipTotal();
+        if (totalBetDisplay) totalBetDisplay.textContent = `$${totalBetThisRound.toFixed(2)}`;
+        updateChipAvailability();
     });
 });
 
-// --- Undo Bets Logic ---
+// --- Undo Bets Logic (Reset locale del carrello) ---
 const btnUndo = document.getElementById('btn-undo');
 if (btnUndo) {
-    btnUndo.addEventListener('click', async () => {
+    btnUndo.addEventListener('click', () => {
         if (currentPhase !== 'betting') {
             showBetError('Le scommesse sono chiuse!');
             return;
         }
-
-        if (Object.keys(myBetsThisRound).length === 0) return;
-
-        try {
-            const res = await authFetch(`/api/wallet/undo-bets`, { method: 'POST' });
-            const data = await res.json();
-            if (data.success) {
-                // Svuota lo stato locale
-                myBetsThisRound = {};
-                totalBetThisRound = 0;
-                if (totalBetDisplay) totalBetDisplay.textContent = `$0.00`;
-
-                // Rimuove graficamente le fiches impilate
-                betHitboxes.forEach(hb => {
-                    const chip = hb.querySelector('.bet-stacked-chip');
-                    if (chip) chip.remove();
-                });
-
-                // Il rimborso del saldo avverrà asincronamente tramite RabbitMQ (verrà ricevuto un aggiornamento balance se ricarichiamo, 
-                // ma per ora chiediamo un aggiornamento del wallet)
-                
-                setTimeout(() => {
-                    authFetch(`/api/wallet/balance`)
-                        .then(r => r.json())
-                        .then(d => { if (d.success) updateBalanceDisplay(d.balance); });
-                }, 500);
-            } else {
-                showBetError(data.error);
-            }
-        } catch (e) {
-            console.error(e);
+        if (isBetSlipSubmitted) {
+            showBetError('Schedina già confermata per questo round!');
+            return;
         }
+
+        // Svuota lo stato locale della schedina
+        betSlip = {};
+        totalBetThisRound = 0;
+        if (totalBetDisplay) totalBetDisplay.textContent = `$0.00`;
+
+        // Rimuove graficamente le fiches impilate
+        betHitboxes.forEach(hb => {
+            const chip = hb.querySelector('.bet-stacked-chip');
+            if (chip) chip.remove();
+        });
+
+        updateChipAvailability();
     });
 }
 
-// --- 2x Bets Logic ---
+// --- 2x Bets Logic (Raddoppio locale) ---
 const btn2x = document.getElementById('btn-2x');
 if (btn2x) {
-    btn2x.addEventListener('click', async () => {
+    btn2x.addEventListener('click', () => {
         if (currentPhase !== 'betting') {
             showBetError('Le scommesse sono chiuse!');
             return;
         }
-
-        const betsToDouble = { ...myBetsThisRound };
-        if (Object.keys(betsToDouble).length === 0) return;
-
-        for (const [segment, amount] of Object.entries(betsToDouble)) {
-            if (amount <= 0) continue;
-            try {
-                const res = await authFetch(`/api/wallet/place-bet`, { method: 'POST', body: {amount, segment} });
-                const data = await res.json();
-                if (data.success) {
-                    updateBalanceDisplay(data.new_balance);
-                    myBetsThisRound[segment] += amount;
-                    totalBetThisRound += amount;
-                    if (totalBetDisplay) totalBetDisplay.textContent = `$${totalBetThisRound.toFixed(2)}`;
-
-                    const betBox = document.querySelector(`.bet-hitbox[data-segment="${segment}"]`);
-                    if (betBox) addChipToButton(betBox, myBetsThisRound[segment]);
-                } else {
-                    showBetError(data.error);
-                }
-            } catch (e) {
-                console.error(e);
-            }
+        if (isBetSlipSubmitted) {
+            showBetError('Schedina già inviata per questo round!');
+            return;
         }
+
+        const currentTotal = getBetSlipTotal();
+        if (currentTotal <= 0) return;
+
+        if (currentTotal > getAvailableBalance() + 0.001) {
+            showBetError('Saldo insufficiente per raddoppiare!');
+            return;
+        }
+
+        for (const segment of Object.keys(betSlip)) {
+            betSlip[segment] = parseFloat((betSlip[segment] * 2).toFixed(2));
+            const betBox = document.querySelector(`.bet-hitbox[data-segment="${segment}"]`);
+            if (betBox) addChipToButton(betBox, betSlip[segment]);
+        }
+
+        totalBetThisRound = getBetSlipTotal();
+        if (totalBetDisplay) totalBetDisplay.textContent = `$${totalBetThisRound.toFixed(2)}`;
+        updateChipAvailability();
+    });
+}
+
+// --- Confirm Bet Slip Button (Piazza Scommesse) ---
+const btnConfirmBet = document.getElementById('btn-confirm-bet');
+if (btnConfirmBet) {
+    btnConfirmBet.addEventListener('click', () => {
+        if (currentPhase !== 'betting') {
+            showBetError('Le scommesse sono chiuse!');
+            return;
+        }
+        if (isBetSlipSubmitted) {
+            showBetError('Schedina già inviata!');
+            return;
+        }
+        if (getBetSlipTotal() <= 0) {
+            showBetError('Seleziona almeno una scommessa prima di confermare!');
+            return;
+        }
+        submitBetSlip();
     });
 }
 
@@ -1528,7 +1606,6 @@ function clearChips() {
 }
 
 function showBetError(msg) {
-    // Brief visual feedback
     const el = document.createElement('div');
     el.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:rgba(239,68,68,0.9);color:white;padding:10px 24px;border-radius:8px;font-weight:600;z-index:9999;animation:fadeIn 0.3s ease;';
     el.textContent = msg;
@@ -1776,6 +1853,45 @@ function formatHistoryDate(isoStr) {
     }
 }
 
+function groupBetsByRound(bets) {
+    const groups = [];
+    let currentGroup = null;
+
+    for (const bet of bets) {
+        const betRound = bet.round && bet.round > 0 ? bet.round : null;
+        const betTime = new Date(bet.timestamp).getTime();
+
+        let isSameGroup = false;
+        if (currentGroup) {
+            if (betRound !== null && currentGroup.round !== null) {
+                isSameGroup = (betRound === currentGroup.round);
+            } else {
+                // Se il round non è disponibile, raggruppa per prossimità temporale (< 6s)
+                const firstTime = new Date(currentGroup.bets[0].timestamp).getTime();
+                isSameGroup = Math.abs(betTime - firstTime) < 6000;
+            }
+        }
+
+        if (isSameGroup) {
+            currentGroup.bets.push(bet);
+            currentGroup.totalAmount += (parseFloat(bet.amount) || 0);
+            if (bet.status === 'WON') {
+                currentGroup.totalPayout += (parseFloat(bet.payout) || 0);
+            }
+        } else {
+            currentGroup = {
+                round: betRound,
+                timestamp: bet.timestamp,
+                bets: [bet],
+                totalAmount: (parseFloat(bet.amount) || 0),
+                totalPayout: bet.status === 'WON' ? (parseFloat(bet.payout) || 0) : 0
+            };
+            groups.push(currentGroup);
+        }
+    }
+    return groups;
+}
+
 function renderHistoryCards(bets) {
     if (!bets || bets.length === 0) {
         historyList.innerHTML = `
@@ -1786,39 +1902,62 @@ function renderHistoryCards(bets) {
         return;
     }
 
-    historyList.innerHTML = bets.map((bet, i) => {
-        const segColor = SEGMENT_COLORS[bet.segment] || '#64748b';
-        const segLabel = SEGMENT_TEXT_SHORT[bet.segment] || bet.segment;
-        const segName = SEGMENT_DISPLAY_NAMES[bet.segment] || bet.segment;
-        const status = bet.status || 'PENDING';
-        const statusLabel = STATUS_LABELS[status] || status;
-        const payout = parseFloat(bet.payout) || 0;
-        const amount = parseFloat(bet.amount) || 0;
+    const groups = groupBetsByRound(bets);
 
-        let payoutClass = 'pending';
-        let payoutText = 'In attesa...';
-        if (status === 'WON') {
-            payoutClass = 'won';
-            payoutText = `+$${payout.toFixed(2)}`;
-        } else if (status === 'LOST') {
-            payoutClass = 'lost';
-            payoutText = `-$${amount.toFixed(2)}`;
-        } else if (status === 'REFUNDED') {
-            payoutClass = 'refunded';
-            payoutText = `↩ $${amount.toFixed(2)}`;
-        }
+    historyList.innerHTML = groups.map((group, gIdx) => {
+        const roundTitle = group.round ? `Round #${group.round}` : `Giocata`;
+        const countText = group.bets.length === 1 ? '1 puntata' : `${group.bets.length} puntate`;
+        const totalRoundStaked = `$${group.totalAmount.toFixed(2)}`;
+
+        const cardsHtml = group.bets.map((bet, i) => {
+            const segColor = SEGMENT_COLORS[bet.segment] || '#64748b';
+            const segLabel = SEGMENT_TEXT_SHORT[bet.segment] || bet.segment;
+            const segName = SEGMENT_DISPLAY_NAMES[bet.segment] || bet.segment;
+            const status = bet.status || 'PENDING';
+            const statusLabel = STATUS_LABELS[status] || status;
+            const payout = parseFloat(bet.payout) || 0;
+            const amount = parseFloat(bet.amount) || 0;
+
+            let payoutClass = 'pending';
+            let payoutText = 'In attesa...';
+            if (status === 'WON') {
+                payoutClass = 'won';
+                payoutText = `+$${payout.toFixed(2)}`;
+            } else if (status === 'LOST') {
+                payoutClass = 'lost';
+                payoutText = `-$${amount.toFixed(2)}`;
+            } else if (status === 'REFUNDED') {
+                payoutClass = 'refunded';
+                payoutText = `↩ $${amount.toFixed(2)}`;
+            }
+
+            return `
+                <div class="history-card" style="animation-delay: ${(gIdx * 2 + i) * 0.03}s">
+                    <div class="history-card-segment" style="background: ${segColor}">${segLabel}</div>
+                    <div class="history-card-info">
+                        <span class="segment-name">${segName}</span>
+                    </div>
+                    <div class="history-card-amounts">
+                        <span class="bet-amount">$${amount.toFixed(2)}</span>
+                        <span class="bet-payout ${payoutClass}">${payoutText}</span>
+                        <span class="history-status-badge ${status}">${statusLabel}</span>
+                    </div>
+                </div>`;
+        }).join('');
 
         return `
-            <div class="history-card" style="animation-delay: ${i * 0.04}s">
-                <div class="history-card-segment" style="background: ${segColor}">${segLabel}</div>
-                <div class="history-card-info">
-                    <span class="segment-name">${segName}</span>
-                    <span class="bet-time">${formatHistoryDate(bet.timestamp)}</span>
+            <div class="history-round-group" style="animation-delay: ${gIdx * 0.04}s">
+                <div class="history-round-header">
+                    <div class="history-round-title">
+                        <span class="history-round-badge">🎯 ${roundTitle}</span>
+                        <span class="history-round-count">(${countText} • Totale ${totalRoundStaked})</span>
+                    </div>
+                    <div class="history-round-meta">
+                        <span class="history-round-time">${formatHistoryDate(group.timestamp)}</span>
+                    </div>
                 </div>
-                <div class="history-card-amounts">
-                    <span class="bet-amount">$${amount.toFixed(2)}</span>
-                    <span class="bet-payout ${payoutClass}">${payoutText}</span>
-                    <span class="history-status-badge ${status}">${statusLabel}</span>
+                <div class="history-round-cards">
+                    ${cardsHtml}
                 </div>
             </div>`;
     }).join('');
