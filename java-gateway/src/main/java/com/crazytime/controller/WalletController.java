@@ -68,7 +68,6 @@ public class WalletController {
     // FIX 0.1.1 + 0.1.5 + 0.1.6: @Transactional + pessimistic locking + phase check
     @Transactional
     @PostMapping("/place-bet")
-    @org.springframework.transaction.annotation.Transactional
     public ResponseEntity<Map<String, Object>> placeBet(
             @RequestAttribute("player") Player player,
             @RequestBody com.fasterxml.jackson.databind.JsonNode requestBody) {
