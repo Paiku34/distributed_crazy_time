@@ -1,5 +1,7 @@
 package com.crazytime.rabbitmq;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
@@ -30,6 +32,9 @@ public class GameResultListener {
     @Autowired
     private PayoutListener payoutListener;
 
+    @Autowired
+    private ObjectMapper objectMapper;
+
     @RabbitListener(queues = "results_queue")
     public void receiveGameResult(String message) {
         log.info("Risultato ricevuto da Erlang: {}", message);
@@ -41,38 +46,34 @@ public class GameResultListener {
     @RabbitListener(queues = "state_queue")
     public void receiveGameState(String message) {
         log.debug("Stato gioco: {}", message);
-        // Parsing minimale per aggiornare la cache
+        // FIX 0.1.10: Use Jackson instead of regex for JSON parsing
         updateCache(message);
         messagingTemplate.convertAndSend("/topic/game-timer", message);
     }
 
     /**
-     * Parsing semplice del JSON di stato per aggiornare la cache.
-     * Formato atteso:
-     *   {"type":"timer","round":1,"time_left":8,"phase":"betting"}
-     *   {"type":"timer","round":1,"time_left":0,"phase":"spinning","winner_index":23,"winner":"5"}
-     *   {"type":"timer","round":1,"time_left":7,"phase":"minigame","minigame":"Pachinko"}
+     * FIX 0.1.10: Use Jackson ObjectMapper instead of regex for reliable JSON parsing.
+     * FIX 0.1.9: Use atomic update to prevent partially visible state.
      */
     private void updateCache(String json) {
         try {
-            String phase = extractStringField(json, "phase");
-            if (phase != null) gameStateCache.setPhase(phase);
+            JsonNode root = objectMapper.readTree(json);
+            
+            String phase = root.has("phase") ? root.get("phase").asText() : null;
+            int timeLeft = root.has("time_left") ? root.get("time_left").asInt() : -1;
+            int round = root.has("round") ? root.get("round").asInt() : -1;
 
-            String timeLeft = extractStringField(json, "time_left");
-            if (timeLeft != null) gameStateCache.setTimeLeft(Integer.parseInt(timeLeft));
-
-            String round = extractStringField(json, "round");
-            if (round != null) gameStateCache.setRound(Integer.parseInt(round));
+            if (phase != null && timeLeft >= 0 && round >= 0) {
+                // FIX 0.1.9: Use atomic update method
+                gameStateCache.update(phase, timeLeft, round);
+            } else {
+                // Partial update fallback
+                if (phase != null) gameStateCache.setPhase(phase);
+                if (timeLeft >= 0) gameStateCache.setTimeLeft(timeLeft);
+                if (round >= 0) gameStateCache.setRound(round);
+            }
         } catch (Exception e) {
             log.warn("Errore parsing stato: {}", e.getMessage());
         }
-    }
-
-    private String extractStringField(String json, String field) {
-        // Cerca "field":"value" o "field":value
-        java.util.regex.Pattern p = java.util.regex.Pattern.compile(
-            "\"" + field + "\"\\s*:\\s*\"?([^,\"\\}]+)\"?");
-        java.util.regex.Matcher m = p.matcher(json);
-        return m.find() ? m.group(1).trim() : null;
     }
 }

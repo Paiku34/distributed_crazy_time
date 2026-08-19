@@ -30,14 +30,16 @@ handle_call({play, Bets}, _From, State) ->
     %% Helper function to resolve segment value
     ResolveVal = fun(Idx) ->
         %% Modulo circolare 1-indexed
-        RealIdx = if Idx < 1 -> Len + Idx; Idx > Len -> Idx - Len; true -> Idx end,
+        RealIdx = ((Idx - 1) rem Len + Len) rem Len + 1,
         Val = lists:nth(RealIdx, Segments),
         case Val of <<"DOUBLE">> -> 100; Num -> Num end
     end,
 
-    BlueMult = ResolveVal(WinnerIdx),
-    GreenMult = ResolveVal(WinnerIdx - 1),
-    YellowMult = ResolveVal(WinnerIdx + 1),
+    NumSegments = Len,
+    Spacing = NumSegments div 3,  %% ~21 segments apart
+    BlueMult  = ResolveVal(WinnerIdx),
+    GreenMult = ResolveVal(WinnerIdx + Spacing),
+    YellowMult = ResolveVal(WinnerIdx + 2 * Spacing),
 
     Details = #{
         blue_multiplier => BlueMult,
@@ -76,7 +78,8 @@ compute_payouts(Details, Bets, Choices) ->
                 
                 %% Determine which multiplier this user gets
                 UserChoice = maps:get(Username, Choices, <<"blue">>),
-                UserMult = case UserChoice of
+                NormalizedChoice = string:lowercase(UserChoice),
+                UserMult = case NormalizedChoice of
                     <<"green">> -> GreenMult;
                     <<"yellow">> -> YellowMult;
                     _ -> BlueMult

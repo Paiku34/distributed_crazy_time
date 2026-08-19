@@ -61,17 +61,7 @@ compute_payouts(Details, Bets, Choices) ->
                 
                 %% Determine which cell this user gets
                 UserChoiceStr = maps:get(Username, Choices, undefined),
-                CellIndex = case UserChoiceStr of
-                    undefined -> DefaultCell;
-                    ChoiceStr -> 
-                        %% Parse string to integer
-                        try binary_to_integer(ChoiceStr) of
-                            Int when Int >= 0, Int < 108 -> Int;
-                            _ -> DefaultCell
-                        catch
-                            _:_ -> DefaultCell
-                        end
-                end,
+                CellIndex = parse_cell_index(UserChoiceStr, DefaultCell),
                 
                 %% Get the multiplier for that cell
                 UserMult = lists:nth(CellIndex + 1, Grid),
@@ -89,6 +79,19 @@ handle_cast(_Msg, State) -> {noreply, State}.
 handle_info(_Info, State) -> {noreply, State}.
 terminate(_Reason, _State) -> ok.
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
+
+parse_cell_index(C, DefaultCell) when is_integer(C), C >= 0, C < 108 -> C;
+parse_cell_index(C, DefaultCell) when is_binary(C) ->
+    try binary_to_integer(C) of
+        Int when Int >= 0, Int < 108 -> Int;
+        _ -> DefaultCell
+    catch _:_ -> DefaultCell end;
+parse_cell_index(C, DefaultCell) when is_list(C) ->
+    try list_to_integer(C) of
+        Int when Int >= 0, Int < 108 -> Int;
+        _ -> DefaultCell
+    catch _:_ -> DefaultCell end;
+parse_cell_index(_, DefaultCell) -> DefaultCell.
 
 %% Genera una griglia 108 celle con distribuzione realistica:
 %%   ~60 celle da x2-x5 (comuni)

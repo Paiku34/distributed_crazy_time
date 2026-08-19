@@ -53,8 +53,24 @@ generate_initial_slots() ->
 shuffle(List) ->
     [X || {_,X} <- lists:sort([{rand:uniform(), N} || N <- List])].
 
-%% Simula lanci finché non si atterra su un numero (non DOUBLE)
+-define(MAX_DROPS, 7).
+
 simulate_drops(Slots, AccDrops) ->
+    simulate_drops(Slots, AccDrops, ?MAX_DROPS).
+
+simulate_drops(Slots, AccDrops, 0) ->
+    %% Max drops reached — use highest non-DOUBLE value
+    MaxMult = lists:max([M || M <- Slots, M =/= <<"DOUBLE">>]),
+    [LastDrop | Rest] = AccDrops,
+    Idx = maps:get(landed_index, LastDrop),
+    OldSlots = maps:get(slots, LastDrop),
+    %% Replace the "DOUBLE" at Idx + 1 with MaxMult
+    {L1, [_ | L2]} = lists:split(Idx, OldSlots),
+    NewSlots = L1 ++ [MaxMult] ++ L2,
+    ModifiedDrop = LastDrop#{landed_value => MaxMult, slots => NewSlots},
+    lists:reverse([ModifiedDrop | Rest]);
+
+simulate_drops(Slots, AccDrops, RemainingDrops) ->
     %% Sceglie una zona di caduta da 0 a 15
     DZ = rand:uniform(16) - 1,
     {FinalPos, Path} = generate_path(DZ, 15, []),
@@ -75,9 +91,9 @@ simulate_drops(Slots, AccDrops) ->
     case LandedVal of
         <<"DOUBLE">> ->
             NewSlots = double_slots(Slots),
-            simulate_drops(NewSlots, AccDrops ++ [DropData]);
+            simulate_drops(NewSlots, [DropData | AccDrops], RemainingDrops - 1);
         _Num ->
-            AccDrops ++ [DropData]
+            lists:reverse([DropData | AccDrops])
     end.
 
 %% Raddoppia tutti i numeri, mantenendo i DOUBLE inalterati

@@ -99,13 +99,14 @@ handle_call(get_state, _From, State) ->
     },
     {reply, Reply, State};
 
+%% FIX 0.2.2: Use maps:get/3 with defaults to prevent crashes on missing keys
 handle_call({undo_bets, Username}, _From, State = #state{phase = betting, bets = Bets}) ->
     % Trova tutte le scommesse dell'utente
-    UserBets = lists:filter(fun(B) -> maps:get(<<"username">>, B) == Username end, Bets),
-    OtherBets = lists:filter(fun(B) -> maps:get(<<"username">>, B) =/= Username end, Bets),
+    UserBets = lists:filter(fun(B) -> maps:get(<<"username">>, B, <<"">>) == Username end, Bets),
+    OtherBets = lists:filter(fun(B) -> maps:get(<<"username">>, B, <<"">>) =/= Username end, Bets),
     
     % Calcola il totale da rimborsare
-    TotalRefund = lists:foldl(fun(B, Acc) -> Acc + maps:get(<<"amount">>, B) end, 0.0, UserBets),
+    TotalRefund = lists:foldl(fun(B, Acc) -> Acc + maps:get(<<"amount">>, B, 0.0) end, 0.0, UserBets),
     io:format("[WHEEL] Scommesse annullate per ~s: totale ~p~n", [Username, TotalRefund]),
     
     {reply, TotalRefund, State#state{bets = OtherBets}};
@@ -144,13 +145,20 @@ handle_info(tick, State = #state{phase = betting, time_left = 1}) ->
 
     Segments = wheel_segments(),
     
+    %% FIX 0.2.10: Handle undefined result from find_segment_index
     {WinnerIndex, WinnerSeg} = case State#state.forced_segment of
         undefined ->
             Idx = rand:uniform(54) - 1,
             {Idx, lists:nth(Idx + 1, Segments)};
         ForcedSeg ->
-            Idx = find_segment_index(ForcedSeg, Segments, 0),
-            {Idx, ForcedSeg}
+            case find_segment_index(ForcedSeg, Segments, 0) of
+                undefined ->
+                    io:format("[WHEEL] WARNING: Forced segment '~s' not found, using random~n", [ForcedSeg]),
+                    Idx = rand:uniform(54) - 1,
+                    {Idx, lists:nth(Idx + 1, Segments)};
+                Idx ->
+                    {Idx, ForcedSeg}
+            end
     end,
 
     io:format("[WHEEL] La ruota si ferma su: ~s (indice ~p)~n", [WinnerSeg, WinnerIndex]),
@@ -187,8 +195,8 @@ handle_info({start_minigame, SegName, Module, WinnerIndex}, State) ->
     BonusBets = [B || B <- State#state.bets, bet_segment(B) =:= SegName],
     AllBets = State#state.bets,
 
-    %% Gioca il minigioco (calcola l'esito)
-    case Module:play(BonusBets) of
+    %% FIX 0.2.13: Add explicit timeout to prevent long hangs
+    case gen_server:call(Module, {play, BonusBets}, 10000) of
         {async_minigame, Details} ->
             WaitTimeAsync = case Module of 
                 crazytime -> 16000; 
@@ -197,8 +205,8 @@ handle_info({start_minigame, SegName, Module, WinnerIndex}, State) ->
             end,
             TimeLeftSec = WaitTimeAsync div 1000,
             io:format("[WHEEL] Mini-game ~p in corso (attesa scelte utente per ~ps)...~n", [Module, TimeLeftSec]),
-            %% Invia stato minigame con details
-            publish_minigame_start(State#state.round, SegName, WinnerIndex, Details, State#state.history),
+            %% FIX 0.2.4: Pass actual TimeLeftSec to publish_minigame_start
+            publish_minigame_start(State#state.round, SegName, WinnerIndex, Details, State#state.history, TimeLeftSec),
             %% Schedula la risoluzione vera e propria
             erlang:send_after(WaitTimeAsync, self(), {resolve_async_minigame, SegName, Details, BonusBets, WinnerIndex}),
             {noreply, State#state{phase = minigame, time_left = TimeLeftSec}};
@@ -238,6 +246,7 @@ handle_info({start_minigame, SegName, Module, WinnerIndex}, State) ->
             {noreply, State#state{phase = cooldown, time_left = 0, history = NewHistory}}
     end;
 
+%% FIX 0.2.3: Use -1 marker for async minigame multiplier so Java knows to use payouts array
 handle_info({resolve_async_minigame, SegName, Details, BonusBets, WinnerIndex}, State) ->
     io:format("[WHEEL] Risoluzione async minigame ~p! Calcolo vincite...~n", [SegName]),
     
@@ -249,8 +258,8 @@ handle_info({resolve_async_minigame, SegName, Details, BonusBets, WinnerIndex}, 
     
     io:format("[DEBUG] resolve_async_minigame - SegName: ~p, BonusBets length: ~p, Payouts length: ~p~n", [SegName, length(BonusBets), length(Payouts)]),
     
-    %% Publish the final results with payouts to results_queue
-    Payload = build_result_json(SegName, <<"minigame">>, 0, WinnerIndex, Details, Payouts, State#state.round),
+    %% FIX 0.2.3: Use -1 as marker so Java PayoutListener uses payouts array exclusively
+    Payload = build_result_json(SegName, <<"async_minigame">>, -1, WinnerIndex, Details, Payouts, State#state.round),
     publish_to_queue("results_queue", Payload),
     
     %% Add to history
@@ -292,11 +301,12 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal Functions
 %%====================================================================
 
+%% FIX 0.2.10: Return undefined on miss instead of 0
 find_segment_index(Target, [Target|_], Idx) -> Idx;
 find_segment_index(Target, [_|T], Idx) -> find_segment_index(Target, T, Idx+1);
-find_segment_index(_, [], _) -> 0.
+find_segment_index(_, [], _) -> undefined.
 
-%% Determina il tipo di segmento
+%% FIX 0.2.1: Add catch-all clause to prevent function_clause crash
 segment_type(<<"1">>)         -> {multiplier, 1};
 segment_type(<<"2">>)         -> {multiplier, 2};
 segment_type(<<"5">>)         -> {multiplier, 5};
@@ -304,7 +314,10 @@ segment_type(<<"10">>)        -> {multiplier, 10};
 segment_type(<<"Pachinko">>)  -> {minigame, pachinko};
 segment_type(<<"CoinFlip">>)  -> {minigame, coinflip};
 segment_type(<<"CashHunt">>)  -> {minigame, cashhunt};
-segment_type(<<"CrazyTime">>) -> {minigame, crazytime}.
+segment_type(<<"CrazyTime">>) -> {minigame, crazytime};
+segment_type(Unknown) ->
+    io:format("[WHEEL] WARNING: Unknown segment '~p', defaulting to 1x~n", [Unknown]),
+    {multiplier, 1}.
 
 %% Estrae il segmento scommesso da una bet (che è una mappa)
 bet_segment(Bet) when is_map(Bet) ->
@@ -378,9 +391,17 @@ json_value(M) when is_map(M) ->
         ["\"" ++ KStr ++ "\":" ++ VStr | Acc]
     end, [], M),
     "{" ++ string:join(Pairs, ",") ++ "}";
+%% FIX 0.2.7: Detect charlists (printable strings) before treating as JSON array
 json_value(L) when is_list(L) ->
-    Items = lists:map(fun(I) -> json_value(I) end, L),
-    "[" ++ string:join(Items, ",") ++ "]";
+    case io_lib:printable_unicode_list(L) of
+        true ->
+            %% It's a string — serialize as JSON string
+            "\"" ++ L ++ "\"";
+        false ->
+            %% It's a proper list — serialize as JSON array
+            Items = lists:map(fun(I) -> json_value(I) end, L),
+            "[" ++ string:join(Items, ",") ++ "]"
+    end;
 json_value(Other) -> "\"" ++ lists:flatten(io_lib:format("~p", [Other])) ++ "\"".
 
 %% Formatta la history in JSON list
@@ -415,13 +436,13 @@ publish_minigame_start(Round, MinigameName, History) ->
         [Round, MinigameName, HistStr])),
     publish_to_queue("state_queue", Payload).
 
-%% Pubblica stato minigame_start CON details per animazione asincrona
-publish_minigame_start(Round, MinigameName, WinnerIndex, Details, History) ->
+%% FIX 0.2.4: Accept TimeLeftSec as parameter instead of hardcoding 16
+publish_minigame_start(Round, MinigameName, WinnerIndex, Details, History, TimeLeftSec) ->
     HistStr = format_history(History),
     DetailsJSON = json_value(Details),
     Payload = lists:flatten(io_lib:format(
-        "{\"type\":\"timer\",\"round\":~p,\"time_left\":16,\"phase\":\"minigame\",\"minigame\":\"~s\",\"winner_index\":~p,\"details\":~s,\"history\":~s}",
-        [Round, MinigameName, WinnerIndex, DetailsJSON, HistStr])),
+        "{\"type\":\"timer\",\"round\":~p,\"time_left\":~p,\"phase\":\"minigame\",\"minigame\":\"~s\",\"winner_index\":~p,\"details\":~s,\"history\":~s}",
+        [Round, TimeLeftSec, MinigameName, WinnerIndex, DetailsJSON, HistStr])),
     publish_to_queue("state_queue", Payload).
 
 %% Pubblica un messaggio su una coda RabbitMQ via HTTP Management API

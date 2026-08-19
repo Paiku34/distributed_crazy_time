@@ -17,7 +17,6 @@ start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 init([]) ->
-    inets:start(),
     io:format("~n=================================~n"),
     io:format("  Worker RabbitMQ Poller avviato~n"),
     io:format("  Polling bets_queue...~n"),
@@ -190,15 +189,21 @@ extract_number_field(Json, FieldName) ->
         _ -> {error, not_found}
     end.
 
+escape_json_string(Str) when is_binary(Str) ->
+    escape_json_string(binary_to_list(Str));
+escape_json_string(Str) ->
+    lists:flatmap(fun($") -> "\\\""; ($\\) -> "\\\\"; (C) -> [C] end, Str).
+
 %% Pubblica un messaggio di rimborso su refunds_queue
 publish_refund(BetMap) ->
     Username = maps:get(<<"username">>, BetMap, <<"unknown">>),
+    EscapedUsername = escape_json_string(Username),
     Amount = maps:get(<<"amount">>, BetMap, 0),
     Url = "http://localhost:15672/api/exchanges/%2f/amq.default/publish",
     Headers = [{"Authorization", "Basic Z3Vlc3Q6Z3Vlc3Q="}],
     Payload = lists:flatten(io_lib:format(
         "{\"username\":\"~s\",\"amount\":~p,\"reason\":\"betting_closed\"}",
-        [Username, Amount])),
+        [EscapedUsername, Amount])),
     EscapedPayload = lists:flatten(string:replace(Payload, "\"", "\\\"", all)),
     Body = "{\"properties\":{},\"routing_key\":\"refunds_queue\",\"payload\":\"" ++ EscapedPayload ++ "\",\"payload_encoding\":\"string\"}",
     case httpc:request(post, {Url, Headers, "application/json", Body}, [], []) of

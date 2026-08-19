@@ -8,6 +8,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import org.springframework.amqp.core.AmqpTemplate;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.Map;
 
 @RestController
@@ -20,6 +22,9 @@ public class GameController {
     @Autowired
     private AmqpTemplate rabbitTemplate;
 
+    @Autowired
+    private ObjectMapper objectMapper;
+
     @GetMapping("/state")
     public ResponseEntity<Map<String, Object>> getGameState() {
         return ResponseEntity.ok(Map.of(
@@ -31,22 +36,23 @@ public class GameController {
         ));
     }
 
+    // FIX 0.1.8: Null checks + Jackson ObjectMapper to prevent NPE and JSON injection
     @PostMapping("/choice")
-    public ResponseEntity<Map<String, Object>> makeChoice(
+    public ResponseEntity<?> makeChoice(
             @RequestAttribute("player") Player player,
             @RequestBody GameChoiceRequest request) {
         
-        String minigame = request.minigame();
-        String choice = request.choice();
+        if (request.minigame() == null || request.choice() == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Minigame e choice richiesti"));
+        }
 
-        String jsonPayload = String.format(
-            "{\"type\":\"minigame_choice\",\"username\":\"%s\",\"minigame\":\"%s\",\"choice\":\"%s\"}",
-            player.getUsername().replace("\"", "\\\""), 
-            minigame.replace("\"", "\\\""), 
-            choice.replace("\"", "\\\"")
-        );
-        
-        rabbitTemplate.convertAndSend("bets_queue", jsonPayload);
+        ObjectNode payload = objectMapper.createObjectNode();
+        payload.put("type", "minigame_choice");
+        payload.put("username", player.getUsername());
+        payload.put("minigame", request.minigame());
+        payload.put("choice", request.choice());
+
+        rabbitTemplate.convertAndSend("bets_queue", payload.toString());
         
         return ResponseEntity.ok(Map.of("success", true, "message", "Choice registered"));
     }

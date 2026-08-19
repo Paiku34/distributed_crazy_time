@@ -3,6 +3,7 @@ package com.crazytime.controller;
 import com.crazytime.dto.PlaceBetRequest;
 import com.crazytime.entity.Bet;
 import com.crazytime.entity.Player;
+import com.crazytime.rabbitmq.GameStateCache;
 import com.crazytime.repository.BetRepository;
 import com.crazytime.repository.PlayerRepository;
 import org.slf4j.Logger;
@@ -10,12 +11,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.amqp.core.AmqpTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.stream.Collectors;
 
 @RestController
@@ -33,6 +34,9 @@ public class WalletController {
     @Autowired
     private AmqpTemplate rabbitTemplate;
 
+    @Autowired
+    private GameStateCache gameStateCache;
+
     private Player reloadPlayer(Player player) {
         return playerRepository.findById(player.getId())
                 .orElseThrow(() -> new IllegalArgumentException("Player non trovato nel DB"));
@@ -48,14 +52,21 @@ public class WalletController {
         ));
     }
 
+    // FIX 0.1.7: Restrict force-result to admin-only
     @PostMapping("/force-result")
-    public ResponseEntity<Map<String, Object>> forceResult(@RequestParam String segment) {
+    public ResponseEntity<Map<String, Object>> forceResult(@RequestParam String segment,
+                                                            @RequestAttribute("player") Player player) {
+        if (!"admin".equals(player.getUsername())) {
+            return ResponseEntity.status(403).body(Map.of("success", false, "error", "Admin only"));
+        }
         log.info("Ricevuto comando DEV force-result per segmento: {}", segment);
         String json = String.format("{\"username\":\"admin\",\"amount\":0,\"segment\":\"FORCE_%s\"}", segment);
         rabbitTemplate.convertAndSend("bets_queue", json);
         return ResponseEntity.ok(Map.of("success", true, "segment", segment));
     }
 
+    // FIX 0.1.1 + 0.1.5 + 0.1.6: @Transactional + pessimistic locking + phase check
+    @Transactional
     @PostMapping("/place-bet")
     public ResponseEntity<Map<String, Object>> placeBet(
             @RequestAttribute("player") Player player,
@@ -79,7 +90,18 @@ public class WalletController {
             ));
         }
 
-        Player updatedPlayer = reloadPlayer(player);
+        // FIX 0.1.6: Check game phase before accepting bets
+        String phase = gameStateCache.getPhase();
+        if (!"betting".equals(phase)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                "success", false,
+                "error", "Le scommesse sono chiuse (fase: " + phase + ")"
+            ));
+        }
+
+        // FIX 0.1.1: Use pessimistic locking to prevent double-spending
+        Player updatedPlayer = playerRepository.findByUsernameForUpdate(player.getUsername())
+                .orElseThrow(() -> new RuntimeException("Player not found"));
 
         if (updatedPlayer.getBalance().compareTo(amount) < 0) {
             return ResponseEntity.badRequest().body(Map.of(

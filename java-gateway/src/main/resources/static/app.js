@@ -451,7 +451,7 @@ function handleGameResult(data) {
             const myPayout = data.payouts.find(p => p.username === currentUser);
             if (myPayout) {
                 winAmount = myPayout.payout;
-                myMultiplier = Math.round((winAmount - myBetAmount) / myBetAmount);
+                myMultiplier = myBetAmount > 0 ? Math.round((winAmount - myBetAmount) / myBetAmount) : 0;
             } else {
                 winAmount = myBetAmount + (myBetAmount * data.multiplier);
             }
@@ -620,7 +620,7 @@ function animateCoinFlip(multiplier, details, onComplete) {
     const winnerSide = details.winner_side || 'heads';
 
     let html = `
-        <div class="coinflip-container" style="position: absolute; inset: 0; width: 100%; height: 100%; background-image: url('img/coinflip.png?v=${Date.now()}'); background-size: 100% 100%; background-position: center; overflow: hidden;">
+        <div class="coinflip-container" style="position: absolute; inset: 0; width: 100%; height: 100%; background-image: url('img/coinflip.png'); background-size: 100% 100%; background-position: center; overflow: hidden;">
             
             <!-- Nessun titolo centrale così non copre l'immagine -->
 
@@ -719,7 +719,7 @@ function animateCashHunt(multiplier, details, onComplete) {
         <style>
             .ch-container { 
                 position: absolute; inset: 0; width: 100%; height: 100%;
-                background-image: url('img/cashhunt.png?v=${Date.now()}'); background-size: 100% 100%; background-position: center; overflow: hidden;
+                background-image: url('img/cashhunt.png'); background-size: 100% 100%; background-position: center; overflow: hidden;
             }
             .ch-grid-positioner {
                 position: absolute; 
@@ -975,7 +975,6 @@ function animateCashHunt(multiplier, details, onComplete) {
         setTimeout(() => {
             clearInterval(countdownIv);
             timerBar.classList.remove('visible');
-            if (pickedIndex < 0) pickedIndex = defaultCell;
 
             allCells.forEach(cell => {
                 cell.classList.remove('pickable');
@@ -1047,7 +1046,7 @@ function animatePachinko(multiplier, details, onComplete) {
         <style>
             .pk-container { 
                 position: absolute; inset: 0; width: 100%; height: 100%;
-                background-image: url('img/pachinko.png?v=${Date.now()}'); background-size: 100% 100%; background-position: center; overflow: hidden;
+                background-image: url('img/pachinko.png'); background-size: 100% 100%; background-position: center; overflow: hidden;
             }
             /* Box verde per il tabellone dei perni (puntini) e la fisica della pallina */
             .pk-board-positioner {
@@ -1583,6 +1582,7 @@ function animateCrazyTime(multiplier, details, onComplete) {
         let selectedFlapper = 'blue'; // default
         let timeLeft = 5;
         let timerInt;
+        let choiceSent = false;
 
         // Handle clicks on popup
         choiceBtns.forEach(btn => {
@@ -1597,7 +1597,8 @@ function animateCrazyTime(multiplier, details, onComplete) {
                     btn.style.transform = 'scale(1.1)';
 
                     // Invia la scelta al server IMMEDIATAMENTE
-                    if (currentUser) {
+                    if (!choiceSent && currentUser) {
+                        choiceSent = true;
                         authFetch(`/api/game/choice`, {
                             method: 'POST',
                             body: {minigame: 'CrazyTime', choice: selectedFlapper}
@@ -1625,7 +1626,8 @@ function animateCrazyTime(multiplier, details, onComplete) {
             popup.style.display = 'none';
 
             // Send choice to backend
-            if (currentUser) {
+            if (!choiceSent && currentUser) {
+                choiceSent = true;
                 authFetch(`/api/game/choice`, {
                     method: 'POST',
                     body: {minigame: 'CrazyTime', choice: selectedFlapper}
@@ -1696,7 +1698,11 @@ if (menuToggleBtn && closeMenuBtn && sidePanel) {
 }
 
 if (logoutBtn) {
-    logoutBtn.addEventListener('click', () => {
+    logoutBtn.addEventListener('click', async () => {
+        try {
+            await authFetch('/api/auth/logout', { method: 'POST' });
+        } catch (e) { /* ignore errors on logout */ }
+        
         // Disconnect STOMP
         if (stompClient) {
             stompClient.disconnect();

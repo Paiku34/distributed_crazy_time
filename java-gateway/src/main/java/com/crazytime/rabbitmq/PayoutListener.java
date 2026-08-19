@@ -10,8 +10,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 
@@ -33,6 +35,8 @@ public class PayoutListener {
     @Autowired
     private ObjectMapper objectMapper;
 
+    // FIX 0.1.2: Add @Transactional + pessimistic locking to prevent lost updates
+    @Transactional
     public void processPayouts(String message) {
         log.info("Processando payout dal risultato: {}", message);
         try {
@@ -50,15 +54,18 @@ public class PayoutListener {
             List<Bet> pendingBets = betRepository.findByStatus("PENDING");
             for (Bet bet : pendingBets) {
                 if (bet.getSegment().equals(winner)) {
-                    // Cerca il payout specifico calcolato da Erlang
+                    // FIX 0.1.4: Cerca il payout specifico e RIMUOVILO per evitare duplicati
                     BigDecimal finalPayout = null;
                     
                     if (payoutsNode != null && payoutsNode.isArray()) {
-                        for (JsonNode p : payoutsNode) {
-                            if (p.get("username").asText().equals(bet.getUsername())) {
+                        Iterator<JsonNode> it = payoutsNode.iterator();
+                        while (it.hasNext()) {
+                            JsonNode p = it.next();
+                            if (p.has("username") && p.get("username").asText().equals(bet.getUsername())) {
                                 if (p.has("payout")) {
                                     finalPayout = new BigDecimal(p.get("payout").asText());
                                 }
+                                it.remove();  // Prevent this entry from being matched again
                                 break;
                             }
                         }
@@ -67,7 +74,14 @@ public class PayoutListener {
                     if (finalPayout == null) {
                         // Fallback al calcolo base se payouts non è presente
                         String multStr = root.has("multiplier") ? root.get("multiplier").asText() : "1";
-                        BigDecimal winnings = bet.getAmount().multiply(new BigDecimal(multStr));
+                        BigDecimal multiplier = new BigDecimal(multStr);
+                        // Don't use fallback if multiplier is 0 or negative (async minigame marker)
+                        if (multiplier.compareTo(BigDecimal.ZERO) <= 0) {
+                            log.warn("Payout non trovato per {} e multiplier non valido ({}), skip",
+                                    bet.getUsername(), multStr);
+                            continue;
+                        }
+                        BigDecimal winnings = bet.getAmount().multiply(multiplier);
                         finalPayout = bet.getAmount().add(winnings);
                     }
                     
@@ -75,8 +89,8 @@ public class PayoutListener {
                     bet.setPayout(finalPayout);
                     betRepository.save(bet);
 
-                    // Accredita la vincita al giocatore
-                    Optional<Player> optPlayer = playerRepository.findByUsername(bet.getUsername());
+                    // FIX 0.1.2: Use pessimistic locking for balance update
+                    Optional<Player> optPlayer = playerRepository.findByUsernameForUpdate(bet.getUsername());
                     if (optPlayer.isPresent()) {
                         Player player = optPlayer.get();
                         player.setBalance(player.getBalance().add(finalPayout));
