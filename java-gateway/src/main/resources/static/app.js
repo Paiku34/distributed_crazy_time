@@ -516,22 +516,25 @@ function handleGameResult(data) {
     const isWin = myBetAmount !== undefined;
     let winAmount = 0;
     
-    let myMultiplier = data.multiplier;
+    // data.multiplier is a -1 sentinel for async minigames (CrazyTime/CashHunt), telling the
+    // backend to use the payouts array instead — never display it directly.
+    let myMultiplier = data.multiplier >= 0 ? data.multiplier : 0;
     if (isWin) {
         if (data.payouts && Array.isArray(data.payouts)) {
             const myPayout = data.payouts.find(p => p.username === currentUser);
             if (myPayout) {
                 winAmount = myPayout.payout;
                 myMultiplier = myBetAmount > 0 ? Math.round((winAmount - myBetAmount) / myBetAmount) : 0;
-            } else {
+            } else if (data.multiplier >= 0) {
                 winAmount = myBetAmount + (myBetAmount * data.multiplier);
             }
-        } else {
+        } else if (data.multiplier >= 0) {
             winAmount = myBetAmount + (myBetAmount * data.multiplier);
         }
     }
 
-    const isMinigame = data.result_type === 'minigame';
+    // Async minigames (CrazyTime/CashHunt) report result_type "async_minigame", not "minigame".
+    const isMinigame = data.result_type === 'minigame' || data.result_type === 'async_minigame';
     const details = data.details || {};
 
     if (isMinigame && data.winner) {

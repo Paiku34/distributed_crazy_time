@@ -99,7 +99,7 @@ handle_call(get_state, _From, State) ->
     },
     {reply, Reply, State};
 
-%% FIX 0.2.2: Use maps:get/3 with defaults to prevent crashes on missing keys
+%% maps:get/3 con default: una bet malformata non deve far crashare il processo
 handle_call({undo_bets, Username}, _From, State = #state{phase = betting, bets = Bets}) ->
     % Trova tutte le scommesse dell'utente
     UserBets = lists:filter(fun(B) -> maps:get(<<"username">>, B, <<"">>) == Username end, Bets),
@@ -145,7 +145,6 @@ handle_info(tick, State = #state{phase = betting, time_left = 1}) ->
 
     Segments = wheel_segments(),
     
-    %% FIX 0.2.10: Handle undefined result from find_segment_index
     {WinnerIndex, WinnerSeg} = case State#state.forced_segment of
         undefined ->
             Idx = rand:uniform(54) - 1,
@@ -195,7 +194,7 @@ handle_info({start_minigame, SegName, Module, WinnerIndex}, State) ->
     BonusBets = [B || B <- State#state.bets, bet_segment(B) =:= SegName],
     AllBets = State#state.bets,
 
-    %% FIX 0.2.13: Add explicit timeout to prevent long hangs
+    %% Timeout esplicito: un minigioco bloccato non deve impallare wheel_process a tempo indefinito
     case gen_server:call(Module, {play, BonusBets}, 10000) of
         {async_minigame, Details} ->
             WaitTimeAsync = case Module of 
@@ -205,7 +204,6 @@ handle_info({start_minigame, SegName, Module, WinnerIndex}, State) ->
             end,
             TimeLeftSec = WaitTimeAsync div 1000,
             io:format("[WHEEL] Mini-game ~p in corso (attesa scelte utente per ~ps)...~n", [Module, TimeLeftSec]),
-            %% FIX 0.2.4: Pass actual TimeLeftSec to publish_minigame_start
             publish_minigame_start(State#state.round, SegName, WinnerIndex, Details, State#state.history, TimeLeftSec),
             %% Schedula la risoluzione vera e propria
             erlang:send_after(WaitTimeAsync, self(), {resolve_async_minigame, SegName, Details, BonusBets, WinnerIndex}),
@@ -246,7 +244,7 @@ handle_info({start_minigame, SegName, Module, WinnerIndex}, State) ->
             {noreply, State#state{phase = cooldown, time_left = 0, history = NewHistory}}
     end;
 
-%% FIX 0.2.3: Use -1 marker for async minigame multiplier so Java knows to use payouts array
+%% Risolve i minigiochi asincroni (CrazyTime, CashHunt) dopo il tempo di attesa per le scelte
 handle_info({resolve_async_minigame, SegName, Details, BonusBets, WinnerIndex}, State) ->
     io:format("[WHEEL] Risoluzione async minigame ~p! Calcolo vincite...~n", [SegName]),
     
@@ -258,7 +256,7 @@ handle_info({resolve_async_minigame, SegName, Details, BonusBets, WinnerIndex}, 
     
     io:format("[DEBUG] resolve_async_minigame - SegName: ~p, BonusBets length: ~p, Payouts length: ~p~n", [SegName, length(BonusBets), length(Payouts)]),
     
-    %% FIX 0.2.3: Use -1 as marker so Java PayoutListener uses payouts array exclusively
+    %% -1 come multiplier: segnala al gateway Java di usare l'array payouts invece del campo multiplier
     Payload = build_result_json(SegName, <<"async_minigame">>, -1, WinnerIndex, Details, Payouts, State#state.round),
     publish_to_queue("results_queue", Payload),
     
@@ -301,12 +299,12 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal Functions
 %%====================================================================
 
-%% FIX 0.2.10: Return undefined on miss instead of 0
+%% undefined su un miss, cosicché un segmento forzato inesistente non venga confuso con l'indice 0
 find_segment_index(Target, [Target|_], Idx) -> Idx;
 find_segment_index(Target, [_|T], Idx) -> find_segment_index(Target, T, Idx+1);
 find_segment_index(_, [], _) -> undefined.
 
-%% FIX 0.2.1: Add catch-all clause to prevent function_clause crash
+%% Clausola catch-all: un segmento sconosciuto non deve far crashare il gen_server
 segment_type(<<"1">>)         -> {multiplier, 1};
 segment_type(<<"2">>)         -> {multiplier, 2};
 segment_type(<<"5">>)         -> {multiplier, 5};
@@ -391,7 +389,7 @@ json_value(M) when is_map(M) ->
         ["\"" ++ KStr ++ "\":" ++ VStr | Acc]
     end, [], M),
     "{" ++ string:join(Pairs, ",") ++ "}";
-%% FIX 0.2.7: Detect charlists (printable strings) before treating as JSON array
+%% Distingue una charlist (stringa) da una lista vera, altrimenti finirebbe serializzata come array di interi
 json_value(L) when is_list(L) ->
     case io_lib:printable_unicode_list(L) of
         true ->
@@ -436,7 +434,7 @@ publish_minigame_start(Round, MinigameName, History) ->
         [Round, MinigameName, HistStr])),
     publish_to_queue("state_queue", Payload).
 
-%% FIX 0.2.4: Accept TimeLeftSec as parameter instead of hardcoding 16
+%% Il tempo di attesa varia per minigioco (CrazyTime, CashHunt, ...), va passato esplicitamente
 publish_minigame_start(Round, MinigameName, WinnerIndex, Details, History, TimeLeftSec) ->
     HistStr = format_history(History),
     DetailsJSON = json_value(Details),

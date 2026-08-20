@@ -46,25 +46,19 @@ public class GameResultListener {
     @RabbitListener(queues = "state_queue")
     public void receiveGameState(String message) {
         log.debug("Stato gioco: {}", message);
-        // FIX 0.1.10: Use Jackson instead of regex for JSON parsing
         updateCache(message);
         messagingTemplate.convertAndSend("/topic/game-timer", message);
     }
 
-    /**
-     * FIX 0.1.10: Use Jackson ObjectMapper instead of regex for reliable JSON parsing.
-     * FIX 0.1.9: Use atomic update to prevent partially visible state.
-     */
     private void updateCache(String json) {
         try {
             JsonNode root = objectMapper.readTree(json);
-            
+
             String phase = root.has("phase") ? root.get("phase").asText() : null;
             int timeLeft = root.has("time_left") ? root.get("time_left").asInt() : -1;
             int round = root.has("round") ? root.get("round").asInt() : -1;
 
             if (phase != null && timeLeft >= 0 && round >= 0) {
-                // FIX 0.1.9: Use atomic update method
                 gameStateCache.update(phase, timeLeft, round);
             } else {
                 // Partial update fallback

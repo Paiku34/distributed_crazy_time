@@ -52,7 +52,6 @@ public class WalletController {
         ));
     }
 
-    // FIX 0.1.7: Restrict force-result to admin-only
     @PostMapping("/force-result")
     public ResponseEntity<Map<String, Object>> forceResult(@RequestParam String segment,
                                                             @RequestAttribute("player") Player player) {
@@ -65,7 +64,6 @@ public class WalletController {
         return ResponseEntity.ok(Map.of("success", true, "segment", segment));
     }
 
-    // FIX 0.1.1 + 0.1.5 + 0.1.6: @Transactional + pessimistic locking + phase check
     @Transactional
     @PostMapping("/place-bet")
     public ResponseEntity<Map<String, Object>> placeBet(
@@ -122,7 +120,6 @@ public class WalletController {
             aggregatedBets.merge(segment, amount, BigDecimal::add);
         }
 
-        // FIX 0.1.6: Check game phase before accepting bets
         String phase = gameStateCache != null ? gameStateCache.getPhase() : "betting";
         if (!"betting".equals(phase)) {
             return ResponseEntity.badRequest().body(Map.of(
@@ -134,7 +131,8 @@ public class WalletController {
         BigDecimal totalAmount = aggregatedBets.values().stream()
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        // FIX 0.1.1: Use pessimistic locking to prevent double-spending
+        // Lock pessimistico: due richieste concorrenti dello stesso utente non devono poter
+        // leggere lo stesso saldo prima che l'altra lo abbia scalato
         Player updatedPlayer = playerRepository.findByUsernameForUpdate(player.getUsername())
                 .orElseThrow(() -> new RuntimeException("Player not found"));
 

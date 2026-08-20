@@ -36,7 +36,6 @@ public class GameController {
         ));
     }
 
-    // FIX 0.1.8: Null checks + Jackson ObjectMapper to prevent NPE and JSON injection
     @PostMapping("/choice")
     public ResponseEntity<?> makeChoice(
             @RequestAttribute("player") Player player,

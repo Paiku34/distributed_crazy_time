@@ -35,7 +35,6 @@ public class PayoutListener {
     @Autowired
     private ObjectMapper objectMapper;
 
-    // FIX 0.1.2: Add @Transactional + pessimistic locking to prevent lost updates
     @Transactional
     public void processPayouts(String message) {
         log.info("Processando payout dal risultato: {}", message);
@@ -54,7 +53,8 @@ public class PayoutListener {
             List<Bet> pendingBets = betRepository.findByStatus("PENDING");
             for (Bet bet : pendingBets) {
                 if (bet.getSegment().equals(winner)) {
-                    // FIX 0.1.4: Cerca il payout specifico e RIMUOVILO per evitare duplicati
+                    // Rimuove la entry trovata dall'array così una seconda bet dello stesso utente
+                    // sullo stesso segmento non può riutilizzare lo stesso payout aggregato
                     BigDecimal finalPayout = null;
                     
                     if (payoutsNode != null && payoutsNode.isArray()) {
@@ -89,7 +89,6 @@ public class PayoutListener {
                     bet.setPayout(finalPayout);
                     betRepository.save(bet);
 
-                    // FIX 0.1.2: Use pessimistic locking for balance update
                     Optional<Player> optPlayer = playerRepository.findByUsernameForUpdate(bet.getUsername());
                     if (optPlayer.isPresent()) {
                         Player player = optPlayer.get();

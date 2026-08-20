@@ -7,8 +7,8 @@ import org.springframework.stereotype.Component;
  * Aggiornato dal GameResultListener quando arrivano messaggi da Erlang.
  * Letto dal GameController per le richieste REST.
  *
- * FIX 0.1.9: Use immutable record + volatile AtomicReference for atomic updates.
- * Prevents readers from seeing new round with old phase.
+ * Lo stato è un record immutabile dietro un campo volatile, così un lettore non può
+ * mai osservare un aggiornamento parziale (es. nuovo round con fase vecchia).
  */
 @Component
 public class GameStateCache {

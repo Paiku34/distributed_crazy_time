@@ -38,8 +38,6 @@ public class RefundListener {
     @Autowired
     private ObjectMapper objectMapper;
 
-    // FIX 0.1.3: Mark bet as REFUNDED so PayoutListener ignores it
-    // FIX 0.1.10: Use Jackson instead of regex for JSON parsing
     @Transactional
     @RabbitListener(queues = "refunds_queue")
     public void receiveRefund(String message) {
@@ -54,7 +52,6 @@ public class RefundListener {
                 return;
             }
 
-            // FIX 0.1.2 (same pattern): Use pessimistic locking for balance update
             Optional<Player> optionalPlayer = playerRepository.findByUsernameForUpdate(username);
             if (optionalPlayer.isPresent()) {
                 Player player = optionalPlayer.get();
@@ -65,7 +62,8 @@ public class RefundListener {
                 log.warn("Utente per rimborso non trovato: {}", username);
             }
 
-            // FIX 0.1.3: Mark the bet as REFUNDED so PayoutListener ignores it
+            // Segna la bet come REFUNDED così PayoutListener, quando arriva il risultato del round,
+            // non la trova più PENDING e non la paga una seconda volta
             List<Bet> pendingBets = betRepository.findByUsernameAndStatus(username, "PENDING");
             for (Bet bet : pendingBets) {
                 if (bet.getAmount().compareTo(amount) == 0) {
