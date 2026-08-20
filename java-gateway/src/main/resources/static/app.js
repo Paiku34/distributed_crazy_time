@@ -329,6 +329,7 @@ function startGame() {
     if(sideUsername) sideUsername.textContent = currentUser;
     // playerName removed
     updateBalanceDisplay(currentBalance);
+    updateDevPanelVisibility();
     connectWebSocket();
 
     authFetch('/api/game/state')
@@ -1387,38 +1388,39 @@ function clearDevSelection() {
     document.querySelectorAll('.dev-btn').forEach(btn => btn.classList.remove('active-dev-btn'));
 }
 
+// Il pannello di forzatura è riservato all'admin: l'endpoint risponde 403 a chiunque altro
+function updateDevPanelVisibility() {
+    const panel = document.querySelector('.dev-panel');
+    if (panel) panel.style.display = (currentUser === 'admin') ? 'flex' : 'none';
+}
+
 function forceResult(segment, btnElement) {
-    if (activeDevSegment === segment) {
-        // Se già attivo, lo deseleziona ed annulla la forzatura
-        clearDevSelection();
-        authFetch('/api/wallet/force-result?segment=NONE', { method: 'POST' })
-            .then(r => r.json())
-            .then(d => {
-                if (d.success) {
-                    console.log('[DEV] Forzatura annullata (esito casuale)');
-                }
-            });
-    } else {
-        // Seleziona il nuovo esito forzato
-        clearDevSelection();
-        activeDevSegment = segment;
+    // Guardia difensiva: il pannello non è visibile ai non-admin, ma può essere mostrato a mano
+    if (currentUser !== 'admin') return;
 
-        let targetBtn = btnElement;
-        if (!targetBtn) {
-            targetBtn = document.querySelector(`.dev-btn[data-segment="${segment}"]`);
-        }
-        if (targetBtn) {
-            targetBtn.classList.add('active-dev-btn');
-        }
+    // Ricliccare il segmento già attivo annulla la forzatura
+    const isDeselect = (activeDevSegment === segment);
+    const target = isDeselect ? 'NONE' : segment;
 
-        authFetch(`/api/wallet/force-result?segment=${encodeURIComponent(segment)}`, { method: 'POST' })
-            .then(r => r.json())
-            .then(d => {
-                if (d.success) {
-                    console.log(`[DEV] Prossimo segmento forzato: ${segment}`);
-                }
-            });
-    }
+    authFetch(`/api/wallet/force-result?segment=${encodeURIComponent(target)}`, { method: 'POST' })
+        .then(r => r.json())
+        .then(d => {
+            // Lo stato visivo segue la risposta del server invece di anticiparla
+            if (!d.success) {
+                showBetError(d.error || 'Impossibile forzare il segmento');
+                return;
+            }
+            clearDevSelection();
+            if (isDeselect) {
+                console.log('[DEV] Forzatura annullata (esito casuale)');
+                return;
+            }
+            activeDevSegment = segment;
+            const btn = btnElement || document.querySelector(`.dev-btn[data-segment="${segment}"]`);
+            if (btn) btn.classList.add('active-dev-btn');
+            console.log(`[DEV] Prossimo segmento forzato: ${segment}`);
+        })
+        .catch(() => showBetError('Errore di connessione al server'));
 }
 
 // ===== BET SLIP INTERACTION LOGIC =====
