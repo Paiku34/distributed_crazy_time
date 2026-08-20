@@ -443,17 +443,13 @@ publish_minigame_start(Round, MinigameName, WinnerIndex, Details, History, TimeL
         [Round, TimeLeftSec, MinigameName, WinnerIndex, DetailsJSON, HistStr])),
     publish_to_queue("state_queue", Payload).
 
-%% Pubblica un messaggio su una coda RabbitMQ via HTTP Management API
+%% Pubblica un messaggio su una coda RabbitMQ via AMQP.
+%% unicode:characters_to_binary/1 (e non list_to_binary/1) perche' i payload
+%% contengono username arbitrari: un accento e' un codepoint > 255.
 publish_to_queue(QueueName, Payload) ->
-    Url = "http://localhost:15672/api/exchanges/%2f/amq.default/publish",
-    Headers = [{"Authorization", "Basic Z3Vlc3Q6Z3Vlc3Q="}],
-    %% Escape le virgolette nel payload per il JSON wrapper
-    EscapedPayload = lists:flatten(string:replace(Payload, "\"", "\\\"", all)),
-    Body = "{\"properties\":{},\"routing_key\":\"" ++ QueueName ++ "\",\"payload\":\"" ++ EscapedPayload ++ "\",\"payload_encoding\":\"string\"}",
-    case httpc:request(post, {Url, Headers, "application/json", Body}, [], []) of
-        {ok, {{_, 200, _}, _, _}} -> ok;
-        {ok, {{_, Code, _}, _, Resp}} ->
-            io:format("[WHEEL] Errore RabbitMQ HTTP ~p: ~s~n", [Code, Resp]);
+    case rabbitmq_manager:publish(list_to_binary(QueueName),
+                                  unicode:characters_to_binary(Payload)) of
+        ok -> ok;
         {error, Reason} ->
-            io:format("[WHEEL] Errore connessione RabbitMQ: ~p~n", [Reason])
+            io:format("[WHEEL] Publish fallita su ~s: ~p~n", [QueueName, Reason])
     end.

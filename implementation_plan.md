@@ -528,7 +528,7 @@ Also fix the O(N²) list concatenation by using `[DropData | AccDrops]` and reve
 **Fix**: Remove both `inets:start()` calls. Ensure `inets` is in the `applications` list in `game_engine.app.src` (it already is).
 
 > [!NOTE]
-> This becomes irrelevant after Phase 1 replaces HTTP calls with native AMQP — `inets` won't be needed at all.
+> ✅ **RISOLTO dalla Fase 1**: le chiamate HTTP sono state sostituite da AMQP nativo e `inets` è stato **rimosso** dalla lista `applications` di `game_engine.app.src`. Nel codice non resta nessuna chiamata a `inets:start()` né a `httpc`.
 
 ---
 
@@ -739,9 +739,23 @@ myMultiplier = myBetAmount > 0 ? Math.round((winAmount - myBetAmount) / myBetAmo
 
 ---
 
-## Phase 1: Native AMQP Client Integration
+## Phase 1: Native AMQP Client Integration ✅ IMPLEMENTATA
 
 **Goal**: Replace all `httpc` HTTP Management API calls with proper AMQP 0-9-1 protocol using the `amqp_client` Erlang library. This is the foundation for everything else — multi-node communication through RabbitMQ must be robust.
+
+> [!NOTE]
+> **Questa sezione è stata allineata al codice realmente implementato.** In fase di revisione sono emerse 6 divergenze rispetto alla stesura originale: sono elencate nella tabella qui sotto e segnalate inline con il marcatore **🔧 MODIFICA #n** nei punti in cui il piano è cambiato.
+
+### Divergenze rispetto alla stesura originale
+
+| # | Stesura originale | Problema | Soluzione adottata |
+|---|---|---|---|
+| 1 | `{amqp_client, "3.12.14"}` | La macchina di sviluppo ha **OTP 28 / ERTS 16.1** (rebar3 3.27.0). La serie 3.12.x precede OTP 27/28 e non compila. | `{amqp_client, "4.3.4"}` — verificata, compila pulita su OTP 28. |
+| 2 | `app.src`: aggiungere solo `amqp_client` | Dopo la migrazione non resta nessun `httpc` nel codice Erlang, ma `inets` restava dichiarato. | Rimosso anche `inets` (chiude il **FIX 0.2.9**) e aggiunta la configurazione del broker in `env`. |
+| 3 | Manager riceve le delivery e le inoltra con `gen_server:cast(worker, ...)`, senza ack | Con `rest_for_one` il `worker` parte **per ultimo**: un messaggio consegnato prima che sia registrato verrebbe scartato in silenzio da `gen_server:cast`. Senza ack, inoltre, un crash del nodo perde la scommessa. | Il manager sottoscrive `bets_queue` passando **il PID del worker come consumer**: le delivery arrivano direttamente al worker, che fa **ack manuale** dopo l'elaborazione, con `prefetch_count`. |
+| 4 | La connessione viene aperta dentro `init/1` | Se RabbitMQ non è ancora su, `init` fallisce → 5 restart in 10 s → l'**intera applicazione si spegne**. | `init/1` ritorna subito con connessione `undefined` e ritenta in background ogni 5 s; il manager non crasha mai su disconnessione. |
+| 5 | `publish/2` implementata come chiamata al gen_server | Un `gen_server:call` serializzerebbe tutte le pubblicazioni e bloccherebbe `wheel_process` (che pubblica **ogni secondo**) mentre il manager è occupato a riconnettersi. | Il PID del publish channel è esposto in una **tabella ETS pubblica**: `publish/2` lo legge e fa `amqp_channel:cast` diretto, senza hop né blocco. |
+| 6 | `list_to_binary(Payload)` | I payload contengono username arbitrari: un carattere accentato è un codepoint > 255 e `list_to_binary` solleva `badarg`. | `unicode:characters_to_binary/1`. |
 
 ### Why this matters
 The current implementation uses HTTP POST to `localhost:15672/api/...` for both consuming (`worker.erl`) and publishing (`wheel_process.erl`). This is:
@@ -751,14 +765,14 @@ The current implementation uses HTTP POST to `localhost:15672/api/...` for both 
 
 ---
 
-### [MODIFY] [rebar.config](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/rebar.config)
+### [MODIFY] [rebar.config](erlang-engine/game_engine/rebar.config)
 
-Add `amqp_client` as a dependency:
+Add `amqp_client` as a dependency — **🔧 MODIFICA #1: versione 4.3.4, non 3.12.14**:
 
 ```erlang
 {erl_opts, [debug_info]}.
 {deps, [
-    {amqp_client, "3.12.14"}
+    {amqp_client, "4.3.4"}
 ]}.
 
 {shell, [
@@ -766,114 +780,195 @@ Add `amqp_client` as a dependency:
 ]}.
 ```
 
-> [!NOTE]
-> `amqp_client` brings in `rabbit_common` as a transitive dependency. Both are needed. After editing, run `rebar3 compile` to fetch and build.
+> [!IMPORTANT]
+> La serie **3.12.x non compila su OTP 28**. La 4.3.4 sì, ed è quella verificata. Le dipendenze transitive scaricate sono `rabbit_common 4.3.4`, `credentials_obfuscation 3.5.0`, `ranch 2.2.0`, `recon 2.5.6`, `thoas 1.2.1`. Fallback in caso di problemi su un'altra macchina: 4.1.6 → 4.0.3.
 
 ---
 
-### [MODIFY] [game_engine.app.src](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/game_engine.app.src)
+### [MODIFY] [game_engine.app.src](erlang-engine/game_engine/src/game_engine.app.src)
 
-Add `amqp_client` to the application dependencies:
+**🔧 MODIFICA #2**: oltre ad aggiungere `amqp_client`, si **rimuove `inets`** (non resta nessun `httpc`) e si aggiunge la configurazione del broker in `env`, così le Fasi 2-3 potranno sovrascriverla per nodo:
 
 ```erlang
-{application, game_engine,
- [{description, "Distributed Crazy Time Game Engine"},
-  {vsn, "0.1.0"},
-  {registered, [wheel_process, worker, minigames_sup, pachinko, coinflip, cashhunt, crazytime]},
-  {mod, {game_engine_app, []}},
-  {applications,
-   [kernel,
-    stdlib,
-    inets,
-    crypto,
-    amqp_client    %% <-- ADD THIS
-   ]},
-  {env,[]},
-  {modules, []}
+{application, game_engine, [
+    {description, "Distributed Crazy Time - Erlang Game Engine"},
+    {vsn, "0.1.0"},
+    {registered, [rabbitmq_manager, wheel_process, worker, minigames_sup,
+                  pachinko, coinflip, cashhunt, crazytime]},
+    {mod, {game_engine_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        crypto,
+        amqp_client     %% <-- AGGIUNTO   (inets RIMOSSO)
+    ]},
+    {env, [
+        {rabbitmq, #{
+            host => "localhost",
+            port => 5672,
+            username => <<"guest">>,
+            password => <<"guest">>,
+            vhost => <<"/">>,
+            prefetch => 10,
+            retry_interval => 5000
+        }}
+    ]},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
  ]}.
 ```
 
 ---
 
-### [NEW] [rabbitmq_manager.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/rabbitmq_manager.erl)
+### [NEW] [rabbitmq_manager.erl](erlang-engine/game_engine/src/rabbitmq_manager.erl)
 
-Create a new `gen_server` that owns and manages the AMQP connection and channels. All other modules will call this process to publish or subscribe. This centralizes RabbitMQ connection lifecycle management.
+Un `gen_server` che possiede la connessione AMQP e i suoi canali. Centralizza il ciclo di vita della connessione a RabbitMQ.
 
-**Behavior**: `gen_server`, registered as `rabbitmq_manager`
+**Behavior**: `gen_server`, registrato come `rabbitmq_manager`, con `-include_lib("amqp_client/include/amqp_client.hrl")`.
 
 **State**:
 ```erlang
+%% Una sottoscrizione attiva
+-record(sub, {queue, pid, mref, tag = undefined}).
+
 -record(state, {
-    connection :: pid() | undefined,
-    publish_channel :: pid() | undefined,
-    consume_channel :: pid() | undefined,
-    consumer_tag :: binary() | undefined
+    conn = undefined, conn_ref = undefined,
+    pub_ch = undefined, pub_ref = undefined,
+    cons_ch = undefined, cons_ref = undefined,
+    subs = [] :: [#sub{}],
+    cfg = ?DEFAULT_CFG
 }).
 ```
 
 **API**:
 ```erlang
--export([start_link/0, publish/2, get_connection/0]).
+-export([start_link/0, publish/2, subscribe/2, ack/1, is_connected/0]).
 
-%% publish(QueueName :: binary(), Payload :: binary()) -> ok | {error, Reason}
-%% get_connection() -> {ok, Connection} | {error, not_connected}
+%% publish(Queue :: binary(), Payload :: binary()) -> ok | {error, Reason}
+%% subscribe(Queue :: binary(), ConsumerPid :: pid()) -> ok
+%% ack(DeliveryTag) -> ok | {error, Reason}
+%% is_connected() -> boolean()
 ```
 
-**Init logic**:
-1. Open an AMQP connection to `localhost:5672` using `amqp_connection:start(#amqp_params_network{})`.
-2. Open two channels: one for publishing, one for consuming.
-3. Declare all 4 queues as durable: `bets_queue`, `state_queue`, `results_queue`, `refunds_queue` using `amqp_channel:call(Channel, #'queue.declare'{queue = <<"bets_queue">>, durable = true})`.
-4. Set up a consumer on `bets_queue` using `amqp_channel:subscribe(ConsumeChannel, #'basic.consume'{queue = <<"bets_queue">>}, self())`.
-5. Monitor both connection and channels. On crash, attempt reconnection after 5s.
+**Init logic** — **🔧 MODIFICA #4: nessuna connessione dentro `init/1`**:
+1. `process_flag(trap_exit, true)` — i processi di `amqp_client` possono essere linkati e non devono abbattere il manager.
+2. Creare la tabella ETS pubblica `rabbitmq_manager_tab` (`named_table, public, set, read_concurrency`).
+3. Leggere la config con `maps:merge(?DEFAULT_CFG, application:get_env(game_engine, rabbitmq, #{}))`.
+4. `self() ! connect` e **ritornare `{ok, State}` senza mai fallire**.
 
-**Message handling**:
-- `#'basic.deliver'{}` + `#amqp_msg{payload = Payload}` → Forward to `worker` via `gen_server:cast(worker, {amqp_message, Payload})`.
-- `publish/2` → Use `amqp_channel:cast(PubChannel, #'basic.publish'{routing_key = Queue}, #amqp_msg{payload = Payload})`.
+**Connessione** (`handle_info(connect, ...)`):
+1. `amqp_connection:start(#amqp_params_network{host, port, username, password, virtual_host})`.
+2. Errore → log + `erlang:send_after(5000, self(), connect)`. **Mai un crash**: fallire qui farebbe scattare il limite di restart del supervisor e spegnerebbe l'applicazione.
+3. Successo → `amqp_connection:open_channel/1` **×2** (uno publish, uno consume).
+4. Dichiarare le 4 code con `amqp_channel:call(PubCh, #'queue.declare'{queue = Q, durable = true})` — `bets_queue`, `state_queue`, `results_queue`, `refunds_queue`. **`durable = true` è obbligatorio**: il gateway Java le dichiara così in `GatewayApplication.java`, e parametri diversi darebbero `PRECONDITION_FAILED`.
+5. `#'basic.qos'{prefetch_count = N}` sul canale consume.
+6. `ets:insert(?TAB, [{pub_ch, PubCh}, {cons_ch, ConsCh}])` e `erlang:monitor/2` su connessione e canali.
+7. Riattivare tutte le sottoscrizioni memorizzate.
 
-**Supervision**: Add `rabbitmq_manager` as a child of `game_engine_sup`, started **before** `worker` and `wheel_process` (since they depend on it).
+**Publish** — **🔧 MODIFICA #5: non passa dal gen_server**:
+```erlang
+publish(Queue, Payload) when is_binary(Queue), is_binary(Payload) ->
+    case lookup_channel(pub_ch) of          %% lettura diretta dalla ETS
+        {ok, Ch} ->
+            amqp_channel:cast(Ch,
+                              #'basic.publish'{exchange = <<>>, routing_key = Queue},
+                              #amqp_msg{payload = Payload});
+        Error -> Error                       %% {error, not_connected} | {error, not_started}
+    end.
+```
+Exchange di default + routing key = nome della coda: l'esatto equivalente della vecchia POST su `amq.default`.
+
+**Subscribe** — **🔧 MODIFICA #3: il consumer è il PID del chiamante**:
+```erlang
+amqp_channel:subscribe(ConsCh, #'basic.consume'{queue = Queue, no_ack = false}, Pid)
+```
+Il terzo argomento è il processo che riceverà le delivery: passando il PID del `worker`, i messaggi finiscono **direttamente nella sua mailbox**, senza rimbalzare sul manager. Se la connessione non è ancora pronta la sottoscrizione viene memorizzata e attivata al primo `connect` riuscito. Il PID del consumer è monitorato: se il worker muore, la sottoscrizione viene cancellata; se si ri-registra (dopo un restart) quella vecchia viene sostituita.
+
+**Ack**: `ack(Tag)` legge `cons_ch` dalla ETS e fa `amqp_channel:cast(Ch, #'basic.ack'{delivery_tag = Tag})`.
+
+**Resilienza**: `handle_info({'DOWN', ...})` su connessione o canali (e `{'EXIT', ...}` sui processi AMQP) → `teardown` (pulizia ETS, demonitor, chiusura) + retry dopo 5 s. Le sottoscrizioni sopravvivono con `tag = undefined` e vengono riattivate da sole. **Il manager non crasha mai su disconnessione**, così `rest_for_one` non resetta il round in corso a ogni singhiozzo del broker.
+
+**Supervision**: `rabbitmq_manager` è il **primo** figlio di `game_engine_sup`, prima di `worker` e `wheel_process` che dipendono da lui.
 
 ---
 
-### [MODIFY] [worker.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/worker.erl)
+### [MODIFY] [worker.erl](erlang-engine/game_engine/src/worker.erl)
 
 **Major changes**:
-- **Remove** all HTTP polling logic (`handle_info(poll, ...)`, `httpc:request/4`, `extract_payload/1`).
-- **Remove** `publish_refund/1` that uses HTTP — replace with `rabbitmq_manager:publish(<<"refunds_queue">>, Payload)`.
-- **Add** `handle_cast({amqp_message, Payload}, State)` that receives messages forwarded from `rabbitmq_manager`.
-- **Keep** all the JSON parsing logic (`parse_bet_json/1`, `extract_string_field/2`, `extract_number_field/2`) — these still work on raw JSON payloads.
-- **Remove** `inets:start()` from init (no longer needed).
+- **Remove** tutta la logica di polling HTTP (`handle_info(poll, ...)`, `httpc:request/4`, `extract_payload/1`, i define `?POLL_IDLE`/`?POLL_ACTIVE`).
+- **Add** `-include_lib("amqp_client/include/amqp_client.hrl")`.
+- **Init**: `ok = rabbitmq_manager:subscribe(<<"bets_queue">>, self())`.
+- **Keep** tutta la logica di parsing (`parse_bet_json/1`, `extract_string_field/2`, `extract_number_field/2`, `escape_json_string/1`) — funziona già sul payload JSON grezzo.
+- `process_message/1` **conserva firma e corpo** (dispatch `force_segment` / `minigame_choice` / `UNDO_BETS` / `FORCE_*` / `place_bet` + rimborso): cambia solo il fatto che riceve il payload direttamente, senza il wrapper della Management API da sbucciare con `extract_payload/1`.
 
-The `process_message/1` function signature stays the same, but is now called with the raw JSON payload (binary) directly, rather than the HTTP response wrapper.
+**🔧 MODIFICA #3 — il worker è il consumer, con ack manuale**:
+```erlang
+handle_info(#'basic.consume_ok'{}, State) -> {noreply, State};
+handle_info(#'basic.cancel_ok'{}, State)  -> {noreply, State};
+handle_info(#'basic.cancel'{}, State) ->
+    io:format("[WORKER] Consumer cancellato dal broker.~n"),
+    {noreply, State};
 
-**New publish_refund**:
+handle_info({#'basic.deliver'{delivery_tag = Tag}, #amqp_msg{payload = Payload}}, State) ->
+    %% L'ack viene sempre inviato, anche in caso di errore di parsing: un
+    %% messaggio malformato rimesso in coda verrebbe riconsegnato all'infinito.
+    try
+        process_message(binary_to_list(Payload))
+    catch
+        Class:Err:Stack ->
+            io:format("[WORKER] Errore elaborazione messaggio: ~p:~p~nStacktrace: ~p~n",
+                      [Class, Err, Stack])
+    end,
+    rabbitmq_manager:ack(Tag),
+    {noreply, State};
+```
+
+> [!TIP]
+> L'ack manuale è ciò che rende possibile la Fase 5: se il nodo dealer muore mentre elabora una scommessa, il messaggio non-ackato viene **riconsegnato** dal broker invece di andare perso (il vecchio `ack_requeue_false` HTTP lo cancellava subito).
+
+**New publish_refund** — **🔧 MODIFICA #6: `unicode:characters_to_binary`, non `list_to_binary`**:
 ```erlang
 publish_refund(BetMap) ->
     Username = maps:get(<<"username">>, BetMap, <<"unknown">>),
     Amount = maps:get(<<"amount">>, BetMap, 0),
-    Payload = list_to_binary(lists:flatten(io_lib:format(
+    Payload = lists:flatten(io_lib:format(
         "{\"username\":\"~s\",\"amount\":~p,\"reason\":\"betting_closed\"}",
-        [Username, Amount]))),
-    rabbitmq_manager:publish(<<"refunds_queue">>, Payload).
+        [escape_json_string(Username), Amount])),
+    case rabbitmq_manager:publish(<<"refunds_queue">>, unicode:characters_to_binary(Payload)) of
+        ok ->
+            io:format("[WORKER] Rimborso pubblicato per ~s ($~p)~n", [Username, Amount]);
+        {error, Reason} ->
+            io:format("[WORKER] Errore pubblicazione rimborso: ~p~n", [Reason])
+    end.
 ```
+Sparisce il doppio escaping (`EscapedPayload`), che serviva solo al wrapper JSON dell'HTTP.
 
 ---
 
-### [MODIFY] [wheel_process.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/wheel_process.erl)
+### [MODIFY] [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)
 
-**Change**: Replace the `publish_to_queue/2` function (lines 428-440) to use `rabbitmq_manager`:
+**Change**: sostituire la sola `publish_to_queue/2` — **🔧 MODIFICA #6**:
 
 ```erlang
+%% unicode:characters_to_binary/1 (e non list_to_binary/1) perche' i payload
+%% contengono username arbitrari: un accento e' un codepoint > 255.
 publish_to_queue(QueueName, Payload) ->
-    rabbitmq_manager:publish(list_to_binary(QueueName), list_to_binary(Payload)).
+    case rabbitmq_manager:publish(list_to_binary(QueueName),
+                                  unicode:characters_to_binary(Payload)) of
+        ok -> ok;
+        {error, Reason} ->
+            io:format("[WHEEL] Publish fallita su ~s: ~p~n", [QueueName, Reason])
+    end.
 ```
 
-This is a single-function replacement. All callers (`publish_timer`, `publish_spinning`, `publish_minigame_start`, `resolve_round`, etc.) already use `publish_to_queue/2`, so they all automatically switch to native AMQP.
+È una sostituzione di una sola funzione. Tutti i chiamanti (`publish_timer`, `publish_spinning`, `publish_minigame_start`, `resolve_round`, ecc.) usano già `publish_to_queue/2` e passano `QueueName` come stringa letterale e `Payload` come stringa piatta: passano automaticamente ad AMQP nativo senza altre modifiche.
 
 ---
 
-### [MODIFY] [game_engine_sup.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/game_engine_sup.erl)
+### [MODIFY] [game_engine_sup.erl](erlang-engine/game_engine/src/game_engine_sup.erl)
 
-Add `rabbitmq_manager` as the **first** child (rest_for_one strategy so that if rabbitmq_manager crashes, worker and wheel_process restart too):
+Aggiungere `rabbitmq_manager` come **primo** figlio, con strategia `rest_for_one` (se il manager crasha, worker e wheel_process vanno riavviati anch'essi, nell'ordine):
 
 ```erlang
 init([]) ->
@@ -882,37 +977,46 @@ init([]) ->
         #{id => rabbitmq_manager,
           start => {rabbitmq_manager, start_link, []},
           restart => permanent,
-          type => worker,
-          modules => [rabbitmq_manager]},
+          type => worker},
         #{id => wheel_process,
           start => {wheel_process, start_link, []},
           restart => permanent,
-          type => worker,
-          modules => [wheel_process]},
+          type => worker},
         #{id => minigames_sup,
           start => {minigames_sup, start_link, []},
           restart => permanent,
-          type => supervisor,
-          modules => [minigames_sup]},
+          type => supervisor},
         #{id => worker,
           start => {worker, start_link, []},
           restart => permanent,
-          type => worker,
-          modules => [worker]}
+          type => worker}
     ],
     {ok, {SupFlags, ChildSpecs}}.
 ```
 
-> [!TIP]
-> Change from `one_for_one` to `rest_for_one` so that if `rabbitmq_manager` crashes, all dependent children (wheel, minigames, worker) restart in order.
+---
+
+### Nota sul build
+
+Da questa fase l'engine **richiede `rebar3`** (`../rebar3 shell` / `../rebar3 compile`): `Emakefile` e `erl_compile.escript` non gestiscono le dipendenze e restano solo come fallback legacy.
 
 ---
 
-### Verification for Phase 1
-1. `rebar3 compile` should succeed with `amqp_client` dependency fetched.
-2. Start RabbitMQ, then `rebar3 shell` — the engine should connect via AMQP (port 5672) instead of HTTP (port 15672).
-3. Place bets via the Java gateway `curl` commands — bets should arrive in Erlang, results should flow back to Java.
-4. Verify refunds still work when betting is closed.
+### Verification for Phase 1 — ✅ eseguita
+
+| # | Test | Esito |
+|---|---|---|
+| 1 | `../rebar3 compile` con `amqp_client` risolto | ✅ pulito, zero warning; deps in `_build/default/lib/` |
+| 2 | `grep -rn "httpc\|15672\|inets" src/` | ✅ nessun residuo HTTP |
+| 3 | Avvio dell'engine **senza broker** | ✅ parte lo stesso, logga `Broker non raggiungibile`, ritenta ogni 5 s, tutti e 4 i figli vivi (verifica della **MODIFICA #4**) |
+| 4 | Avvio con broker attivo | ✅ `is_connected = true`, 4 code dichiarate `durable=true` senza `PRECONDITION_FAILED`, timer accumulati su `state_queue` |
+| 5 | Bet pubblicata su `bets_queue` | ✅ `[WORKER] Bet ricevuta` → `[WHEEL] Scommessa accettata` → coda a 0, ack confermato |
+| 6 | Stop e restart del broker a caldo | ✅ disconnessione rilevata, manager/wheel/worker restano vivi, riconnessione e **ri-sottoscrizione automatiche**; la bet successiva arriva in fase `spinning` → rifiutata → rimborso pubblicato su `refunds_queue` via AMQP |
+
+Test end-to-end con il gateway Java (bet → payout dal browser) non ancora eseguito: da fare con `mvn spring-boot:run` seguendo `comandi_avvio.md`.
+
+> [!NOTE]
+> **Scelta lasciata aperta**: i messaggi sono pubblicati **transient** (`delivery_mode` di default), identico al comportamento HTTP precedente — le code sono durable ma i messaggi non sopravvivono a un riavvio del broker. Per `results_queue` e `refunds_queue` la persistenza (`#'P_basic'{delivery_mode = 2}`) avrebbe senso: va valutata nella **Fase 5 (Fault Tolerance)**, non qui.
 
 ---
 
@@ -1621,7 +1725,7 @@ call ..\..\rebar3 shell
 ### New Files (4 — Phases 1–4)
 | File | Type | Purpose |
 |------|------|---------|
-| `rabbitmq_manager.erl` | gen_server | AMQP connection/channel management, publish API |
+| `rabbitmq_manager.erl` | gen_server | ✅ **FATTO** — connessione/canali AMQP, `publish/2` via ETS, `subscribe/2` con PID del consumer, `ack/1`, riconnessione automatica |
 | `cluster_manager.erl` | gen_server | Node discovery, `net_kernel:monitor_nodes`, cluster topology |
 | `leader_election.erl` | gen_server | Bully Algorithm, role assignment (leader/standby) |
 | `snapshot.erl` | gen_server | Chandy-Lamport consistent snapshot at "No more bets" |
@@ -1647,11 +1751,11 @@ call ..\..\rebar3 shell
 ### Modified Files (Phases 1–6 — 8 files)
 | File | Changes |
 |------|---------|
-| `rebar.config` | Add `amqp_client` dependency |
-| `game_engine.app.src` | Add `amqp_client` to deps, new registered processes, env config |
-| `game_engine_sup.erl` | Add 4 new children, change to `rest_for_one` strategy |
-| `wheel_process.erl` | Add `active` flag, `activate/deactivate` casts, snapshot initiation, `get_bets` API |
-| `worker.erl` | Remove HTTP polling, add AMQP message handler, add `active` flag |
+| `rebar.config` | ✅ **FATTO** — `{amqp_client, "4.3.4"}` (🔧 non 3.12.14: incompatibile con OTP 28) |
+| `game_engine.app.src` | ✅ Fase 1 **FATTA** — `amqp_client` aggiunto, 🔧 `inets` **rimosso**, `rabbitmq_manager` registrato, config broker in `env`. Restano da aggiungere `cluster_manager`/`leader_election` (Fasi 2-3) |
+| `game_engine_sup.erl` | ✅ Fase 1 **FATTA** — `rest_for_one` + `rabbitmq_manager` come primo figlio. Restano 3 figli da aggiungere (Fasi 2-4) |
+| `wheel_process.erl` | ✅ Fase 1 **FATTA** — `publish_to_queue/2` ora usa AMQP. Restano flag `active`, cast `activate/deactivate`, snapshot, `get_bets` (Fasi 3-4) |
+| `worker.erl` | ✅ Fase 1 **FATTA** — polling HTTP rimosso, 🔧 il worker è consumer diretto con **ack manuale**. Resta da aggiungere il flag `active` (Fase 3) |
 | `GameResultListener.java` | Handle `round_cancelled` message type for crash recovery refunds |
 | `app.js` | Handle `round_cancelled` WebSocket event |
 | `istruzioni.txt` | Update with multi-node startup instructions |
@@ -1662,7 +1766,7 @@ call ..\..\rebar3 shell
 
 ```mermaid
 graph TD
-    Z["Phase 0: Bug Fixes"] --> A["Phase 1: AMQP Client"]
+    Z["Phase 0: Bug Fixes"] --> A["Phase 1: AMQP Client ✅"]
     A --> B["Phase 2: Multi-Node Cluster"]
     B --> C["Phase 3: Bully Leader Election"]
     C --> D["Phase 4: Chandy-Lamport Snapshot"]
@@ -1684,7 +1788,7 @@ graph TD
 
 ### Manual Verification
 1. **Phase 0**: Run existing game loop end-to-end. Place bets, complete rounds, verify payouts. Test UNDO during betting, test bets after "No more bets" (refund + status update). Test concurrent bet placement.
-2. **Phase 1**: Start single node, place bets via curl, verify AMQP flow replaces HTTP.
+2. **Phase 1** ✅: verificata — compilazione, avvio con e senza broker, consumo di una bet con ack, stop/restart del broker a caldo con ri-sottoscrizione automatica. Manca solo il giro end-to-end con il gateway Java (bet → payout).
 3. **Phase 2-3**: Start 3 nodes, verify cluster formation and leader election in logs.
 4. **Phase 4**: Observe snapshot logs when betting closes. Verify bets are correctly locked.
 5. **Phase 5**: Kill leader during different phases (betting, spinning, minigame), verify refund and recovery.

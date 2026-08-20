@@ -1,27 +1,33 @@
 %%%-------------------------------------------------------------------
-%% @doc Worker process — polls RabbitMQ for incoming bets and
-%%      forwards them to the wheel_process as parsed maps.
+%% @doc Worker process — consuma le scommesse da bets_queue via AMQP e
+%%      le inoltra al wheel_process come mappe gia' parsate.
 %%      Runs as a gen_server under the main supervisor.
+%%
+%%      Il worker si registra come consumer presso il rabbitmq_manager,
+%%      che sottoscrive la coda passando il PID di questo processo: le
+%%      delivery arrivano quindi direttamente qui, e vengono confermate
+%%      con un ack manuale solo dopo l'elaborazione.
 %% @end
 %%%-------------------------------------------------------------------
 -module(worker).
 -behaviour(gen_server).
 
+-include_lib("amqp_client/include/amqp_client.hrl").
+
 -export([start_link/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
--define(POLL_IDLE, 2000).   %% intervallo polling quando la coda e' vuota (ms)
--define(POLL_ACTIVE, 100).  %% intervallo polling quando ci sono messaggi (ms)
+-define(BETS_QUEUE, <<"bets_queue">>).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 init([]) ->
     io:format("~n=================================~n"),
-    io:format("  Worker RabbitMQ Poller avviato~n"),
-    io:format("  Polling bets_queue...~n"),
+    io:format("  Worker RabbitMQ (AMQP) avviato~n"),
+    io:format("  Consumer su bets_queue...~n"),
     io:format("=================================~n~n"),
-    self() ! poll,
+    ok = rabbitmq_manager:subscribe(?BETS_QUEUE, self()),
     {ok, #{}}.
 
 handle_call(_Request, _From, State) ->
@@ -30,31 +36,26 @@ handle_call(_Request, _From, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-handle_info(poll, State) ->
-    Url = "http://localhost:15672/api/queues/%2F/bets_queue/get",
-    Headers = [{"Authorization", "Basic Z3Vlc3Q6Z3Vlc3Q="}],
-    Body = "{\"count\":1,\"ackmode\":\"ack_requeue_false\",\"encoding\":\"auto\"}",
-    Request = {Url, Headers, "application/json", Body},
-    
-    case httpc:request(post, Request, [], []) of
-        {ok, {{_, 200, _}, _, ResponseBody}} ->
-            case ResponseBody of
-                "[]" ->
-                    erlang:send_after(?POLL_IDLE, self(), poll);
-                _ ->
-                    process_message(ResponseBody),
-                    erlang:send_after(?POLL_ACTIVE, self(), poll)
-            end;
-        {ok, {{_, 404, _}, _, _}} ->
-            io:format("[WORKER] Coda 'bets_queue' non trovata. Attendo...~n"),
-            erlang:send_after(?POLL_IDLE, self(), poll);
-        {ok, {{_, Code, _}, _, _}} ->
-            io:format("[WORKER] Risposta HTTP ~p da RabbitMQ.~n", [Code]),
-            erlang:send_after(?POLL_IDLE, self(), poll);
-        {error, Reason} ->
-            io:format("[WORKER] Errore connessione RabbitMQ: ~p~n", [Reason]),
-            erlang:send_after(3000, self(), poll)
+%% Conferme del broker alla sottoscrizione / cancellazione: nulla da fare.
+handle_info(#'basic.consume_ok'{}, State) ->
+    {noreply, State};
+handle_info(#'basic.cancel_ok'{}, State) ->
+    {noreply, State};
+handle_info(#'basic.cancel'{}, State) ->
+    io:format("[WORKER] Consumer cancellato dal broker.~n"),
+    {noreply, State};
+
+handle_info({#'basic.deliver'{delivery_tag = Tag}, #amqp_msg{payload = Payload}}, State) ->
+    %% L'ack viene sempre inviato, anche in caso di errore di parsing: un
+    %% messaggio malformato rimesso in coda verrebbe riconsegnato all'infinito.
+    try
+        process_message(binary_to_list(Payload))
+    catch
+        Class:Err:Stack ->
+            io:format("[WORKER] Errore elaborazione messaggio: ~p:~p~nStacktrace: ~p~n",
+                      [Class, Err, Stack])
     end,
+    rabbitmq_manager:ack(Tag),
     {noreply, State};
 
 handle_info(_Info, State) ->
@@ -70,64 +71,49 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal — parsing e forwarding
 %%====================================================================
 
-process_message(ResponseBody) ->
-    %% Estraiamo il payload dal JSON della risposta RabbitMQ Management API
-    case extract_payload(ResponseBody) of
-        {ok, PayloadStr} ->
-            %% Parsing del payload JSON della scommessa
-            case parse_bet_json(PayloadStr) of
-                {ok, BetMap} ->
-                    io:format("[WORKER] Bet ricevuta: ~p~n", [BetMap]),
-                    case maps:get(<<"type">>, BetMap, <<"bet">>) of
-                        <<"force_segment">> ->
-                            wheel_process:force_segment(maps:get(<<"segment">>, BetMap));
-                        <<"minigame_choice">> ->
-                            wheel_process:submit_choice(
-                                maps:get(<<"username">>, BetMap), 
-                                maps:get(<<"choice">>, BetMap));
+%% PayloadStr e' il JSON della scommessa cosi' come arriva dal broker:
+%% con AMQP non c'e' piu' il wrapper della Management API da sbucciare.
+process_message(PayloadStr) ->
+    case parse_bet_json(PayloadStr) of
+        {ok, BetMap} ->
+            io:format("[WORKER] Bet ricevuta: ~p~n", [BetMap]),
+            case maps:get(<<"type">>, BetMap, <<"bet">>) of
+                <<"force_segment">> ->
+                    wheel_process:force_segment(maps:get(<<"segment">>, BetMap));
+                <<"minigame_choice">> ->
+                    wheel_process:submit_choice(
+                        maps:get(<<"username">>, BetMap),
+                        maps:get(<<"choice">>, BetMap));
+                _ ->
+                    case maps:get(<<"segment">>, BetMap, <<>>) of
+                        <<"UNDO_BETS">> ->
+                            Username = maps:get(<<"username">>, BetMap),
+                            io:format("[WORKER] Comando UNDO per utente: ~s~n", [Username]),
+                            TotalRefund = wheel_process:undo_bets(Username),
+                            if TotalRefund > 0 ->
+                                   io:format("[WORKER] Rimborso totale per ~s: ~p~n", [Username, TotalRefund]),
+                                   RefundMap = #{<<"username">> => Username, <<"amount">> => TotalRefund, <<"segment">> => <<"REFUND">>},
+                                   publish_refund(RefundMap);
+                               true ->
+                                   io:format("[WORKER] Nessuna scommessa da annullare per ~s~n", [Username])
+                            end;
+                        <<"FORCE_", Seg/binary>> ->
+                            io:format("[WORKER] Comando FORZATURA segmento: ~s~n", [Seg]),
+                            wheel_process:force_segment(Seg);
                         _ ->
-                            case maps:get(<<"segment">>, BetMap, <<>>) of
-                                <<"UNDO_BETS">> ->
-                                    Username = maps:get(<<"username">>, BetMap),
-                                    io:format("[WORKER] Comando UNDO per utente: ~s~n", [Username]),
-                                    TotalRefund = wheel_process:undo_bets(Username),
-                                    if TotalRefund > 0 ->
-                                           io:format("[WORKER] Rimborso totale per ~s: ~p~n", [Username, TotalRefund]),
-                                           RefundMap = #{<<"username">> => Username, <<"amount">> => TotalRefund, <<"segment">> => <<"REFUND">>},
-                                           publish_refund(RefundMap);
-                                       true ->
-                                           io:format("[WORKER] Nessuna scommessa da annullare per ~s~n", [Username])
-                                    end;
-                                <<"FORCE_", Seg/binary>> ->
-                                    io:format("[WORKER] Comando FORZATURA segmento: ~s~n", [Seg]),
-                                    wheel_process:force_segment(Seg);
-                                _ ->
-                                    case wheel_process:place_bet(BetMap) of
-                                        {ok, accepted} ->
-                                            io:format("[WORKER] Bet accettata dal wheel_process.~n");
-                                        {error, betting_closed} ->
-                                            io:format("[WORKER] Bet RIFIUTATA — scommesse chiuse. Invio rimborso.~n"),
-                                            publish_refund(BetMap);
-                                        Other ->
-                                            io:format("[WORKER] Risposta wheel_process: ~p~n", [Other])
-                                    end
+                            case wheel_process:place_bet(BetMap) of
+                                {ok, accepted} ->
+                                    io:format("[WORKER] Bet accettata dal wheel_process.~n");
+                                {error, betting_closed} ->
+                                    io:format("[WORKER] Bet RIFIUTATA — scommesse chiuse. Invio rimborso.~n"),
+                                    publish_refund(BetMap);
+                                Other ->
+                                    io:format("[WORKER] Risposta wheel_process: ~p~n", [Other])
                             end
-                    end;
-                {error, Reason} ->
-                    io:format("[WORKER] Errore parsing bet: ~p~n", [Reason])
+                    end
             end;
         {error, Reason} ->
-            io:format("[WORKER] Errore estrazione payload: ~p~n", [Reason])
-    end.
-
-extract_payload(ResponseBody) ->
-    case re:run(ResponseBody, "\"payload\":\"(.*?)\",\"payload_encoding\"", [{capture, all_but_first, list}]) of
-        {match, [Escaped]} ->
-            %% Rimuoviamo i backslash di escape
-            Clean = re:replace(Escaped, "\\\\\"", "\"", [global, {return, list}]),
-            {ok, Clean};
-        _ ->
-            {error, no_payload_found}
+            io:format("[WORKER] Errore parsing bet: ~p~n", [Reason])
     end.
 
 %% Parser semplice per JSON
@@ -197,19 +183,13 @@ escape_json_string(Str) ->
 %% Pubblica un messaggio di rimborso su refunds_queue
 publish_refund(BetMap) ->
     Username = maps:get(<<"username">>, BetMap, <<"unknown">>),
-    EscapedUsername = escape_json_string(Username),
     Amount = maps:get(<<"amount">>, BetMap, 0),
-    Url = "http://localhost:15672/api/exchanges/%2f/amq.default/publish",
-    Headers = [{"Authorization", "Basic Z3Vlc3Q6Z3Vlc3Q="}],
     Payload = lists:flatten(io_lib:format(
         "{\"username\":\"~s\",\"amount\":~p,\"reason\":\"betting_closed\"}",
-        [EscapedUsername, Amount])),
-    EscapedPayload = lists:flatten(string:replace(Payload, "\"", "\\\"", all)),
-    Body = "{\"properties\":{},\"routing_key\":\"refunds_queue\",\"payload\":\"" ++ EscapedPayload ++ "\",\"payload_encoding\":\"string\"}",
-    case httpc:request(post, {Url, Headers, "application/json", Body}, [], []) of
-        {ok, {{_, 200, _}, _, _}} ->
+        [escape_json_string(Username), Amount])),
+    case rabbitmq_manager:publish(<<"refunds_queue">>, unicode:characters_to_binary(Payload)) of
+        ok ->
             io:format("[WORKER] Rimborso pubblicato per ~s ($~p)~n", [Username, Amount]);
         {error, Reason} ->
-            io:format("[WORKER] Errore pubblicazione rimborso: ~p~n", [Reason]);
-        _ -> ok
+            io:format("[WORKER] Errore pubblicazione rimborso: ~p~n", [Reason])
     end.

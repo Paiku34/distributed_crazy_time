@@ -1,15 +1,27 @@
 {application, game_engine, [
     {description, "Distributed Crazy Time - Erlang Game Engine"},
     {vsn, "0.1.0"},
-    {registered, [wheel_process, worker, minigames_sup, pachinko, coinflip, cashhunt, crazytime]},
+    {registered, [rabbitmq_manager, wheel_process, worker, minigames_sup, pachinko, coinflip, cashhunt, crazytime]},
     {mod, {game_engine_app, []}},
     {applications, [
         kernel,
         stdlib,
-        inets,
-        crypto
+        crypto,
+        amqp_client
     ]},
-    {env, []},
+    %% Configurazione del broker: sovrascrivibile per nodo (utile dalla Fase 2 in poi)
+    %% es. erl -game_engine rabbitmq '#{host => "10.0.0.5", port => 5672}'
+    {env, [
+        {rabbitmq, #{
+            host => "localhost",
+            port => 5672,
+            username => <<"guest">>,
+            password => <<"guest">>,
+            vhost => <<"/">>,
+            prefetch => 10,
+            retry_interval => 5000
+        }}
+    ]},
     {modules, []},
     {licenses, ["Apache-2.0"]},
     {links, []}
