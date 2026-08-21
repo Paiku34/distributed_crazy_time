@@ -13,3 +13,6 @@ log.txt
 
 # Database H2 persistente
 java-gateway/data/
+
+# Editor / IDE
+.vscode/
