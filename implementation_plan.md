@@ -1020,9 +1020,20 @@ Test end-to-end con il gateway Java (bet → payout dal browser) non ancora eseg
 
 ---
 
-## Phase 2: Multi-Node Erlang Cluster
+## Phase 2: Multi-Node Erlang Cluster ✅ IMPLEMENTATA
 
 **Goal**: Run the Erlang game engine on multiple nodes (e.g., `node1@host`, `node2@host`, `node3@host`) that form a cluster and can discover each other. Only **one node** runs the game (the Leader/Dealer); others are hot standby.
+
+> [!NOTE]
+> **Questa sezione è stata allineata al codice realmente implementato.** In fase di realizzazione sono emerse 3 divergenze rispetto alla stesura originale: sono elencate nella tabella qui sotto e segnalate inline con il marcatore **🔧 MODIFICA** nei punti in cui il piano è cambiato.
+
+### Divergenze rispetto alla stesura originale
+
+| # | Stesura originale | Problema | Soluzione adottata |
+|---|---|---|---|
+| 1 | `cluster_manager` chiama direttamente `leader_election:start_election()` e `leader_election:get_leader()` | `leader_election` è della **Fase 3** e non esiste ancora: il modulo non è compilato → crash con `error:undef` al primo `nodeup`/`nodedown`. | Ogni chiamata verso `leader_election` è wrappata in `try ... catch error:undef -> ...` con funzioni helper `maybe_start_election/0` e `maybe_start_election_on_nodedown/1`. Quando il modulo non è disponibile si logga e si prosegue. |
+| 2 | `net_kernel:monitor_nodes(true)` senza opzioni → messaggi `{nodeup, Node}`, `{nodedown, Node}` | Con l'opzione `{node_type, all}` si ricevono anche i nodi **hidden** (utile se in futuro si usa `-hidden` per nodi di diagnostica). I messaggi cambiano formato in `{nodeup, Node, InfoList}` / `{nodedown, Node, InfoList}`. | `monitor_nodes(true, [{node_type, all}])` + gestione di **entrambe** le forme di messaggio (con e senza InfoList) nel `handle_info`. |
+| 3 | Nessun meccanismo di reconnect periodico ai peer non ancora connessi | Se un peer non è ancora avviato quando si fa il ping iniziale, resta sconnesso finché quel peer non pinga noi. | Aggiunto un `reconnect_tick` ogni 10 s che ritenta i peer dalla lista `known_nodes` che non sono in `connected_nodes`. |
 
 ---
 
@@ -1726,7 +1737,7 @@ call ..\..\rebar3 shell
 | File | Type | Purpose |
 |------|------|---------|
 | `rabbitmq_manager.erl` | gen_server | ✅ **FATTO** — connessione/canali AMQP, `publish/2` via ETS, `subscribe/2` con PID del consumer, `ack/1`, riconnessione automatica |
-| `cluster_manager.erl` | gen_server | Node discovery, `net_kernel:monitor_nodes`, cluster topology |
+| `cluster_manager.erl` | gen_server | ✅ **FATTO** — discovery nodi con `net_adm:ping`, 🔧 `monitor_nodes(true, [{node_type, all}])`, reconnect periodico, chiamate a `leader_election` wrappate in `try/catch` |
 | `leader_election.erl` | gen_server | Bully Algorithm, role assignment (leader/standby) |
 | `snapshot.erl` | gen_server | Chandy-Lamport consistent snapshot at "No more bets" |
 
@@ -1752,8 +1763,8 @@ call ..\..\rebar3 shell
 | File | Changes |
 |------|---------|
 | `rebar.config` | ✅ **FATTO** — `{amqp_client, "4.3.4"}` (🔧 non 3.12.14: incompatibile con OTP 28) |
-| `game_engine.app.src` | ✅ Fase 1 **FATTA** — `amqp_client` aggiunto, 🔧 `inets` **rimosso**, `rabbitmq_manager` registrato, config broker in `env`. Restano da aggiungere `cluster_manager`/`leader_election` (Fasi 2-3) |
-| `game_engine_sup.erl` | ✅ Fase 1 **FATTA** — `rest_for_one` + `rabbitmq_manager` come primo figlio. Restano 3 figli da aggiungere (Fasi 2-4) |
+| `game_engine.app.src` | ✅ Fasi 1-2 **FATTE** — `amqp_client` aggiunto, `inets` rimosso, `rabbitmq_manager` + `cluster_manager` registrati, config broker + `peer_nodes` in `env`. Resta da aggiungere `leader_election` (Fase 3) |
+| `game_engine_sup.erl` | ✅ Fasi 1-2 **FATTE** — `rest_for_one` + `rabbitmq_manager` + `cluster_manager` come primi due figli. Restano 2 figli da aggiungere (Fasi 3-4: `leader_election`, `snapshot`) |
 | `wheel_process.erl` | ✅ Fase 1 **FATTA** — `publish_to_queue/2` ora usa AMQP. Restano flag `active`, cast `activate/deactivate`, snapshot, `get_bets` (Fasi 3-4) |
 | `worker.erl` | ✅ Fase 1 **FATTA** — polling HTTP rimosso, 🔧 il worker è consumer diretto con **ack manuale**. Resta da aggiungere il flag `active` (Fase 3) |
 | `GameResultListener.java` | Handle `round_cancelled` message type for crash recovery refunds |
@@ -1767,7 +1778,7 @@ call ..\..\rebar3 shell
 ```mermaid
 graph TD
     Z["Phase 0: Bug Fixes"] --> A["Phase 1: AMQP Client ✅"]
-    A --> B["Phase 2: Multi-Node Cluster"]
+    A --> B["Phase 2: Multi-Node Cluster ✅"]
     B --> C["Phase 3: Bully Leader Election"]
     C --> D["Phase 4: Chandy-Lamport Snapshot"]
     D --> E["Phase 5: Fault Tolerance"]

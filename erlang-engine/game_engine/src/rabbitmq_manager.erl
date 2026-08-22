@@ -19,7 +19,7 @@
 
 -include_lib("amqp_client/include/amqp_client.hrl").
 
--export([start_link/0, publish/2, subscribe/2, ack/1, is_connected/0]).
+-export([start_link/0, publish/2, subscribe/2, ack/1, reject/2, is_connected/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 %% Tabella ETS pubblica: contiene i PID dei canali, letti direttamente dai
@@ -84,6 +84,13 @@ subscribe(Queue, Pid) when is_binary(Queue), is_pid(Pid) ->
 ack(Tag) ->
     case lookup_channel(cons_ch) of
         {ok, Ch} -> amqp_channel:cast(Ch, #'basic.ack'{delivery_tag = Tag});
+        Error -> Error
+    end.
+
+%% reject(DeliveryTag, Requeue) -> ok | {error, Reason}
+reject(Tag, Requeue) when is_boolean(Requeue) ->
+    case lookup_channel(cons_ch) of
+        {ok, Ch} -> amqp_channel:cast(Ch, #'basic.reject'{delivery_tag = Tag, requeue = Requeue});
         Error -> Error
     end.
 

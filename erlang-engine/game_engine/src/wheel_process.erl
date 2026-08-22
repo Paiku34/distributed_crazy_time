@@ -26,7 +26,8 @@
     bets = [],                %% [{Username, Amount, Segment}, ...]
     forced_segment = undefined,
     history = [],             %% [{Segment, Multiplier}, ...]
-    minigame_choices = #{}    %% #{Username => Choice}
+    minigame_choices = #{},   %% #{Username => Choice}
+    active = false            %% only leader processes game ticks
 }).
 
 %%====================================================================
@@ -75,14 +76,15 @@ submit_choice(Username, Choice) ->
 %%====================================================================
 init([]) ->
     io:format("~n========================================~n"),
-    io:format("  WHEEL PROCESS avviato (Round #1)~n"),
-    io:format("  Fase: BETTING (~p secondi)~n", [?BET_DURATION]),
+    io:format("  WHEEL PROCESS avviato (In attesa elezione)~n"),
     io:format("========================================~n~n"),
-    erlang:send_after(1000, self(), tick),
-    {ok, #state{}}.
+    {ok, #state{active = false}}.
 
-%% --- PLACE BET (solo durante betting) ---
-handle_call({place_bet, Bet}, _From, State = #state{phase = betting, bets = Bets}) ->
+%% --- PLACE BET (solo durante betting, solo se active) ---
+handle_call({place_bet, _Bet}, _From, State = #state{active = false}) ->
+    io:format("[WHEEL] Scommessa RIFIUTATA — non sono il leader~n"),
+    {reply, {error, not_leader}, State};
+handle_call({place_bet, Bet}, _From, State = #state{active = true, phase = betting, bets = Bets}) ->
     io:format("[WHEEL] Scommessa accettata: ~p~n", [Bet]),
     {reply, {ok, accepted}, State#state{bets = [Bet | Bets]}};
 handle_call({place_bet, _Bet}, _From, State) ->
@@ -128,18 +130,34 @@ handle_cast({minigame_choice, Username, Choice}, State) ->
     NewChoices = maps:put(Username, Choice, State#state.minigame_choices),
     {noreply, State#state{minigame_choices = NewChoices}};
 
+handle_cast(activate, State = #state{active = false}) ->
+    io:format("[WHEEL] ACTIVATO come leader — avvio game loop~n"),
+    erlang:send_after(1000, self(), tick),
+    publish_timer(?BET_DURATION, State#state.round, State#state.history),
+    {noreply, State#state{active = true, phase = betting, time_left = ?BET_DURATION}};
+handle_cast(activate, State = #state{active = true}) ->
+    {noreply, State};  %% Gia' attivo
+
+handle_cast(deactivate, State) ->
+    io:format("[WHEEL] DISATTIVATO — in standby~n"),
+    {noreply, State#state{active = false}};
+
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
+%% --- TICK (ignora se in standby) ---
+handle_info(tick, State = #state{active = false}) ->
+    {noreply, State};
+
 %% --- TICK durante BETTING (countdown > 0) ---
-handle_info(tick, State = #state{phase = betting, time_left = T}) when T > 1 ->
+handle_info(tick, State = #state{active = true, phase = betting, time_left = T}) when T > 1 ->
     NewTime = T - 1,
     publish_timer(NewTime, State#state.round, State#state.history),
     erlang:send_after(1000, self(), tick),
     {noreply, State#state{time_left = NewTime}};
 
 %% --- TICK durante BETTING (countdown = 1 → spin!) ---
-handle_info(tick, State = #state{phase = betting, time_left = 1}) ->
+handle_info(tick, State = #state{active = true, phase = betting, time_left = 1}) ->
     io:format("~n--- ROUND #~p: NO MORE BETS! SPINNING... ---~n", [State#state.round]),
     publish_timer(0, State#state.round, State#state.history),
 
@@ -277,6 +295,8 @@ handle_info({resolve_async_minigame, SegName, Details, BonusBets, WinnerIndex}, 
 %% (Non c'è più bisogno di finish_minigame perché lo facciamo sincrono)
 
 %% --- NEW ROUND ---
+handle_info(new_round, State = #state{active = false}) ->
+    {noreply, State};
 handle_info(new_round, State) ->
     NewRound = State#state.round + 1,
     io:format("~n========================================~n"),

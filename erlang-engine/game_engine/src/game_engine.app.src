@@ -1,7 +1,8 @@
 {application, game_engine, [
     {description, "Distributed Crazy Time - Erlang Game Engine"},
     {vsn, "0.1.0"},
-    {registered, [rabbitmq_manager, wheel_process, worker, minigames_sup, pachinko, coinflip, cashhunt, crazytime]},
+    {registered, [rabbitmq_manager, cluster_manager, leader_election, wheel_process, worker,
+                  minigames_sup, pachinko, coinflip, cashhunt, crazytime]},
     {mod, {game_engine_app, []}},
     {applications, [
         kernel,
@@ -9,7 +10,7 @@
         crypto,
         amqp_client
     ]},
-    %% Configurazione del broker: sovrascrivibile per nodo (utile dalla Fase 2 in poi)
+    %% Configurazione del broker: sovrascrivibile per nodo
     %% es. erl -game_engine rabbitmq '#{host => "10.0.0.5", port => 5672}'
     {env, [
         {rabbitmq, #{
@@ -20,7 +21,10 @@
             vhost => <<"/">>,
             prefetch => 10,
             retry_interval => 5000
-        }}
+        }},
+        %% Nodi del cluster: contiene TUTTI i nodi, cluster_manager filtra il proprio.
+        %% Cosi' ogni nodo usa la stessa config senza override da CLI.
+        {peer_nodes, ['game1@localhost', 'game2@localhost', 'game3@localhost']}
     ]},
     {modules, []},
     {licenses, ["Apache-2.0"]},

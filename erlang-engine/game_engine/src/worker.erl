@@ -19,19 +19,31 @@
 
 -define(BETS_QUEUE, <<"bets_queue">>).
 
+-record(state, {
+    active = false :: boolean()
+}).
+
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 init([]) ->
     io:format("~n=================================~n"),
     io:format("  Worker RabbitMQ (AMQP) avviato~n"),
-    io:format("  Consumer su bets_queue...~n"),
+    io:format("  Consumer su bets_queue... (In attesa elezione)~n"),
     io:format("=================================~n~n"),
     ok = rabbitmq_manager:subscribe(?BETS_QUEUE, self()),
-    {ok, #{}}.
+    {ok, #state{active = false}}.
 
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
+
+handle_cast(activate, State) ->
+    io:format("[WORKER] ACTIVATO come leader — inizio elaborazione scommesse~n"),
+    {noreply, State#state{active = true}};
+
+handle_cast(deactivate, State) ->
+    io:format("[WORKER] DISATTIVATO — in standby~n"),
+    {noreply, State#state{active = false}};
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -45,7 +57,7 @@ handle_info(#'basic.cancel'{}, State) ->
     io:format("[WORKER] Consumer cancellato dal broker.~n"),
     {noreply, State};
 
-handle_info({#'basic.deliver'{delivery_tag = Tag}, #amqp_msg{payload = Payload}}, State) ->
+handle_info({#'basic.deliver'{delivery_tag = Tag}, #amqp_msg{payload = Payload}}, State = #state{active = true}) ->
     %% L'ack viene sempre inviato, anche in caso di errore di parsing: un
     %% messaggio malformato rimesso in coda verrebbe riconsegnato all'infinito.
     try
@@ -56,6 +68,11 @@ handle_info({#'basic.deliver'{delivery_tag = Tag}, #amqp_msg{payload = Payload}}
                       [Class, Err, Stack])
     end,
     rabbitmq_manager:ack(Tag),
+    {noreply, State};
+
+handle_info({#'basic.deliver'{delivery_tag = Tag}, _Msg}, State = #state{active = false}) ->
+    %% Non sono il leader, rifiuto il messaggio e lo rimetto in coda per il leader
+    rabbitmq_manager:reject(Tag, true),
     {noreply, State};
 
 handle_info(_Info, State) ->
