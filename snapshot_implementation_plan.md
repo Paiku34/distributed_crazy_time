@@ -247,53 +247,24 @@ Le tre regole rendono ogni percorso deterministico e sono ciò che i test «Kill
 
 ---
 
-## Parte 4B — Modifiche ancora da riportare in `implementation_plan.md`
+## Parte 4B — Modifiche a `implementation_plan.md` — ✅ APPLICATE
 
-> La Fase 4 di `implementation_plan.md` **non è mai stata implementata** (`snapshot.erl` non esiste): resta interamente su carta. Il testo attuale è stato riletto istruzione per istruzione contro questo piano — otto punti sono in conflitto diretto e vanno sostituiti, non integrati.
+> Le modifiche descritte da questa sezione sono state **riportate in `implementation_plan.md`**: quel documento descrive ora il progetto corretto. Qui resta la traccia di cosa è cambiato e dove, così che i due piani si leggano insieme.
+> **Il codice non è stato toccato**: la realizzazione resta da fare, nell'ordine della §Parte 8, e la §Parte 4A (correzioni al codice già scritto delle Fasi 2-3) è il primo passo.
 
-### Fase 4 — Chandy-Lamport Snapshot — **riscritta**
-Sostituire integralmente [implementation_plan.md:1341-1549](implementation_plan.md#L1341-L1549). Il contenuto è la Parte 5 di questo piano. Punti in conflitto, uno per uno:
-
-| # | Cosa dice la Fase 4 oggi | Perché non va | Cosa la sostituisce |
-|---|---|---|---|
-| 1 | I marker viaggiano fra istanze di `snapshot` ([:1418-1420](implementation_plan.md#L1418-L1420), [:1441-1477](implementation_plan.md#L1441-L1477)) | Un marker che non condivide la mailbox con i messaggi che deve delimitare non delimita nulla: non è Chandy-Lamport | Marker emessi da `worker` e `wheel_process` sui canali applicativi reali |
-| 2 | `initiate_snapshot` è una `call` ([:1398-1399](implementation_plan.md#L1398-L1399), [:1408](implementation_plan.md#L1408), [:1516](implementation_plan.md#L1516)) | Blocca il wheel nel tick più denso del round | **Cast** `begin_snapshot(SnapId, Participants)`, con `SnapId` calcolato dal wheel |
-| 3 | Aggiungere `wheel_process:get_bets/0` ([:1522-1531](implementation_plan.md#L1522-L1531)) e chiamarla dal collector ([:1452](implementation_plan.md#L1452)) | 🔧 **Da non fare.** Il collector non interroga mai i partecipanti. Peggio: è una `gen_server:call` sincrona verso il wheel fatta dentro un `handle_cast`; sul leader può capitare mentre il wheel è bloccato fino a 10 s nella call al minigioco ([wheel_process.erl:216](erlang-engine/game_engine/src/wheel_process.erl#L216)) → timeout ed exit del collector | Sono i partecipanti a fare **push** del proprio stato locale |
-| 4 | Lista partecipanti = `nodes()`, ricalcolata a ogni passo ([:1411](implementation_plan.md#L1411), [:1453](implementation_plan.md#L1453)) | Può cambiare fra l'invio dei marker e la verifica di completamento, e include le shell diagnostiche | `cluster_manager:get_participants/0`, **congelata** una volta sola e intersecata coi nodi configurati (§Parte 4A) |
-| 5 | `channel_states` dichiarato ([:1384](implementation_plan.md#L1384)) e inizializzato ([:1426](implementation_plan.md#L1426)) ma **mai popolato**: nessun handler accoda messaggi applicativi | È la prova formale della vacuità denunciata dall'analisi — il campo che dovrebbe contenere l'unica informazione non ottenibile altrove resta vuoto per costruzione | `cl_recorder:on_app_msg/3` sui canali aperti |
-| 6 | Lo snapshot parte **prima** della logica di spin ([:1510-1519](implementation_plan.md#L1510-L1519)) | Il taglio non contiene l'esito, quindi un nuovo leader non può completare il round: resta solo l'annullamento | Trigger **dopo** l'estrazione del vincitore (§Parte 1, §Parte 5 punto 3) |
-| 7 | `snapshot` come 4° figlio del supervisore ([:1544](implementation_plan.md#L1544)) | Con `rest_for_one` un crash del collector azzererebbe il round in corso | **Ultimo** figlio. Va aggiunto anche a `registered` in [game_engine.app.src](erlang-engine/game_engine/src/game_engine.app.src#L4-L5), che oggi non lo elenca |
-| 8 | `{snapshot_complete, ...}` inviato all'iniziatore ([:1494-1495](implementation_plan.md#L1494-L1495)) | Nessun handler lo riceve: il messaggio cade nel `handle_cast` catch-all | `{cl_part, SnapId, Who, Local, Chan}` verso il collector, con handler e conteggio dei partecipanti attesi |
-
-Restano validi, e vanno tenuti: l'abort timer **locale a ciascun partecipante** (se il collector muore, nessuno resta in registrazione per sempre) e il timeout globale del collector, che conclude in modalità degradata.
-
-### Fase 5 — Fault Tolerance — **modifica sostanziale**
-- Sostituire «annulla il round e rimborsa tutte le PENDING» con un percorso a due rami, letto dall'ultimo `snapshot_record` su Mnesia:
-  - **checkpoint presente per il round R e risultato non ancora pubblicato** → il nuovo leader **completa** il round R: ricarica `bets` dal ledger, riusa `winner_segment`/`winner_index` del taglio, calcola i payout, pubblica su `results_queue`. Nessun rimborso.
-  - **nessun checkpoint per R** (crash durante la fase betting) → `round_cancelled` per il **solo** round R, ma **non** per tutte le sue bet: quelle ancora vive nel broker verranno rigiocate e non vanno rimborsate. Vedi §Parte 3 per il perché; la procedura è:
-    1. in `declare_victory/1` il nuovo leader invia `{collect_inflight, R}` a tutti i worker superstiti e ne raccoglie le `inflight` entro 2 s: sono bet consumate ma **non ackate**, che il broker riconsegnerà. AMQP non ha un timeout di inflight lato broker: la riconsegna avviene per il `reject(Tag, true)` che il worker emette allo scadere del proprio `inflight_timeout` (§Parte 5, §`worker.erl` punto 7), oppure per caduta del canale. Vanno **escluse** dal rimborso;
-    2. il messaggio diventa `{"type":"round_cancelled","round":R,"exclude_bet_ids":[...]}` — `exclude_bet_ids` è l'insieme raccolto al passo 1;
-    3. Java rimborsa `findByRoundAndStatus(R, "PENDING")` **meno** `exclude_bet_ids`. Il `round` usato è quello **provvisorio** che `WalletController` assegna già oggi da `gameStateCache` ([WalletController.java:152,158](java-gateway/src/main/java/com/crazytime/controller/WalletController.java#L152)): stima locale soggetta a lag al confine di round, ammessa **solo** in questo ramo di fallback, ed è la ragione per cui `round` deve viaggiare esplicito nel messaggio.
-- 🔧 Il frammento di `apply_role(leader)` della Fase 5 ([:1567-1582](implementation_plan.md#L1567-L1582)) **reintroduce** `gen_server:cast(worker, activate)` ([:1581](implementation_plan.md#L1581)): va tolto anche lì, esattamente come nella Fase 3 (§Parte 4A). È il punto in cui la disattivazione del worker rientrerebbe dalla finestra dopo essere stata cacciata dalla porta.
-- 🔧 Il flag `previous_leader_crashed` nel process dictionary ([:1569](implementation_plan.md#L1569), [:1576](implementation_plan.md#L1576), [:1598](implementation_plan.md#L1598)) va **sostituito**, non affiancato: la decisione si legge dal checkpoint su Mnesia. Un flag nel process dictionary non sopravvive al riavvio di `leader_election` e soprattutto non dice *quale* round è stato interrotto — informazione indispensabile per il `round_cancelled` per-round del punto precedente.
-- Rimuovere da [implementation_plan.md:1644](implementation_plan.md#L1644) il `findByStatus("PENDING")` globale: rimborsa bet di round estranei.
-- `wheel_process:handle_cast(activate, ...)` non deve resettare incondizionatamente a `bets = []` ([implementation_plan.md:1614-1629](implementation_plan.md#L1614-L1629)): prima consulta il checkpoint. Nel codice attuale il reset non c'è ancora — `activate` conserva `bets` ([wheel_process.erl:133-139](erlang-engine/game_engine/src/wheel_process.erl#L133-L139)) — quindi è una modifica che **non va fatta** nella forma descritta dalla Fase 5.
-
-### Fase 6 — Integration Testing
-Sostituire la riga *«Snapshot during "No more bets" → Snapshot log shows consistent state capture»* ([:1728](implementation_plan.md#L1728)) — non falsificabile: il log si stampa anche con canali vuoti — con i test della Parte 7.
-
-### Fase 3 — sezione «Modified Files»
-La riga sul flag `active` del worker ([implementation_plan.md:1329-1333](implementation_plan.md#L1329-L1333)) va rimossa: il flag è stato implementato ma va tolto (§Parte 4A). Al suo posto: campo `leader`, `{set_leader, N}`, guardia di quorum.
-
-### Tabelle riepilogative di fine documento
-[«Summary of All Files»](implementation_plan.md#L1734-L1773) e il grafo dell'ordine di esecuzione ([:1778-1786](implementation_plan.md#L1778-L1786)) sono rimasti indietro rispetto al commit `6ef3b73` e vanno riallineati insieme al resto:
-- righe **stale**: `game_engine.app.src` ([:1766](implementation_plan.md#L1766)) dice «Resta da aggiungere `leader_election` (Fase 3)», già fatto; `game_engine_sup.erl` ([:1767](implementation_plan.md#L1767)) dice «Restano 2 figli», ne resta uno (`snapshot`); `wheel_process.erl` ([:1768](implementation_plan.md#L1768)) e `worker.erl` ([:1769](implementation_plan.md#L1769)) elencano il flag `active` fra le cose da fare, mentre è fatto — e quello del worker va **tolto**;
-- `snapshot.erl` ([:1742](implementation_plan.md#L1742)) va ridescritto come **collector**, non come partecipante, e `get_bets` va tolta dalla riga di `wheel_process.erl`;
-- righe **nuove**: `cl_recorder.erl`, la tabella Mnesia `snapshot_record`, `LedgerListener.java`, `Bet.java` / `BetRepository.java`;
-- il grafo ([:1779-1786](implementation_plan.md#L1779-L1786)) va aggiornato: Fase 3 marcata ✅ e un nodo di **retrofit** (§Parte 4A) fra Fase 3 e Fase 4.
-
-### Fase 0 / Java — aggiunta
-`bet_id` UUID sul messaggio AMQP e sull'entity `Bet`. È il prerequisito di UC2 e la correzione alla radice dei bug 0.1.3 / 0.1.4, che le patch attuali affrontano solo per sintomo.
+| Sezione di `implementation_plan.md` | Cosa è stato riportato |
+|---|---|
+| [Background & Goal](implementation_plan.md#L3-L25) | Tabella di stato delle 5 funzionalità distribuite, rimando a questo piano, avviso che le Fasi 2-3 vanno **corrette** e non solo estese |
+| [FIX 0.1.14](implementation_plan.md#L162) | `bet_id` UUID presentato come **causa radice** di 0.1.3/0.1.4: colonna univoca sull'entity, Jackson al posto di `String.format`, `findByBetId`/`findByRoundAndStatus`, più la riga nella matrice di riepilogo |
+| [Fase 1](implementation_plan.md#L895) | `reject/2` aggiunta all'API documentata di `rabbitmq_manager`, con la nota che serve all'ack differito |
+| [Fase 2 — Estensioni](implementation_plan.md#L1200) | `configured_nodes/0` e `get_participants/0` (entrambe intersecate con la lista statica), bootstrap Mnesia nei due rami con l'avvertenza su `change_table_copy_type`, `mnesia:subscribe(system)`, delega a `leader_election:node_down/1`, `mnesia` fra le `applications` e `snapshot` fra i `registered` |
+| [Fase 3](implementation_plan.md#L1285) | Marcata ✅ IMPLEMENTATA con la tabella delle **5 divergenze**; `apply_role/1` che non tocca più il worker; `broadcast_leader/1` con `{set_leader, N}`; `has_quorum/0` applicata nei due punti; worker senza flag `active`, con `leader` e `inflight`, e instradamento al leader di **tutti** i percorsi; `undo_bets` convertita a `cast` |
+| [Fase 4](implementation_plan.md#L1484) | **Riscritta integralmente**: tabella dei 7 difetti della stesura precedente, architettura a competing consumers, `cl_recorder`, trigger del taglio **dopo** l'estrazione del vincitore, collector che non interroga mai i partecipanti, `snapshot_record` su Mnesia, `snapshot` come **ultimo** figlio del supervisore, limite noto del minigioco |
+| [Fase 5](implementation_plan.md#L1726) | **Riscritta**: regole R1/R2/R3, recovery a due rami letto dal checkpoint, `exclude_bet_ids`, `apply_role(leader)` senza cast al worker, flag nel process dictionary sostituito, dispatch Java sul campo `type`, `LedgerListener`, handler `bet_rejected`, rimozione di `RefundListener` con il vincolo d'ordine sull'UNDO |
+| [Fase 6](implementation_plan.md#L1932) | Checklist sostituita con i test **falsificabili** della §Parte 7 (via la riga sul log dello snapshot), precondizione `prefetch = 1`, comandi di verifica del cluster e avvertenza sulle shell distribuite |
+| [Summary of All Files](implementation_plan.md#L1970) | Tabelle riallineate al codice: righe nuove per `cl_recorder.erl`, la tabella Mnesia, `LedgerListener.java` e `Bet.java`; `snapshot.erl` ridescritto come **collector**; corrette le righe che davano per da fare cose già fatte |
+| [Execution Order](implementation_plan.md#L2018) | Grafo aggiornato con il nodo **RETROFIT** fra Fase 3 e Fase 4, e i tre vincoli d'ordine: retrofit prima di tutto, quorum prima della Fase 4, `bet_id` prima dell'ack differito |
+| [Verification Plan](implementation_plan.md#L2044) | Stato per fase, con il test decisivo della Fase 4 dichiarato esplicitamente: se `in_flight_bets` resta 0, la riscrittura non ha raggiunto il suo scopo |
 
 ---
 

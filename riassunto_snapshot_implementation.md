@@ -14,6 +14,8 @@ Tre categorie:
 - **Da correggere perché scritto secondo il piano vecchio**: l'elezione attiva e disattiva **anche il worker**, mentre questo piano richiede l'opposto (worker attivo ovunque, solo il processo della ruota è esclusivo del leader); e il worker in standby **rifiuta ogni messaggio rimettendolo in coda**, producendo un rimbalzo continuo fra broker e nodi passivi finché il messaggio non capita sul leader.
 - **Ancora da scrivere**: tutto il resto — identificativo univoco di bet, ack differito, persistenza su Mnesia, quorum, snapshot vero e proprio, riconciliazione lato Java.
 
+Le conclusioni di questo piano sono state **riportate in `implementation_plan.md`**: le Fasi 4 e 5 di quel documento sono riscritte, le Fasi 2 e 3 marcate come implementate con le correzioni da applicare. Resta da fare il lavoro sul codice.
+
 Un chiarimento che cambia un'argomentazione della prima stesura: oggi il worker inoltra la scommessa al processo della ruota con una **chiamata sincrona locale** e conferma al broker solo dopo la risposta. La finestra di perdita descritta più avanti quindi **non esiste ancora**: verrebbe *introdotta* dal passaggio a comunicazione asincrona, ed è l'ack differito a chiuderla prima che si apra.
 
 ---
@@ -114,7 +116,7 @@ Due accorgimenti a corredo: la chiave dei record di snapshot include l'iniziator
 
 ## Fase 4 — Lo snapshot Chandy-Lamport riscritto
 
-Sostituisce integralmente la Fase 4 del piano originale. Cosa cambia:
+Ha **sostituito integralmente** la Fase 4 di `implementation_plan.md`, che è stato aggiornato di conseguenza: quel documento descrive ora il progetto qui riassunto. Cosa cambia rispetto alla stesura precedente:
 
 - **I marker viaggiano sui canali applicativi reali**, emessi dai worker e dal wheel, non fra istanze del modulo snapshot: è la correzione che rende l'algoritmo effettivamente Chandy-Lamport. Il marker deve partire dal processo applicativo stesso, così da condividere mailbox e ordine FIFO con i messaggi che deve delimitare.
 - Il modulo snapshot è un **collector**, non un partecipante, e viene avviato in modo asincrono. Non interroga mai i partecipanti: sono loro a inviargli la propria porzione. Ne consegue che la funzione di lettura delle bet che il piano originale prevedeva di aggiungere al wheel **non va aggiunta** — sarebbe una chiamata sincrona verso un processo che durante il minigioco resta bloccato fino a 10 secondi, e farebbe cadere il collector per timeout.

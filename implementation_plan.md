@@ -2,17 +2,26 @@
 
 ## Background & Goal
 
-The Distributed Crazy Time project is a real-time betting web app with a hybrid Java/Erlang architecture. The **web layer** (Spring Boot gateway, HTML/CSS/JS frontend) and the **game logic** (Erlang wheel + 4 mini-games) are fully functional on a **single Erlang node** using HTTP Management API polling for RabbitMQ.
+The Distributed Crazy Time project is a real-time betting web app with a hybrid Java/Erlang architecture. The **web layer** (Spring Boot gateway, HTML/CSS/JS frontend) and the **game logic** (Erlang wheel + 4 mini-games) sono pienamente funzionanti.
 
-**What's missing** (per the project specification PDF):
-1. **Native AMQP integration** — Replace fragile HTTP Management API polling with `amqp_client` (proper AMQP 0-9-1)
-2. **Multi-node Erlang cluster** — Run the game engine across 2+ Erlang nodes
-3. **Leader Election algorithm** — Bully Algorithm to elect a single "Dealer" node that runs the game
-4. **Chandy-Lamport Snapshot algorithm** — Consistent global state capture at "No more bets"
-5. **Fault tolerance & recovery** — Detect dealer crash, elect new leader, refund in-flight bets
+**Le funzionalità distribuite richieste dalla specifica**:
+
+| # | Funzionalità | Stato |
+|---|---|---|
+| 1 | **Native AMQP integration** — `amqp_client` al posto del polling sulla Management API | ✅ **Fase 1 implementata** |
+| 2 | **Multi-node Erlang cluster** — engine su 2+ nodi che si scoprono a vicenda | ✅ **Fase 2 implementata** (🔧 restano le estensioni per Mnesia e i partecipanti) |
+| 3 | **Leader Election** — Bully Algorithm per eleggere un solo "Dealer" | ✅ **Fase 3 implementata** (🔧 con correzioni da applicare) |
+| 4 | **Chandy-Lamport Snapshot** — stato globale consistente al "No more bets" | 🔧 **riscritta**, da implementare |
+| 5 | **Fault tolerance & recovery** — crash del dealer, nuovo leader, nessuna puntata persa | 🔧 **riscritta**, da implementare |
 
 > [!IMPORTANT]
-> This plan is designed so that each phase builds on the previous one. Complete them in order. Each phase includes the exact files to create/modify, the Erlang code structure, and the integration points. **Start with Phase 0 (Bug Fixes)** to stabilize the existing codebase before adding distributed features.
+> **Le Fasi 4 e 5 sono state riscritte.** L'analisi in `snapshot_analisi.md` ha mostrato che lo snapshot come era progettato era **ridondante**: catturava uno stato già disponibile in locale sul leader, su canali vuoti per costruzione, e nessuno ne consumava il risultato. Il progetto definitivo — con le motivazioni, la verifica contro il codice e l'ordine di esecuzione dettagliato — è in [snapshot_implementation_plan.md](snapshot_implementation_plan.md), di cui esiste anche un [riassunto](riassunto_snapshot_implementation.md). Questo documento ne recepisce le conclusioni.
+
+> [!CAUTION]
+> Le Fasi 2 e 3 sono state implementate **prima** che quella riscrittura esistesse, quindi parte del codice già scritto va **corretto**, non solo esteso. Le correzioni sono marcate 🔧 dentro le rispettive fasi, e vengono **prima** di tutto il resto (vedi «Execution Order» in fondo). La principale: il `worker` deve restare attivo su **tutti** i nodi, non solo sul leader — altrimenti i canali che lo snapshot deve catturare restano vuoti.
+
+> [!NOTE]
+> Ogni fase si appoggia sulla precedente. Ognuna elenca i file esatti da creare/modificare, la struttura del codice Erlang e i punti di integrazione. **Si parte dalla Fase 0 (Bug Fixes)** per stabilizzare la base prima di aggiungere le funzionalità distribuite.
 
 ---
 
@@ -147,6 +156,45 @@ if (payoutsNode == null || !payoutsNode.isArray() || payoutsNode.isEmpty()) {
     }
 }
 ```
+
+---
+
+#### 🔴 FIX 0.1.14: Nessun identificativo univoco di bet (causa radice di 0.1.3 e 0.1.4)
+
+**Files**: `Bet.java`, `WalletController.java`, `BetRepository.java`
+
+**Problem**: una `Bet` è identificabile solo dalla coppia (username, importo). I rimborsi vengono riconciliati **per importo** (`RefundListener`) e i payout **per username** (`PayoutListener`): due puntate di pari importo su segmenti diversi sono indistinguibili. Le FIX 0.1.3 e 0.1.4 curano il sintomo, non la causa. Inoltre nessun percorso distribuito (deduplica, ledger di round, replay dopo un crash) è realizzabile senza un id stabile che viaggi insieme al messaggio AMQP.
+
+**Fix**: `bet_id` UUID generato da Java all'accettazione, persistito sull'entity e incluso nel JSON:
+
+```java
+// Bet.java
+@Column(unique = true, nullable = false)
+private String betId;
+
+// WalletController.placeBet — alla creazione della bet
+String betId = UUID.randomUUID().toString();
+Bet bet = new Bet(updatedPlayer.getUsername(), segAmount, segment, currentRound);
+bet.setBetId(betId);
+betRepository.save(bet);
+
+// Jackson al posto di String.format: oggi l'username non viene mai escapato
+ObjectNode payload = objectMapper.createObjectNode();
+payload.put("bet_id", betId);
+payload.put("username", updatedPlayer.getUsername());
+payload.put("amount", segAmount);
+payload.put("segment", segment);
+rabbitTemplate.convertAndSend("bets_queue", payload.toString());
+
+// BetRepository.java
+Optional<Bet> findByBetId(String betId);
+List<Bet> findByRoundAndStatus(Integer round, String status);
+```
+
+`spring.jpa.hibernate.ddl-auto=update` crea la colonna senza migrazione manuale.
+
+> [!IMPORTANT]
+> È il **prerequisito delle Fasi 3-5**: senza `bet_id` l'ack differito introdurrebbe puntate duplicate e il ledger del round non sarebbe indirizzabile. Va fatto prima di tutto il resto della parte distribuita.
 
 ---
 
@@ -712,6 +760,7 @@ myMultiplier = myBetAmount > 0 ? Math.round((winAmount - myBetAmount) / myBetAmo
 | 0.1.4 | 🔴 CRITICAL | Java | Duplicate payout for multiple winning bets per user |
 | 0.2.1 | 🔴 CRITICAL | Erlang | Missing catch-all in `segment_type/1` crashes wheel |
 | 0.2.2 | 🔴 CRITICAL | Erlang | `undo_bets` crashes on missing map keys |
+| 0.1.14 | 🔴 CRITICAL | Java | Nessun `bet_id`: rimborsi per importo, payout per username |
 | 0.1.5 | 🟡 HIGH | Java | Missing `@Transactional` on wallet operations |
 | 0.1.6 | 🟡 HIGH | Java | No phase check before accepting bets |
 | 0.1.7 | 🟡 HIGH | Java | Dev force-result endpoint unprotected |
@@ -843,13 +892,16 @@ Un `gen_server` che possiede la connessione AMQP e i suoi canali. Centralizza il
 
 **API**:
 ```erlang
--export([start_link/0, publish/2, subscribe/2, ack/1, is_connected/0]).
+-export([start_link/0, publish/2, subscribe/2, ack/1, reject/2, is_connected/0]).
 
 %% publish(Queue :: binary(), Payload :: binary()) -> ok | {error, Reason}
 %% subscribe(Queue :: binary(), ConsumerPid :: pid()) -> ok
 %% ack(DeliveryTag) -> ok | {error, Reason}
+%% reject(DeliveryTag, Requeue :: boolean()) -> ok | {error, Reason}
 %% is_connected() -> boolean()
 ```
+
+`reject/2` è modellata su `ack/1` (stesso accesso lock-free ai canali via ETS) e serve a rimettere un messaggio in coda: la usano il ramo "nessun leader disponibile" e l'ack differito della Fase 3.
 
 **Init logic** — **🔧 MODIFICA #4: nessuna connessione dentro `init/1`**:
 1. `process_flag(trap_exit, true)` — i processi di `amqp_client` possono essere linkati e non devono abbattere il manager.
@@ -1145,23 +1197,120 @@ erl -sname game3@localhost -setcookie crazytime -pa _build/default/lib/*/ebin -e
 
 ---
 
-## Phase 3: Bully Leader Election Algorithm
+### Estensioni richieste dalla Fase 4 (snapshot) — DA FARE
 
-**Goal**: Implement the Bully Election algorithm so that exactly **one node** is elected as the "Dealer" (leader). The leader runs the game loop (`wheel_process` active, `worker` consuming bets). Standby nodes keep their processes alive but in a dormant/passive state.
+Le aggiunte che le Fasi 4-5 danno per presenti: tre su `cluster_manager`, una in configurazione.
+
+#### 1. Due liste distinte esposte come API
+
+```erlang
+-export([start_link/0, get_nodes/0, get_connected_nodes/0,
+         configured_nodes/0, get_participants/0]).
+
+%% Lista STATICA dei nodi configurati: e' il denominatore del quorum (Fase 3).
+%% init/1 filtra il proprio nodo da peer_nodes, quindi va ri-aggiunto.
+handle_call(configured_nodes, _From, State) ->
+    {reply, lists:usort([State#state.self_node | State#state.known_nodes]), State};
+
+%% Lista ORDINATA E STABILE dei nodi vivi: e' quella che lo snapshot congela
+%% all'avvio del taglio. Intersecata con i nodi configurati, altrimenti una
+%% shell diagnostica (-hidden esclusa) diventerebbe un partecipante fantasma
+%% e il taglio non si chiuderebbe mai prima del timeout.
+handle_call(get_participants, _From, State) ->
+    Cfg = lists:usort([State#state.self_node | State#state.known_nodes]),
+    {reply, [N || N <- lists:usort([node() | State#state.connected_nodes]),
+                  lists:member(N, Cfg)], State};
+```
+
+> [!IMPORTANT]
+> Il denominatore del quorum **non** può essere `nodes()`: in una partizione si riduce da solo e la guardia diventa inutile. Per lo stesso motivo anche il numeratore va intersecato con la lista statica.
+
+#### 2. Bootstrap di Mnesia
+
+Va eseguito **dopo** la formazione del cluster, mai in `init/1`: il punto d'aggancio naturale è un `handle_info(mnesia_bootstrap, ...)` schedulato insieme a `initial_election`, quando i ping ai peer hanno già avuto il tempo di connettere.
+
+Non si può usare `mnesia:create_schema(AllNodes)`: quella forma esige Mnesia **arrestata su tutti i nodi elencati**, condizione che non si verifica mai con nodi che si avviano progressivamente. Serve il join dinamico, in due rami:
+
+**Primo nodo** (nessun peer raggiungibile che possieda la tabella):
+```erlang
+mnesia:create_schema([node()]),          %% ignorare {error,{_,{already_exists,_}}}
+mnesia:start(),
+mnesia:create_table(snapshot_record,
+    [{attributes, record_info(fields, snapshot_record)},
+     {type, ordered_set},
+     {disc_copies, [node()]}]).
+```
+
+**Nodo che si aggiunge** a un cluster dove la tabella esiste già:
+```erlang
+mnesia:start(),
+{ok, _} = mnesia:change_config(extra_db_nodes, [MasterNode]),
+mnesia:change_table_copy_type(schema, node(), disc_copies),   %% altrimenti resta ram_copies
+mnesia:add_table_copy(snapshot_record, node(), disc_copies),
+ok = mnesia:wait_for_tables([snapshot_record], 5000).
+```
+
+`MasterNode` = un nodo qualsiasi già nel cluster che possiede la tabella; discriminare i due rami interrogando `mnesia:table_info(snapshot_record, disc_copies)` via `rpc:call/4` sui peer raggiungibili.
+
+> [!CAUTION]
+> La `change_table_copy_type(schema, ...)` è il passo che si dimentica più spesso: senza, il nodo tiene lo schema in RAM e **perde la propria copia a ogni riavvio**, vanificando `disc_copies`.
+
+Aggiungere inoltre `mnesia:subscribe(system)` e loggare in modo rumoroso `{inconsistent_database, _, _}`.
+
+#### 3. Delega della caduta di un nodo all'elezione
+
+`handle_info({nodedown, Node, _}, ...)` chiama oggi `maybe_start_election_on_nodedown/1`, che decide da sé se rieleggere. Con il quorum la decisione dipende dal ruolo corrente e dalla maggioranza, quindi vive nell'elezione:
+
+```erlang
+%% al posto di maybe_start_election_on_nodedown(Node)
+leader_election:node_down(Node),
+```
+
+Il `try/catch error:undef` che proteggeva la Fase 2 dall'assenza del modulo non serve più: `leader_election` esiste ed è nel supervisore.
+
+#### 4. Configurazione
+
+```erlang
+{applications, [kernel, stdlib, crypto, mnesia, amqp_client]},   %% mnesia AGGIUNTA
+{registered, [rabbitmq_manager, cluster_manager, leader_election, wheel_process,
+              worker, snapshot, minigames_sup,                    %% snapshot AGGIUNTO
+              pachinko, coinflip, cashhunt, crazytime]},
+```
+
+> [!NOTE]
+> Con `rebar3 shell` la directory Mnesia di default è `Mnesia.<nodo>` nella cwd: avviando i tre nodi dalla stessa cartella si ottengono tre directory distinte, che è il comportamento voluto.
 
 ---
 
-### [NEW] [leader_election.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/leader_election.erl)
+## Phase 3: Bully Leader Election Algorithm ✅ IMPLEMENTATA — 🔧 con correzioni da applicare
 
-**Behavior**: `gen_server`, registered **globally** as `leader_election` on each node (but using local registration + inter-node message passing).
+**Goal**: Implement the Bully Election algorithm so that exactly **one node** is elected as the "Dealer" (leader). The leader runs the game loop (`wheel_process` attivo); i nodi standby tengono i propri processi vivi ma dormienti.
 
-**The Bully Algorithm** (adapted for Erlang):
-- Each node has a unique ID: its node name (e.g., `game1@localhost`). Nodes are ordered lexicographically — the **highest** ID wins.
-- When an election starts:
-  1. The initiating node sends `{election, self_node}` to all nodes with **higher** IDs.
-  2. If any higher node responds with `{alive, higher_node}`, the initiating node **stops** and waits (the higher node will win).
-  3. If **no higher node responds** within a timeout (3 seconds), the initiating node declares itself the leader and broadcasts `{coordinator, self_node}` to **all** nodes.
-  4. When a node receives `{coordinator, Leader}`, it accepts that node as the leader.
+> [!NOTE]
+> **Questa sezione è stata allineata al codice realmente implementato.** L'algoritmo Bully è completo e funzionante. Sono però emerse 5 divergenze rispetto alla stesura originale: **le prime quattro richiedono di modificare codice già scritto**, non di aggiungerne. Sono elencate qui sotto e marcate inline con **🔧 CORREZIONE #n**.
+
+### Divergenze rispetto alla stesura originale
+
+| # | Stesura originale | Problema | Soluzione adottata |
+|---|---|---|---|
+| 1 | `apply_role/1` attiva e disattiva **anche il `worker`** | Con il worker attivo solo sul leader, l'ingestione delle bet non è distribuita: i canali `worker → wheel` sono tutti locali e vuoti, e lo snapshot della Fase 4 torna a essere l'artefatto vacuo che la riscrittura vuole eliminare | Il **worker resta attivo su tutti i nodi**; solo `wheel_process` è leader-only. Il worker riceve `{set_leader, Node}` e instrada al leader |
+| 2 | Il worker in standby rifiuta ogni delivery con `reject(Tag, true)` | Loop caldo: il messaggio rimbalza fra broker e nodi passivi finché non capita sul leader | Il rifiuto avviene **solo** quando `leader =:= undefined`, cioè quando nessuno può servirlo |
+| 3 | Nessuna guardia di quorum | In una partizione 2-1 entrambi i lati eleggono un leader: due ledger divergenti per lo stesso round, scritture concorrenti su Mnesia, audit trail senza valore | `has_quorum/0` applicata in **due** punti: `declare_victory/1` e caduta di un nodo |
+| 4 | `undo_bets/1` come `gen_server:call` | Come call cross-nodo va in timeout quando il wheel è bloccato fino a 10 s nella call al minigioco, facendo crollare il worker | Convertita a `cast`; il rimborso non torna più come valore di ritorno ma come evento `bet_rejected` pubblicato dal wheel |
+| 5 | Il `nodedown` gestito dentro `leader_election` | Il monitoraggio dei nodi è già in `cluster_manager`, duplicarlo significa due sottoscrizioni e due verità | `cluster_manager` chiama `leader_election:node_down/1` |
+
+---
+
+### [MODIFY] [leader_election.erl](erlang-engine/game_engine/src/leader_election.erl)
+
+**Behavior**: `gen_server` registrato localmente su ogni nodo, con message passing inter-nodo.
+
+**The Bully Algorithm** (adattato a Erlang) — invariato e già implementato:
+- ogni nodo ha come id il proprio nome (`game1@localhost`); l'ordinamento è lessicografico, vince il **più alto**;
+- chi inizia l'elezione invia `{election, MyNode}` a tutti i nodi con id **maggiore**;
+- se un nodo più alto risponde `{alive, _}`, l'iniziatore si ferma e attende;
+- se **nessuno** risponde entro 3 s, l'iniziatore si dichiara leader e trasmette `{coordinator, MyNode}` a tutti;
+- chi riceve `{coordinator, Leader}` accetta quel nodo come leader.
 
 **State**:
 ```erlang
@@ -1173,509 +1322,571 @@ erl -sname game3@localhost -setcookie crazytime -pa _build/default/lib/*/ebin -e
 }).
 ```
 
-**API**:
+**API** — 🔧 **CORREZIONE #5: `node_down/1` chiamata da `cluster_manager`**:
 ```erlang
--export([start_link/0, start_election/0, get_leader/0, is_leader/0]).
+-export([start_link/0, start_election/0, get_leader/0, is_leader/0, node_down/1]).
 
 start_election() -> gen_server:cast(?MODULE, start_election).
 get_leader()     -> gen_server:call(?MODULE, get_leader).
 is_leader()      -> gen_server:call(?MODULE, is_leader).
+node_down(Node)  -> gen_server:cast(?MODULE, {node_down, Node}).
 ```
 
-**Key implementation details**:
+#### 🔧 CORREZIONE #3: guardia di quorum
 
 ```erlang
-%% Initiate election: send {election, MyNode} to all higher nodes
-handle_cast(start_election, State) ->
-    MyNode = node(),
-    AllNodes = [node() | nodes()],
-    HigherNodes = [N || N <- AllNodes, N > MyNode],
-    
-    case HigherNodes of
-        [] ->
-            %% I'm the highest — declare myself leader
-            declare_victory(MyNode),
-            {noreply, State#state{leader = MyNode, role = leader, 
-                                  election_in_progress = false}};
-        _ ->
-            %% Send election message to higher nodes
-            lists:foreach(fun(N) ->
-                gen_server:cast({leader_election, N}, {election, MyNode})
-            end, HigherNodes),
-            %% Set timeout — if no response, I win
-            TRef = erlang:send_after(3000, self(), election_timeout),
-            {noreply, State#state{election_in_progress = true, 
-                                  election_timer = TRef}}
-    end;
-
-%% Received election from a lower node — respond "I'm alive" and start own election
-handle_cast({election, FromNode}, State) ->
-    gen_server:cast({leader_election, FromNode}, {alive, node()}),
-    %% Start my own election (I'm higher, so I should win or defer to even higher)
-    self() ! trigger_election,
-    {noreply, State};
-
-%% Received alive response — a higher node exists, stop my election
-handle_cast({alive, _HigherNode}, State) ->
-    cancel_timer(State#state.election_timer),
-    {noreply, State#state{election_in_progress = false, election_timer = undefined}};
-
-%% Received coordinator announcement — accept the leader
-handle_cast({coordinator, Leader}, State) ->
-    cancel_timer(State#state.election_timer),
-    io:format("[ELECTION] New leader elected: ~p~n", [Leader]),
-    NewRole = case Leader =:= node() of true -> leader; false -> standby end,
-    apply_role(NewRole),  %% Activate or deactivate game processes
-    {noreply, State#state{leader = Leader, role = NewRole, 
-                          election_in_progress = false}};
-
-%% Election timeout — no higher node responded, I win!
-handle_info(election_timeout, State) ->
-    declare_victory(node()),
-    {noreply, State#state{leader = node(), role = leader, 
-                          election_in_progress = false}}.
+%% Il denominatore e' la lista STATICA dei nodi configurati, non nodes().
+%% Anche il NUMERATORE va intersecato con quella lista: nodes() restituisce ogni
+%% nodo Erlang connesso, comprese le shell diagnostiche. Una shell attaccata al
+%% lato di minoranza gli regalerebbe il quorum proprio durante il test che deve
+%% dimostrare il contrario.
+has_quorum() ->
+    Cfg  = cluster_manager:configured_nodes(),
+    Live = [N || N <- [node() | nodes()], lists:member(N, Cfg)],
+    length(Live) * 2 > length(Cfg).
 ```
 
-**`declare_victory/1`** — Broadcasts `{coordinator, MyNode}` to all connected nodes:
+La guardia va applicata in **due punti, non uno**. `declare_victory/1` copre solo chi *sta diventando* leader; il leader **già in carica** finito nella minoranza non ripassa mai da lì e resterebbe attivo a produrre il ledger divergente — ed è proprio lui il problema:
+
 ```erlang
+%% 1. Chi sta per diventare leader
 declare_victory(MyNode) ->
-    io:format("~n*** [ELECTION] I am the new LEADER: ~p ***~n~n", [MyNode]),
-    AllNodes = nodes(),
-    lists:foreach(fun(N) ->
-        gen_server:cast({leader_election, N}, {coordinator, MyNode})
-    end, AllNodes),
-    apply_role(leader).
+    case has_quorum() of
+        false ->
+            io:format("[ELECTION] Quorum assente: non mi dichiaro leader~n"),
+            standby;
+        true ->
+            io:format("~n*** [ELECTION] Sono il nuovo LEADER: ~p ***~n~n", [MyNode]),
+            lists:foreach(fun(N) ->
+                gen_server:cast({?MODULE, N}, {coordinator, MyNode})
+            end, nodes()),
+            apply_role(leader),
+            broadcast_leader(MyNode),        %% CORREZIONE #1, vedi sotto
+            leader
+    end.
+
+%% 2. Il leader gia' in carica che vede cadere un nodo
+handle_cast({node_down, Node}, State = #state{role = leader}) ->
+    case has_quorum() of
+        true ->
+            maybe_reelect(Node, State);
+        false ->
+            io:format("[LEADER] Quorum perso — retrocessione a standby~n"),
+            apply_role(standby),
+            broadcast_leader(undefined),
+            {noreply, State#state{role = standby, leader = undefined}}
+    end;
+handle_cast({node_down, Node}, State) ->
+    %% Standby: si rielegge solo con il quorum, altrimenti si eleggerebbe
+    %% un leader dentro la minoranza.
+    case has_quorum() of
+        true  -> maybe_reelect(Node, State);
+        false -> {noreply, State#state{leader = undefined}}
+    end;
 ```
 
-**`apply_role/1`** — Activates or deactivates the game based on role:
+`maybe_reelect/2` lancia `start_election` solo se il nodo caduto era il leader o se non c'è leader noto: oggi `cluster_manager` ne lancia una a **ogni** evento di topologia, incondizionatamente, e con tre nodi che partono insieme si ottiene una raffica di elezioni. Vale la pena aggiungere anche la guardia su `election_in_progress`, oggi memorizzato ma mai controllato.
+
+#### 🔧 CORREZIONE #1: `apply_role/1` non tocca più il worker
+
 ```erlang
 apply_role(leader) ->
-    %% Tell wheel_process to activate (start accepting bets, running rounds)
-    gen_server:cast(wheel_process, activate),
-    %% Tell worker to start consuming from bets_queue
-    gen_server:cast(worker, activate),
-    io:format("[ROLE] This node is now the ACTIVE DEALER~n");
+    io:format("[ROLE] Questo nodo ora e' l'ACTIVE DEALER~n"),
+    gen_server:cast(wheel_process, activate);        %% il cast al worker SPARISCE
 
 apply_role(standby) ->
-    %% Tell wheel_process to go dormant (stop ticking, reject bets)
-    gen_server:cast(wheel_process, deactivate),
-    %% Tell worker to stop consuming
-    gen_server:cast(worker, deactivate),
-    io:format("[ROLE] This node is now STANDBY~n").
-```
+    io:format("[ROLE] Questo nodo ora e' in STANDBY~n"),
+    gen_server:cast(wheel_process, deactivate).      %% idem
 
----
-
-### [MODIFY] [wheel_process.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/wheel_process.erl)
-
-Add an `active` field to the state record:
-
-```erlang
--record(state, {
-    phase = betting,
-    time_left = ?BET_DURATION,
-    round = 1,
-    bets = [],
-    forced_segment = undefined,
-    history = [],
-    minigame_choices = #{},
-    active = false          %% <-- NEW: only leader processes game ticks
-}).
-```
-
-**Changes**:
-1. In `init/1`, do **not** start the tick timer immediately. Set `active = false`. The timer will be started when `leader_election` calls `activate`:
-   ```erlang
-   init([]) ->
-       io:format("[WHEEL] Process started (waiting for leader election)~n"),
-       {ok, #state{active = false}}.
-   ```
-
-2. Add `handle_cast(activate, ...)` and `handle_cast(deactivate, ...)`:
-   ```erlang
-   handle_cast(activate, State = #state{active = false}) ->
-       io:format("[WHEEL] ACTIVATED as leader — starting game loop~n"),
-       erlang:send_after(1000, self(), tick),
-       publish_timer(?BET_DURATION, State#state.round, State#state.history),
-       {noreply, State#state{active = true, phase = betting, time_left = ?BET_DURATION}};
-   handle_cast(activate, State = #state{active = true}) ->
-       {noreply, State};  %% Already active
-   
-   handle_cast(deactivate, State) ->
-       io:format("[WHEEL] DEACTIVATED — going standby~n"),
-       {noreply, State#state{active = false}}.
-   ```
-
-3. Guard all `handle_info(tick, ...)` clauses with `active = true`:
-   ```erlang
-   handle_info(tick, State = #state{active = false}) ->
-       {noreply, State};  %% Ignore ticks when standby
-   handle_info(tick, State = #state{active = true, phase = betting, time_left = T}) when T > 1 ->
-       %% ... existing tick logic ...
-   ```
-
-4. Guard `place_bet` to also check `active`:
-   ```erlang
-   handle_call({place_bet, _Bet}, _From, State = #state{active = false}) ->
-       {reply, {error, not_leader}, State};
-   ```
-
----
-
-### [MODIFY] [worker.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/worker.erl)
-
-Add `active` state tracking:
-
-```erlang
--record(state, {
-    active = false :: boolean()
-}).
-```
-
-- `handle_cast(activate, State)` → Set `active = true`.
-- `handle_cast(deactivate, State)` → Set `active = false`.
-- `handle_cast({amqp_message, _Payload}, State = #state{active = false})` → Ignore the message (or requeue it).
-
----
-
-## Phase 4: Chandy-Lamport Snapshot Algorithm
-
-**Goal**: When the betting window closes ("No more bets"), execute the Chandy-Lamport algorithm to capture a **consistent global snapshot** of all accepted bets across the distributed system. This ensures that no bet is lost or double-counted when the leader locks the state.
-
-### Context
-
-In the PDF specification, the Chandy-Lamport snapshot is used to:
-1. Guarantee that the set of bets used for payout calculation is **exactly** the set of bets accepted before the cut-off.
-2. Capture any bets that may be "in transit" in the RabbitMQ channels at the instant the timer expires.
-
-Since the current architecture has a **single worker** consuming from `bets_queue` and forwarding to `wheel_process` on the **same node** (the leader), the "channels" in Chandy-Lamport terminology are:
-- **C1**: `bets_queue` → `worker` → `wheel_process` (RabbitMQ to Erlang)
-- **C2**: Between Erlang nodes (if bets are distributed across nodes — in our architecture, only the leader receives bets, but standby nodes need the snapshot for recovery)
-
----
-
-### [NEW] [snapshot.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/snapshot.erl)
-
-**Behavior**: `gen_server`, registered as `snapshot`
-
-**The Chandy-Lamport Algorithm**:
-
-1. **Initiator** (the leader's `wheel_process`, when `time_left` hits 0):
-   - Records its own local state (the current `bets` list).
-   - Sends a **MARKER** message on all outgoing channels (to all connected nodes).
-   - Starts recording messages on all incoming channels.
-
-2. **Receiver** (standby nodes, upon receiving a MARKER):
-   - If this is the **first** MARKER received:
-     - Records own local state.
-     - Sends MARKER on all other outgoing channels.
-     - Starts recording incoming messages on all channels except the one the MARKER came from.
-   - If already recorded state:
-     - Stops recording on the channel the MARKER arrived from.
-     - The recorded messages on that channel become the "channel state".
-
-3. **Completion**: When all nodes have received MARKERs from all channels, the snapshot is complete. The global state = union of all local states + all channel states.
-
-**State**:
-```erlang
--record(state, {
-    snapshot_id = 0 :: integer(),
-    local_state = undefined,               %% Saved bets list
-    channel_states = #{} :: #{node() => [term()]},
-    markers_received = [] :: [node()],
-    recording = false :: boolean(),
-    recording_channels = [] :: [node()],
-    initiator = undefined :: node() | undefined
-}).
-```
-
-**API**:
-```erlang
--export([start_link/0, initiate_snapshot/1, get_snapshot/0]).
-
-%% Called by wheel_process when betting phase ends
-%% BetsState = the current bets list
-initiate_snapshot(BetsState) ->
-    gen_server:call(?MODULE, {initiate_snapshot, BetsState}).
-
-%% Returns the consolidated snapshot after completion
-get_snapshot() ->
-    gen_server:call(?MODULE, get_snapshot).
-```
-
-**Initiator flow** (`handle_call({initiate_snapshot, BetsState}, ...)`):
-```erlang
-handle_call({initiate_snapshot, BetsState}, _From, State) ->
-    SnapshotId = State#state.snapshot_id + 1,
-    MyNode = node(),
-    PeerNodes = nodes(),
-    
-    io:format("[SNAPSHOT #~p] Initiating Chandy-Lamport snapshot~n", [SnapshotId]),
-    io:format("[SNAPSHOT #~p] Local state captured: ~p bets~n", [SnapshotId, length(BetsState)]),
-    
-    %% 1. Record own local state
-    %% 2. Send MARKER to all outgoing channels (peer nodes)
+%% Al posto di activate/deactivate, i worker di TUTTI i nodi ricevono
+%% l'identita' del leader corrente.
+broadcast_leader(Leader) ->
     lists:foreach(fun(N) ->
-        gen_server:cast({snapshot, N}, {marker, MyNode, SnapshotId})
-    end, PeerNodes),
-    
-    %% 3. Start recording on all incoming channels
-    NewState = State#state{
-        snapshot_id = SnapshotId,
-        local_state = BetsState,
-        channel_states = #{},
-        markers_received = [MyNode],  %% Own marker already "received"
-        recording = true,
-        recording_channels = PeerNodes,
-        initiator = MyNode
-    },
-    
-    %% Set a timeout for snapshot completion (in case some nodes are unreachable)
-    erlang:send_after(5000, self(), {snapshot_timeout, SnapshotId}),
-    
-    {reply, {ok, SnapshotId}, NewState}.
+        gen_server:cast({worker, N}, {set_leader, Leader})
+    end, [node() | nodes()]).
 ```
 
-**Marker receiver** (`handle_cast({marker, FromNode, SnapshotId}, ...)`):
-```erlang
-handle_cast({marker, FromNode, SnapshotId}, State) ->
-    case lists:member(FromNode, State#state.markers_received) of
-        true ->
-            %% Already received marker from this node — stop recording on this channel
-            NewRecording = lists:delete(FromNode, State#state.recording_channels),
-            NewState = State#state{recording_channels = NewRecording},
-            maybe_complete_snapshot(NewState);
-        false ->
-            case State#state.recording of
-                false ->
-                    %% First marker received — record own state and forward
-                    MyBets = wheel_process:get_bets(),  %% Get current local bets (empty on standby)
-                    PeerNodes = nodes(),
-                    lists:foreach(fun(N) ->
-                        gen_server:cast({snapshot, N}, {marker, node(), SnapshotId})
-                    end, PeerNodes -- [FromNode]),
-                    
-                    NewState = State#state{
-                        snapshot_id = SnapshotId,
-                        local_state = MyBets,
-                        markers_received = [FromNode, node()],
-                        recording = true,
-                        recording_channels = PeerNodes -- [FromNode],
-                        initiator = FromNode
-                    },
-                    maybe_complete_snapshot(NewState);
-                true ->
-                    %% Already recording — mark this channel as done
-                    NewMarkers = [FromNode | State#state.markers_received],
-                    NewRecording = lists:delete(FromNode, State#state.recording_channels),
-                    NewState = State#state{
-                        markers_received = NewMarkers,
-                        recording_channels = NewRecording
-                    },
-                    maybe_complete_snapshot(NewState)
-            end
-    end.
-```
+Anche `handle_cast({coordinator, Leader}, ...)` deve propagare `{set_leader, Leader}` al proprio worker: è da lì che gli standby apprendono chi è il leader.
 
-**Snapshot completion**:
-```erlang
-maybe_complete_snapshot(State) ->
-    case State#state.recording_channels of
-        [] ->
-            %% All channels recorded — snapshot complete
-            io:format("[SNAPSHOT #~p] COMPLETE. Local bets: ~p, Channel states: ~p~n", 
-                      [State#state.snapshot_id, 
-                       length(State#state.local_state),
-                       maps:size(State#state.channel_states)]),
-            %% Notify the leader that snapshot is done
-            case State#state.initiator of
-                undefined -> ok;
-                InitNode ->
-                    gen_server:cast({snapshot, InitNode}, 
-                                   {snapshot_complete, node(), State#state.local_state})
-            end,
-            {noreply, State#state{recording = false}};
-        _ ->
-            {noreply, State}
-    end.
-```
+> [!IMPORTANT]
+> È la correzione più importante della fase. Il worker **non** è un processo leader-only: è il consumer distribuito che rende reali i canali dello snapshot. Disattivarlo sugli standby riporta l'architettura a un solo ingestore e svuota la Fase 4.
+
+#### Ripopolamento dello stato dopo l'elezione
+
+Dopo `apply_role(leader)`, il nuovo leader deve:
+1. chiedere al wheel di ricaricare da Mnesia i `bet_id` già liquidati negli ultimi round (deduplica, vedi Fase 4) — è **subito dopo un crash** che le riconsegne del broker arrivano;
+2. inviare `{collect_inflight, R}` ai worker superstiti e raccoglierne le bet non ackate entro 2 s: servono al recovery della Fase 5.
 
 ---
 
-### [MODIFY] [wheel_process.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/wheel_process.erl)
+### [MODIFY] [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl) — ✅ già implementato
 
-In the `handle_info(tick, ... time_left = 1)` clause (the "NO MORE BETS" moment), add the snapshot initiation:
-
-```erlang
-handle_info(tick, State = #state{active = true, phase = betting, time_left = 1}) ->
-    io:format("~n--- ROUND #~p: NO MORE BETS! SPINNING... ---~n", [State#state.round]),
-    publish_timer(0, State#state.round, State#state.history),
-    
-    %% === CHANDY-LAMPORT SNAPSHOT ===
-    %% Capture consistent global state of all accepted bets
-    snapshot:initiate_snapshot(State#state.bets),
-    io:format("[WHEEL] Snapshot initiated — bets locked~n"),
-    
-    %% ... rest of existing spin logic (segment selection, etc.) ...
-```
-
-Add a new API function for the snapshot module to query bets:
-```erlang
--export([..., get_bets/0]).
-
-get_bets() ->
-    gen_server:call(?MODULE, get_bets).
-
-handle_call(get_bets, _From, State) ->
-    {reply, State#state.bets, State};
-```
-
----
-
-### [MODIFY] [game_engine_sup.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/game_engine_sup.erl)
-
-Add `snapshot` to the supervision tree:
-
-```
-game_engine_sup (rest_for_one)
-  ├── rabbitmq_manager
-  ├── cluster_manager
-  ├── leader_election
-  ├── snapshot                  ← NEW
-  ├── wheel_process
-  ├── minigames_sup
-  └── worker
-```
-
----
-
-## Phase 5: Fault Tolerance & Crash Recovery
-
-**Goal**: When the leader/dealer node crashes mid-round, the system must:
-1. Detect the crash (via `nodedown` in `cluster_manager`)
-2. Elect a new leader (Bully algorithm in `leader_election`)
-3. Refund all in-flight bets from the interrupted round
-4. Resume normal game operation on the new leader
-
----
-
-### [MODIFY] [leader_election.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/leader_election.erl)
-
-Enhance the `apply_role(leader)` function to handle crash recovery:
-
-```erlang
-apply_role(leader) ->
-    %% Check if there was an in-progress round (crash recovery scenario)
-    case get(previous_leader_crashed) of
-        true ->
-            io:format("[RECOVERY] Previous leader crashed — refunding all pending bets~n"),
-            %% Publish a special "round_cancelled" message to results_queue
-            %% so that Java gateway refunds all PENDING bets
-            CancelPayload = <<"{\"type\":\"round_cancelled\",\"reason\":\"dealer_crash\",\"action\":\"refund_all_pending\"}">>,
-            rabbitmq_manager:publish(<<"results_queue">>, CancelPayload),
-            erase(previous_leader_crashed);
-        _ -> ok
-    end,
-    %% Activate game processes
-    gen_server:cast(wheel_process, activate),
-    gen_server:cast(worker, activate),
-    io:format("[ROLE] This node is now the ACTIVE DEALER~n").
-```
-
-When a `{coordinator, ...}` message arrives after a nodedown event, set the crash flag:
-
-```erlang
-handle_cast({coordinator, Leader}, State) ->
-    cancel_timer(State#state.election_timer),
-    OldLeader = State#state.leader,
-    %% If the old leader is different and not in the connected nodes, it crashed
-    CrashedLeader = case OldLeader of
-        undefined -> false;
-        Leader -> false;  %% Same leader, no crash
-        _ -> not lists:member(OldLeader, [node() | nodes()])
-    end,
-    case CrashedLeader of
-        true -> put(previous_leader_crashed, true);
-        false -> ok
-    end,
-    NewRole = case Leader =:= node() of true -> leader; false -> standby end,
-    apply_role(NewRole),
-    {noreply, State#state{leader = Leader, role = NewRole, 
-                          election_in_progress = false}}.
-```
-
----
-
-### [MODIFY] [wheel_process.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/wheel_process.erl)
-
-When activated after a crash, reset to a clean betting state:
+Il flag `active` nel record di stato, i cast `activate`/`deactivate`, la guardia sui tick e il rifiuto delle bet quando `active = false` sono **già presenti nel codice** e restano invariati:
 
 ```erlang
 handle_cast(activate, State = #state{active = false}) ->
-    io:format("[WHEEL] ACTIVATED as leader — starting fresh round~n"),
-    %% Reset to clean state — any in-progress round from crashed leader is lost
-    %% (bets are refunded by leader_election's crash recovery)
-    NewRound = State#state.round + 1,
-    publish_timer(?BET_DURATION, NewRound, State#state.history),
     erlang:send_after(1000, self(), tick),
-    {noreply, State#state{
-        active = true, 
-        phase = betting, 
-        time_left = ?BET_DURATION,
-        round = NewRound,
-        bets = [],
-        minigame_choices = #{}
-    }};
+    publish_timer(?BET_DURATION, State#state.round, State#state.history),
+    {noreply, State#state{active = true, phase = betting, time_left = ?BET_DURATION}};
+
+handle_info(tick, State = #state{active = false}) ->
+    {noreply, State};                                %% standby: nessun tick
 ```
+
+L'unica modifica dovuta a questa fase è la **🔧 CORREZIONE #4**: `undo_bets/1` passa da `call` a `cast`, restituendo i `bet_id` annullati attraverso un evento anziché come valore di ritorno.
 
 ---
 
-### [MODIFY] Java Gateway — `GameResultListener.java`
+### [MODIFY] [worker.erl](erlang-engine/game_engine/src/worker.erl) — 🔧 riscritto
 
-Add handling for the `round_cancelled` message type:
+**🔧 CORREZIONI #1, #2 e #4.** Il flag `active` e i due `handle_cast(activate|deactivate, ...)` implementati in questa fase **vanno rimossi**:
+
+```erlang
+-record(state, {
+    leader   = undefined :: node() | undefined,   %% al posto di active
+    inflight = #{},                               %% #{BetId => {DeliveryTag, BetMap}}
+    cl       = cl_recorder:new()                  %% stato Chandy-Lamport (Fase 4)
+}).
+
+handle_cast({set_leader, Node}, State) ->
+    io:format("[WORKER] Leader corrente: ~p~n", [Node]),
+    {noreply, State#state{leader = Node}};
+```
+
+**Una sola clausola di delivery**, con il rifiuto riservato al caso in cui nessuno può servire il messaggio:
+
+```erlang
+handle_info({#'basic.deliver'{delivery_tag = Tag}, #amqp_msg{payload = Payload}},
+            State = #state{leader = undefined}) ->
+    %% Nessun leader eletto, o siamo nella minoranza dopo una partizione:
+    %% il messaggio resta nel broker e verra' servito da chi puo'.
+    rabbitmq_manager:reject(Tag, true),
+    {noreply, State};
+
+handle_info({#'basic.deliver'{delivery_tag = Tag}, #amqp_msg{payload = Payload}}, State) ->
+    process_message(binary_to_list(Payload), Tag, State);
+```
+
+**Tutti i percorsi di `process_message/1` vanno instradati al leader**, non solo le bet. È la conseguenza meno ovvia dell'ingestione distribuita e la più facile da dimenticare: `force_segment`, `minigame_choice`, `UNDO_BETS` e `FORCE_<Seg>` oggi chiamano il `wheel_process` **locale**. Consumati da uno standby finirebbero al wheel dormiente di quel nodo e sparirebbero in silenzio — con 3 nodi capita circa 2 volte su 3, perché i worker sono competing consumer.
+
+```erlang
+Leader = State#state.leader,
+gen_server:cast({wheel_process, Leader}, {force_segment, Seg}),
+gen_server:cast({wheel_process, Leader}, {minigame_choice, Username, Choice}),
+gen_server:cast({wheel_process, Leader}, {undo_bets, Username}),   %% CORREZIONE #4
+gen_server:cast({wheel_process, Leader}, {bet, BetMap}),
+```
+
+**Ack differito** (prerequisito della Fase 4, dettagli nella Fase 4 stessa): il `DeliveryTag` non viene più confermato al ritorno di `process_message/1` ma conservato in `inflight`, e l'ack parte alla ricezione di `{bet_result, BetId, accepted | rejected}` dal wheel. Un `{inflight_timeout, BetId}` armato a 15 s rimette la bet in coda se il leader muore prima di rispondere. I comandi senza `bet_id` (`force_segment`, `minigame_choice`) restano ad **ack immediato**.
+
+---
+
+## Phase 4: Chandy-Lamport Snapshot Algorithm — 🔧 RISCRITTA
+
+**Goal**: quando la finestra di puntata si chiude ("No more bets"), eseguire l'algoritmo di Chandy-Lamport per catturare uno **snapshot globale consistente** delle scommesse accettate. Il risultato non è un log: è il **ledger autorevole del round** verso il gateway Java e il **checkpoint** da cui un nuovo leader può completare il round dopo un crash.
+
+> [!CAUTION]
+> **Questa fase sostituisce integralmente la stesura originale.** L'analisi in `snapshot_analisi.md` ha mostrato che lo snapshot come era descritto era **ridondante**: catturava uno stato già interamente disponibile in locale sul leader, su canali vuoti per costruzione, e nessuno ne consumava il risultato. Le motivazioni complete e la verifica punto per punto sono in `snapshot_implementation_plan.md`; qui c'è il progetto definitivo.
+
+### Perché la stesura precedente non funzionava
+
+| Problema | Conseguenza |
+|---|---|
+| I marker viaggiavano fra istanze del modulo `snapshot` | Un marker che non condivide la mailbox con i messaggi che deve delimitare non delimita nulla: non è Chandy-Lamport |
+| `channel_states` dichiarato ma **mai popolato** | Il campo che dovrebbe contenere l'unica informazione non ottenibile altrove restava vuoto per costruzione |
+| Un solo consumer di `bets_queue`, sul leader | I canali erano tutti locali: non c'era nulla in transito da catturare |
+| `initiate_snapshot` come `gen_server:call` | Bloccava il wheel nel tick più denso del round |
+| Il collector interrogava i partecipanti (`wheel_process:get_bets()`) | Chiamata sincrona verso un processo che durante il minigioco resta bloccato fino a 10 s → timeout ed exit del collector |
+| Lista partecipanti = `nodes()` ricalcolata a ogni passo | Può cambiare fra l'invio dei marker e la verifica di completamento, e include le shell diagnostiche |
+| Nessuno consumava il risultato | Un artefatto di log, non un algoritmo |
+
+### L'architettura che rende lo snapshot reale
+
+L'idea è una sola: **spostare i marker sui canali applicativi e rendere quei canali asincroni**, così che ci sia davvero qualcosa da catturare.
+
+```
+   [bets_queue]  ──competing consumers──┬──> worker@game1 ─┐
+                                        ├──> worker@game2 ─┼─{bet, B}──> wheel_process@LEADER
+                                        └──> worker@game3 ─┘
+                                                  ^
+                                                  └────{bet_result, BetId, accepted|rejected}────┘
+```
+
+- Grafo **fortemente connesso** (stella bidirezionale), canali **asincroni** e **FIFO** (garanzia Erlang).
+- Il canale `worker_i → wheel` contiene le **bet in transito** al momento del gong: l'unica cosa che la specifica chiede di catturare e l'unica non disponibile in locale da nessuna parte.
+- **Partecipanti** allo snapshot sono `wheel_process` e gli N `worker`. Il modulo `snapshot` è un puro **collector**: assegna l'id, congela i partecipanti, arma il timeout, raccoglie le porzioni, persiste su Mnesia, pubblica il ledger. **Non interroga mai i partecipanti**: sono loro a fare push.
+- **Costo in latenza: zero.** Il taglio parte al gong con un budget di 5 s, mentre la risoluzione del round è già schedulata a 10,5 s per l'animazione della ruota.
+
+> [!IMPORTANT]
+> **Ordine nel tick del gong**: si estrae **prima** il segmento vincente, **poi** si inizia lo snapshot. Così il taglio cattura `{bets, winner_segment, winner_index}` insieme, e un nuovo leader eletto dopo un crash ha sia l'insieme autorevole delle puntate sia l'esito: può **completare** il round anziché annullarlo (Fase 5).
+
+---
+
+### [NEW] [cl_recorder.erl](erlang-engine/game_engine/src/cl_recorder.erl)
+
+Modulo di **funzioni pure** (nessun processo) con la logica Chandy-Lamport lato partecipante, condivisa da `wheel_process` e `worker` per non duplicarla. Essendo puro, è anche l'unica parte banalmente testabile in isolamento.
+
+```erlang
+-record(cl, {
+    id      = undefined,   %% undefined = non sta registrando
+    local   = undefined,   %% stato locale salvato al taglio
+    in_open = [],          %% canali entranti ancora in registrazione, [{Role, Node}]
+    chan    = #{}          %% #{{Role,Node} => [Msg]} messaggi in transito registrati
+}).
+
+-export([new/0, start/3, is_recording/1, on_marker/5, on_app_msg/3, close/2, is_complete/1]).
+```
+
+- `start(SnapId, LocalState, InChannels)` — ingresso dell'**iniziatore**, che non riceve mai un marker e quindi non può passare da `on_marker/5`: salva `local` e apre la registrazione su *tutti* gli `InChannels`. È la funzione che il wheel chiama al gong.
+- `on_marker(SnapId, From, InChannels, LocalState, CL) -> {NewCL, first_marker | subsequent}` — al primo marker salva `local` e apre la registrazione su `InChannels -- [From]`; ai successivi chiude il canale `From`. **L'invio dei marker uscenti è responsabilità del chiamante**: devono partire dal processo applicativo, altrimenti non condividono mailbox e ordine FIFO con i messaggi che delimitano.
+- `on_app_msg(From, Msg, CL)` — accoda a `chan[From]` **solo se** sta registrando e `From` è ancora aperto.
+- `close(From, CL)` — chiude un singolo canale entrante; la usa il percorso di abort.
+- `is_complete(CL)` — `in_open == []`.
+
+---
+
+### [MODIFY] [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)
+
+#### 1. Prerequisito: promuovere lo stato del round nel record
+
+Oggi segmento vincente, indice e dettagli del minigioco vivono **solo dentro i messaggi `send_after` in volo**. Senza questo passo nessun recovery è possibile.
+
+```erlang
+-record(state, {
+    phase, time_left, round, bets, forced_segment, history, minigame_choices,
+    active = false,               %% gia' presente (Fase 3)
+    winner_segment = undefined,   %% NEW
+    winner_index   = undefined,   %% NEW
+    minigame_mod   = undefined,   %% NEW
+    minigame_details = undefined, %% NEW
+    timer_ref      = undefined,   %% NEW  (send_after cancellabile/ispezionabile)
+    settled_bet_ids = sets:new(), %% NEW  bet_id degli ultimi 3 round — deduplica
+    cl = cl_recorder:new()        %% NEW
+}).
+```
+
+`settled_bet_ids` va ripopolato dai `snapshot_record` **all'avvio e a ogni elezione**: è subito dopo un crash che le riconsegne del broker arrivano.
+
+#### 2. `handle_cast({bet, BetMap})` al posto di `handle_call({place_bet, ...})`
+
+**Deduplicare per `bet_id` prima di tutto.** Con l'ack differito una riconsegna del broker può ripresentare una bet già accettata (ack perso). Se `BetId` è già in `bets` **oppure in `settled_bet_ids`** → rispondere `{bet_result, BetId, accepted}` senza inserirla di nuovo.
+
+Il secondo termine del test non è pleonastico: `bets` viene azzerato a ogni round, quindi da solo copre la riconsegna intra-round ma **non** quella che arriva nel round successivo — che è il caso frequente, perché nasce da un crash. Senza, la bet viene **giocata due volte e pagata due volte**.
+
+Altrimenti:
+- `phase = betting, active = true` → accetta e `cast` di `{bet_result, BetId, accepted}` al worker mittente;
+- **in registrazione e canale aperto** → `cl_recorder:on_app_msg/3` e **basta**: la bet finisce nello stato del canale e verrà unita a `bets` alla chiusura del taglio. Non va aggiunta anche a `bets` qui, altrimenti si conta due volte;
+- altrimenti → `{bet_result, BetId, rejected}`.
+
+#### 3. Trigger del taglio, **dopo** l'estrazione del vincitore
+
+```erlang
+handle_info(tick, State = #state{active = true, phase = betting, time_left = 1}) ->
+    publish_timer(0, State#state.round, State#state.history),
+    %% ... estrazione WinnerIndex / WinnerSeg come oggi ...
+
+    Participants = cluster_manager:get_participants(),      %% CONGELATA qui, una volta sola
+    %% SnapId calcolato in loco, NON restituito da begin_snapshot: quello e' un
+    %% cast e ritorna ok, mentre lo SnapId serve subito per marcare i marker.
+    SnapId = {State#state.round, node()},
+    snapshot:begin_snapshot(SnapId, Participants),          %% cast, non call
+    Local = #{round => State#state.round, bets => State#state.bets, phase => spinning,
+              winner_segment => WinnerSeg, winner_index => WinnerIndex},
+    InCh  = [{worker, N} || N <- Participants],
+    CL1   = cl_recorder:start(SnapId, Local, InCh),
+    [gen_server:cast({worker, N}, {cl_marker, SnapId, {wheel, node()}}) || N <- Participants],
+    erlang:send_after(10000, self(), {cl_abort, SnapId}),   %% abort locale se il collector muore
+    %% ... publish_spinning + send_after come oggi ...
+```
+
+#### 4. Chiusura del taglio
+
+```erlang
+handle_info({cl_marker, SnapId, {worker, N}}, State) ->
+    %% chiude il canale {worker, N}; quando cl_recorder:is_complete/1:
+    %%   1. Bets' = Bets ++ lists:append(maps:values(Chan))
+    %%      le bet in transito ENTRANO nel round: sono state spedite prima che il
+    %%      worker apprendesse del taglio, quindi per il taglio causale sono di R;
+    %%   2. {bet_result, BetId, accepted} a ciascun worker mittente;
+    %%   3. report al collector:
+    %%      gen_server:cast({snapshot, node()},
+    %%                      {cl_part, SnapId, {wheel, node()}, Local, Chan}).
+```
+
+#### 5. Abort locale
+
+`handle_info({cl_abort, SnapId}, State)` — chiude forzatamente la registrazione, riporta ciò che ha, logga `degraded`. Senza, un collector morto lascerebbe i partecipanti in registrazione per sempre.
+
+#### 6. Altre modifiche
+
+- `build_result_json/7` — aggiungere `bet_id` a ogni entry dell'array `payouts` (la sorgente è `compute_payouts/3`, che oggi propaga solo `username`/`bet`/`payout`).
+- Ogni `{bet_result, BetId, rejected}` va accompagnato da un evento **`bet_rejected`** su `results_queue`: è il solo percorso che chiude le bet arrivate **dopo** la pubblicazione del ledger, che altrimenti resterebbero `PENDING` con il saldo scalato.
+  ```json
+  {"type":"bet_rejected","bet_id":"<uuid>","round":R,"reason":"betting_closed"}
+  ```
+  Lo stesso evento con `"reason":"undo"` sostituisce il rimborso aggregato dell'UNDO (Fase 3, correzione #4).
+- Spostare qui `escape_json_string/1` da `worker.erl`, dove resterebbe senza chiamanti: `build_result_json/7` costruisce le entry di `payouts` con `~s` sull'username **senza escaping**, e va comunque toccata.
+
+> [!NOTE]
+> **Limite noto, da dichiarare nella relazione**: durante il minigioco il wheel resta bloccato fino a 10 s dentro `gen_server:call(Module, {play, ...}, 10000)` e non risponde ad alcuna `call`. Tre conseguenze: (a) non può partecipare a uno snapshot in quella finestra — innocuo oggi, perché l'unico trigger è al gong, ma è ciò che impedirebbe di aggiungere un trigger sulla transizione di fase; (b) è la ragione per cui `undo_bets/1` va convertita a `cast`; (c) è la ragione per cui l'`inflight_timeout` del worker non può scendere sotto i ~12 s.
+
+---
+
+### [MODIFY] [worker.erl](erlang-engine/game_engine/src/worker.erl)
+
+```erlang
+handle_info({cl_marker, SnapId, From}, S) ->
+    InCh  = [{wheel, S#state.leader}],
+    Local = #{unacked => maps:values(S#state.inflight)},
+    {CL, Kind} = cl_recorder:on_marker(SnapId, From, InCh, Local, S#state.cl),
+    case Kind of
+        first_marker ->
+            %% marker uscente sul MIO canale applicativo verso il wheel:
+            %% stesso mittente, stessa mailbox dei {bet, ...} => FIFO garantito
+            gen_server:cast({wheel_process, S#state.leader},
+                            {cl_marker, SnapId, {worker, node()}});
+        subsequent -> ok
+    end,
+    maybe_report(SnapId, CL, S).
+```
+
+Il worker ha **un solo canale entrante**, quindi il suo taglio si chiude immediatamente e riporta subito al collector:
+```erlang
+gen_server:cast({snapshot, InitiatorNode},
+                {cl_part, SnapId, {worker, node()}, Local, ChanStates}).
+```
+
+`handle_cast({bet_result, BetId, Verdict}, S)` — passa da `cl_recorder:on_app_msg/3` se in registrazione, poi `rabbitmq_manager:ack(Tag)` e rimuove da `inflight`. **È l'unico punto in cui si acka.**
+
+---
+
+### [NEW] [snapshot.erl](erlang-engine/game_engine/src/snapshot.erl) — collector
+
+```erlang
+-record(state, {
+    running = #{}   %% #{SnapId => #run{round, participants, expected, parts, timer, degraded}}
+}).                 %% SnapId = {Round, node()}: nessun contatore locale da tenere in sync
+
+-export([start_link/0, begin_snapshot/2, get_last/0, get_for_round/1]).
+```
+
+- `begin_snapshot(SnapId, Participants)` — **cast**. Registra `expected = [{wheel, Leader} | [{worker, N} || N <- Participants]]` e arma `send_after(5000, {snapshot_timeout, SnapId})`.
+- `handle_cast({cl_part, SnapId, Who, Local, Chan}, S)` — accumula; quando `parts == expected` chiama `finalize/2`.
+- `handle_info({snapshot_timeout, SnapId}, S)` — `finalize/2` con `degraded = true` e l'elenco dei partecipanti mancanti. Il ledger resta **deterministico**: bet locali del leader + transiti effettivamente registrati.
+- `finalize/2`:
+  1. compone `#snapshot_record{}`;
+  2. `mnesia:transaction(fun() -> mnesia:write(Rec) end)` → replica automatica su tutti i nodi;
+  3. **solo sul leader**: `rabbitmq_manager:publish(<<"results_queue">>, LedgerJson)` con `type: "round_ledger"`;
+  4. log con conteggi separati: `local_bets`, `in_flight_bets`, `degraded`.
+
+---
+
+### [NEW] tabella Mnesia `snapshot_record`
+
+```erlang
+-record(snapshot_record, {
+    id,              %% chiave = {Round, Initiator}: due leader concorrenti producono
+                     %% record DISTINTI e diagnosticabili invece di sovrascriversi
+    round,
+    taken_at,        %% erlang:system_time(millisecond)
+    initiator,       %% node()
+    degraded,        %% boolean()
+    phase,           %% fase al taglio
+    winner_segment, winner_index,
+    local_states,    %% #{Participant => term()}
+    channel_states,  %% #{{From,To} => [term()]}
+    ledger           %% [BetMap] insieme autorevole delle bet del round
+}).
+```
+
+Tipo `ordered_set`, così `mnesia:dirty_last/1` restituisce l'ultimo round e `mnesia:dirty_read({Round, Node})` il record di un round specifico. `local_states` e `channel_states` sono conservati **integralmente**: senza di essi il post-mortem non potrebbe dire cosa fosse in volo.
+
+---
+
+### [MODIFY] [game_engine_sup.erl](erlang-engine/game_engine/src/game_engine_sup.erl)
+
+`snapshot` va aggiunto come **ULTIMO** figlio:
+
+```
+game_engine_sup (rest_for_one)
+  ├── rabbitmq_manager      (worker)      — connessione AMQP
+  ├── cluster_manager       (worker)      — discovery nodi, Mnesia, partecipanti
+  ├── leader_election       (worker)      — Bully + quorum
+  ├── wheel_process         (worker)      — game loop (attivo solo sul leader)
+  ├── minigames_sup         (supervisor)  — 4 mini-game actors
+  ├── worker                (worker)      — consumer AMQP (attivo su TUTTI i nodi)
+  └── snapshot              (worker)      — collector Chandy-Lamport   ← ULTIMO
+```
+
+> [!IMPORTANT]
+> **Ultimo, non prima di `wheel_process`.** Con `rest_for_one` un figlio che crasha fa ripartire tutti quelli sotto di lui: mettendo il collector in mezzo, un suo crash azzererebbe il round in corso.
+
+---
+
+## Phase 5: Fault Tolerance & Crash Recovery — 🔧 RISCRITTA
+
+**Goal**: quando il nodo dealer crasha a metà round, il sistema deve:
+1. rilevare il crash (`nodedown` in `cluster_manager`);
+2. eleggere un nuovo leader (Bully + quorum, Fase 3);
+3. **completare** il round se esiste un checkpoint, oppure annullarlo rimborsando **solo** le bet realmente perse;
+4. riprendere il gioco.
+
+> [!CAUTION]
+> **Il punto 3 sostituisce l'approccio originale «annulla il round e rimborsa tutte le PENDING».** Quel rimborso globale colpiva anche round estranei, e soprattutto **si contraddiceva con l'ack differito**: una bet non ackata viene rigiocata dal broker, quindi rimborsarla significa restituire i soldi *e* farla girare lo stesso.
+
+### Le tre regole di riconciliazione
+
+Al crash del leader in fase `betting`, ogni bet del round R sta in **uno solo** di tre insiemi:
+
+| Insieme | Come si riconosce | Destino corretto |
+| :--- | :--- | :--- |
+| **Ackata** — accettata dal wheel morto | assente dalle `inflight` dei worker **e** dal broker | **Rimborso**: è l'unico caso realmente perso |
+| **Non ackata** — consumata ma senza `bet_result` | presente nelle `inflight` di un worker vivo | **Replay**: il broker la riconsegna, entra nel round R+1 |
+| **Mai consumata** | ancora nella coda | **Replay**: idem |
+
+`{collect_inflight, R}` (Fase 3) serve esattamente a separare il primo insieme dagli altri due. Da qui tre regole da rispettare ovunque:
+
+> **R1 — Chi rimborsa.** Si rimborsa una bet solo se è assente da ogni ledger **e** da `exclude_bet_ids`. In dubbio non si rimborsa: resta `PENDING` e sarà chiusa dal ledger del round in cui verrà rigiocata.
+>
+> **R2 — Chi è autoritativo.** `Bet.status` lato Java è autoritativo sui **movimenti di denaro**; il ledger Erlang sull'**esito di gioco**. Una bet già `REFUNDED` che ricompare in un ledger successivo **non viene mai pagata**, ma va loggata come `replay_after_refund` e chiusa in stato terminale: è l'unico caso in cui l'utente vede sulla ruota una puntata che gli è stata restituita. Anomalia visiva da documentare, non duplicazione di denaro.
+>
+> **R3 — L'insieme di deduplica è l'unione dei ledger persistiti**, non `bets` in memoria. `bets` viene azzerato a ogni round, quindi da solo garantisce l'idempotenza soltanto *dentro la finestra del round*: una riconsegna che arriva nel round successivo verrebbe accettata di nuovo, **giocata due volte e pagata due volte**. È la regola che rende sicuro l'ack differito.
+
+---
+
+### [MODIFY] [leader_election.erl](erlang-engine/game_engine/src/leader_election.erl) — recovery a due rami
+
+```erlang
+apply_role(leader) ->
+    io:format("[ROLE] Questo nodo ora e' l'ACTIVE DEALER~n"),
+    gen_server:cast(wheel_process, activate),
+    %% NIENTE gen_server:cast(worker, activate): il worker e' attivo su tutti
+    %% i nodi (Fase 3, correzione #1).
+    recover_from_checkpoint().
+
+recover_from_checkpoint() ->
+    case snapshot:get_last() of
+        {ok, #snapshot_record{round = R, ledger = Ledger,
+                              winner_segment = Seg, winner_index = Idx}} ->
+            case result_already_published(R) of
+                true  -> ok;                       %% round chiuso: si riparte pulito
+                false ->
+                    %% RAMO A — checkpoint presente: COMPLETA il round R.
+                    io:format("[RECOVERY] Checkpoint del round ~p trovato: completo il round~n", [R]),
+                    gen_server:cast(wheel_process, {complete_round, R, Ledger, Seg, Idx})
+            end;
+        _ ->
+            %% RAMO B — nessun checkpoint: il crash e' avvenuto in fase betting.
+            io:format("[RECOVERY] Nessun checkpoint: annullo il solo round interrotto~n"),
+            cancel_round_selectively()
+    end.
+```
+
+> [!IMPORTANT]
+> Il flag `previous_leader_crashed` nel **process dictionary** previsto dalla stesura originale va **sostituito**, non affiancato: non sopravvive al riavvio di `leader_election` e soprattutto non dice *quale* round è stato interrotto — informazione indispensabile per annullare un round solo anziché tutti.
+
+**Ramo A — checkpoint presente, risultato non ancora pubblicato**: il nuovo leader ricarica `bets` dal ledger, riusa `winner_segment`/`winner_index` catturati nel taglio, calcola i payout e pubblica su `results_queue`. **Nessun rimborso, nessun round perso.** È ciò che rende lo snapshot *load-bearing*: il risultato non era ottenibile in altro modo.
+
+**Ramo B — nessun checkpoint** (crash durante la fase di puntata):
+1. il nuovo leader invia `{collect_inflight, R}` ai worker superstiti e ne raccoglie le `inflight` entro 2 s: sono bet consumate ma **non ackate**, che il broker riconsegnerà. Vanno **escluse** dal rimborso;
+2. pubblica su `results_queue`:
+   ```json
+   {"type":"round_cancelled","round":R,"exclude_bet_ids":["<uuid>", "..."]}
+   ```
+3. Java rimborsa `findByRoundAndStatus(R, "PENDING")` **meno** `exclude_bet_ids` (regola R1).
+
+> [!NOTE]
+> AMQP non ha un timeout di inflight lato broker: la riconsegna avviene per il `reject(Tag, true)` che il worker emette allo scadere del proprio `inflight_timeout`, oppure per caduta del canale. Il `round` nel messaggio è quello **provvisorio** che `WalletController` assegna da `gameStateCache`: stima locale soggetta a lag al confine di round, ammessa **solo** in questo ramo di fallback — ed è la ragione per cui deve viaggiare esplicito.
+
+---
+
+### [MODIFY] [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)
+
+Alla riattivazione, il wheel **non** deve azzerare incondizionatamente le bet: prima consulta il checkpoint.
+
+```erlang
+handle_cast({complete_round, R, Ledger, Seg, Idx}, State) ->
+    %% Ramo A: chiude il round interrotto con l'esito catturato nel taglio
+    resolve_round(Seg, multiplier_of(Seg), Idx, Ledger, R),
+    erlang:send_after(?COOLDOWN, self(), new_round),
+    {noreply, State#state{phase = cooldown, round = R, bets = []}};
+```
+
+`settled_bet_ids` va ripopolato dai `snapshot_record` **a ogni elezione** (regola R3): è proprio dopo un crash che le riconsegne del broker arrivano, quindi un nuovo leader con il set vuoto è il caso in cui la deduplica serve di più.
+
+---
+
+### [MODIFY] Java Gateway — dispatch e riconciliazione per ledger
+
+#### 1. `GameResultListener.java` — dispatchare sul campo `type`
+
+Oggi il campo `type` è **completamente ignorato**: qualunque messaggio su `results_queue` viene passato a `PayoutListener` come se fosse un risultato di round.
 
 ```java
 @RabbitListener(queues = "results_queue")
 public void receiveGameResult(String message) {
-    // ... existing parsing ...
-    
-    if (message.contains("\"type\":\"round_cancelled\"")) {
-        // Dealer crashed — refund all PENDING bets
-        List<Bet> pendingBets = betRepository.findByStatus("PENDING");
-        for (Bet bet : pendingBets) {
-            Player player = playerRepository.findByUsername(bet.getUsername()).orElse(null);
-            if (player != null) {
-                player.setBalance(player.getBalance().add(bet.getAmount()));
-                playerRepository.save(player);
-            }
-            bet.setStatus("REFUNDED");
-            bet.setPayout(bet.getAmount());
-            betRepository.save(bet);
-        }
-        // Notify all connected clients via WebSocket
-        messagingTemplate.convertAndSend("/topic/game-results", 
-            "{\"type\":\"round_cancelled\",\"reason\":\"dealer_crash\",\"message\":\"Round cancelled - bets refunded\"}");
-        return;
+    JsonNode root = objectMapper.readTree(message);
+    String type = root.path("type").asText("result");
+
+    switch (type) {
+        case "result"         -> payoutListener.processPayouts(message);
+        case "round_ledger"   -> ledgerListener.processLedger(root);
+        case "round_cancelled"-> ledgerListener.cancelRound(root);
+        case "bet_rejected"   -> ledgerListener.rejectBet(root);
+        default -> log.warn("Tipo di messaggio sconosciuto: {}", type);
     }
-    
-    // ... existing result processing ...
+    gameStateCache.setLastResult(message);
+    messagingTemplate.convertAndSend("/topic/game-results", message);
 }
 ```
+
+#### 2. [NEW] `rabbitmq/LedgerListener.java` — implementa R1 e R2
+
+`@Transactional`:
+- per ogni `bet_id` nel ledger con `Bet` `PENDING`: setta `Bet.round = R`, lascia `PENDING`;
+- per ogni `bet_id` nel ledger con `Bet` già `REFUNDED` (caso R2): **non** riaprire, **non** pagare; loggare `replay_after_refund` e chiudere in stato terminale;
+- per ogni `Bet` `PENDING` con `round = R` **assente** dal ledger: `REFUNDED` + accredito saldo, idempotente sul `betId`.
+
+#### 3. [NEW] handler `bet_rejected` — rimborso puntuale
+
+`@Transactional`: `findByBetId(id)`, e **solo se** `PENDING` → `REFUNDED` + accredito. L'idempotenza è la guardia sullo stato stesso: una riconsegna del messaggio trova la bet già `REFUNDED` e non fa nulla. È la sostituzione **deterministica** del match per importo di `RefundListener`, fragile per costruzione perché due puntate di pari importo su segmenti diversi sono indistinguibili.
+
+#### 4. handler `round_cancelled`
+
+Rimborsa `findByRoundAndStatus(R, "PENDING")` **meno** `exclude_bet_ids` (regola R1).
+
+> [!CAUTION]
+> Va **rimosso** il `findByStatus("PENDING")` globale previsto dalla stesura originale: rimborsa anche bet di round estranei.
+
+#### 5. `PayoutListener.java` — per round e per `bet_id`
+
+`findByRoundAndStatus(round, "PENDING")` al posto della scansione globale; match per `bet_id` invece che per `username`; via l'`it.remove()`, che era una toppa alla mancanza di un id (FIX 0.1.4).
+
+#### 6. `RefundListener.java` — rimosso
+
+Classe e coda `refunds_queue` spariscono: la funzione è assorbita dall'handler `bet_rejected`. Togliere `refunds_queue` da `?QUEUES` in `rabbitmq_manager.erl` e il bean `refundsQueue` da `GatewayApplication.java`.
+
+> [!WARNING]
+> **Prerequisito d'ordine**: il percorso UNDO deve **già** passare da `bet_rejected` (Fase 3, correzione #4) prima di rimuovere la coda. Altrimenti l'utente annulla, le bet spariscono dalla ruota e i soldi non tornano — regressione funzionale silenziosa.
+
+#### 7. Rimuovere i `catch` che inghiottono le eccezioni
+
+In `PayoutListener` e `RefundListener`: essendo i metodi `@Transactional`, l'eccezione catturata **non provoca rollback** e i `save` parziali vengono committati.
 
 ---
 
 ### [MODIFY] Frontend — `app.js`
 
-Handle the `round_cancelled` event on the WebSocket:
-
 ```javascript
-// Inside the /topic/game-results subscription handler
+// Dentro la subscription a /topic/game-results
 if (data.type === 'round_cancelled') {
-    showNotification('⚠️ Round cancelled — dealer node crashed. Your bets have been refunded.', 'warning');
-    // Reset UI to waiting state
+    showNotification('⚠️ Round annullato — il nodo dealer è caduto. Le puntate non giocate sono state rimborsate.', 'warning');
     resetBettingUI();
-    fetchBalance();  // Refresh wallet balance (refund should be credited)
+    fetchBalance();
     return;
+}
+if (data.type === 'round_ledger') {
+    return;  // il ledger è per la riconciliazione lato server, non per la UI
 }
 ```
 
@@ -1683,93 +1894,124 @@ if (data.type === 'round_cancelled') {
 
 ## Phase 6: Integration Testing & Startup Scripts
 
-### [NEW] Start scripts
+### Avvio del cluster a 3 nodi
 
-Create startup scripts for the 3-node cluster:
+Le istruzioni operative complete (cmd.exe e PowerShell) sono in [istruzioni.txt](istruzioni.txt), sezione «CLUSTER ERLANG — 3 NODI». In sintesi, da `erlang-engine/game_engine`:
 
-#### `start_node1.sh` (or `.bat` for Windows)
 ```batch
-@echo off
-cd erlang-engine\game_engine
 set ERL_FLAGS=-sname game1@localhost -setcookie crazytime
-call ..\..\rebar3 shell
+escript ..\rebar3 shell
 ```
 
-#### `start_node2.sh`
-```batch
-@echo off
-cd erlang-engine\game_engine
-set ERL_FLAGS=-sname game2@localhost -setcookie crazytime
-call ..\..\rebar3 shell
-```
-
-#### `start_node3.sh`
-```batch
-@echo off
-cd erlang-engine\game_engine
-set ERL_FLAGS=-sname game3@localhost -setcookie crazytime
-call ..\..\rebar3 shell
-```
+ripetuto con `game2` e `game3` in altri due terminali.
 
 > [!NOTE]
-> Per-node configuration (which peers to connect to) is set via `game_engine.app.src` env or can be overridden with `-game_engine peer_nodes "['game2@localhost','game3@localhost']"` on the command line.
+> Serve `rebar3 shell`, non `erl` diretto: su Windows il glob `_build/default/lib/*/ebin` non espande e i moduli non vengono trovati. La lista dei peer sta in `game_engine.app.src` (`peer_nodes` contiene **tutti** i nodi, `cluster_manager` filtra il proprio); si può sovrascrivere con `-game_engine peer_nodes "['game2@localhost','game3@localhost']"`.
+
+**Verifica del cluster** (da qualsiasi shell):
+```erlang
+nodes().                                %% nodi connessi (kernel)
+cluster_manager:get_connected_nodes().  %% stessa cosa via API
+cluster_manager:get_participants().     %% partecipanti allo snapshot (Fase 2 estesa)
+leader_election:get_leader().           %% chi e' il dealer
+mnesia:dirty_last(snapshot_record).     %% ultimo checkpoint replicato
+```
+
+> [!WARNING]
+> Durante i test di partizione, una shell distribuita attaccata al cluster **compare in `nodes()`** e verrebbe contata nel quorum e fra i partecipanti allo snapshot. Usare `-hidden`, oppure restare fuori dal cluster e passare da `rpc:call/4`. È il motivo per cui `has_quorum/0` e `get_participants/0` intersecano con la lista statica dei nodi configurati.
+
+---
+
+### Unit test
+
+- **`cl_recorder`** (funzioni pure, banali da testare): il primo marker apre i canali giusti; un marker successivo chiude solo il proprio; `on_app_msg` accoda solo sui canali aperti; `is_complete` scatta esattamente quando tutti i canali sono chiusi.
+- `rebar3 eunit` per l'engine, `mvn test` per il gateway.
 
 ---
 
 ### Integration Test Checklist
 
+> [!CAUTION]
+> La riga originale *«Snapshot during "No more bets" → Snapshot log shows consistent state capture»* è stata rimossa perché **non falsificabile**: quel log si stampa anche con i canali vuoti, cioè anche quando lo snapshot non sta catturando nulla. I test qui sotto sono scritti per poter **fallire**.
+
+**Precondizione per i test di distribuzione**: abbassare temporaneamente `prefetch` da 10 a 1 in `game_engine.app.src`. Con 10, un burst breve può finire quasi tutto sul primo consumer con credito disponibile e far sembrare rotto un refactoring corretto. In esercizio si torna a 10.
+
 | Test Case | Expected Result |
 |-----------|----------------|
-| Start 3 nodes sequentially | All nodes connect, leader elected (highest name wins) |
-| Place bets via gateway | Bets accepted by leader, refused by standby nodes |
-| Complete a full round (spin + payout) | Results published to `results_queue`, Java processes payouts |
-| Kill the leader node (Ctrl+C) | Remaining nodes detect `nodedown`, Bully election triggers, new leader starts fresh round |
-| Verify bet refund after crash | All `PENDING` bets in Java DB get `REFUNDED`, player balances restored |
-| Snapshot during "No more bets" | Snapshot log shows consistent state capture across nodes |
-| Restart killed node | Node reconnects to cluster, detects existing leader, stays standby |
-| Kill leader during minigame | Refund issued, new leader starts from clean betting phase |
+| Avvio dei 3 nodi in qualsiasi ordine | Cluster formato, leader eletto (vince il nome più alto), `peer_nodes` filtrato correttamente |
+| Bootstrap Mnesia, nodi avviati **uno alla volta** | Il 2° e il 3° passano dal ramo `add_table_copy`; riavviando un secondario, `mnesia:table_info(snapshot_record, disc_copies)` lo elenca ancora. Se non lo elenca, manca la `change_table_copy_type(schema, ...)` |
+| **Nessun requeue a vuoto** | Con traffico di bet, i log degli standby non mostrano rifiuti/riconsegne continue: la clausola `reject` scatta solo con `leader = undefined` |
+| Bet piazzate da 3 browser durante `betting` | Distribuite sui 3 worker (visibile nei log per-nodo), tutte accettate dal wheel del leader |
+| **Comandi non-bet consumati da uno standby** | Ripetere `minigame_choice`, `UNDO_BETS` e `force_segment` finché i log mostrano che li ha presi un worker **non** sul leader (con 3 nodi capita ~2 volte su 3). Effetto identico a quando li prende il leader. Se una scelta sparisce in silenzio, manca l'instradamento della Fase 3 |
+| **UNDO durante `minigame`** | Il worker non crasha e non va in timeout: `undo_bets` è un `cast`, non una `call` verso un wheel bloccato fino a 10 s |
+| **UNDO, saldo accreditato** | Un `bet_rejected` con `"reason":"undo"` per **ogni** `bet_id` annullato, saldo riaccreditato per intero. Protegge dalla regressione della rimozione di `refunds_queue` |
+| **Canali non vuoti** — bet negli ultimi 200 ms della fase betting | Il log dello snapshot mostra `in_flight_bets > 0` su almeno un canale. **È il test che falsifica la vacuità denunciata dall'analisi**: se resta sempre 0, la riscrittura non ha prodotto canali reali. Forzabile con un `timer:sleep/1` nel worker sotto flag di debug |
+| Ledger su `results_queue` | `type:"round_ledger"` con i `bet_id` di **tutte** le bet, incluse quelle in transito |
+| Bet in transito | Presente nel ledger **e** pagata correttamente; nessun rimborso |
+| Bet piazzata dopo la chiusura del taglio | `rejected`, assente dal ledger, `REFUNDED`, **mai** `WON` |
+| Due bet di pari importo su segmenti diversi | Nessuno scambio di attribuzione (verifica diretta contro il vecchio match per importo) |
+| **Kill del leader dopo il gong, prima del payout** | Nuovo leader eletto, legge `snapshot_record` da Mnesia, **completa** il round con il vincitore del taglio. Nessun rimborso, nessun round perso |
+| **Kill del leader durante `betting`** | Nessun checkpoint → `round_cancelled` con i soli `bet_id` del round R; le bet non ackate rientrano dal broker nel round successivo. **`Σ wallet` non cala**, bet di round precedenti non toccate |
+| Kill di un worker standby durante lo snapshot | Snapshot concluso in `degraded` entro 5 s, ledger comunque pubblicato e deterministico |
+| Kill del collector `snapshot` durante il taglio | `{cl_abort, _}` scatta sui partecipanti entro 10 s; nessun processo resta in registrazione |
+| **Rimborso + replay della stessa bet** (R1) | Nessuna bet è contemporaneamente `REFUNDED` in Java e presente nel ledger di R+1. Se fallisce, `exclude_bet_ids` non funziona |
+| **Replay dopo rimborso** (R2, caso residuo) | Uccidere leader **e** un worker insieme: la bet di quel worker non finisce in `exclude_bet_ids`, viene rimborsata, riappare nel ledger di R+1. Atteso: log `replay_after_refund`, bet **non** pagata, `Σ wallet` invariato |
+| **Riconsegna cross-round** (R3) | Uccidere il worker dopo che il wheel ha accettato la bet e pubblicato il ledger di R, ma prima dell'ack. Atteso: il wheel la trova in `settled_bet_ids`, risponde `accepted` **senza rigiocarla**, il ledger di R+1 non la contiene. Se compare in due ledger, la deduplica guarda solo `bets` |
+| Riconsegna del messaggio `bet_rejected` | La bet è già `REFUNDED`: nessun secondo accredito |
+| **Partizione 2-1 isolando il LEADER in carica** | Il vecchio leader si autoretrocede da `node_down/1` entro il tempo di rilevazione. **Un solo ledger pubblicato.** Se continua a pubblicare, la guardia è nel posto sbagliato |
+| Partizione 2-1 isolando uno standby | La minoranza non elegge un leader; i suoi worker fanno `reject{requeue=true}` e le bet vengono servite dalla maggioranza |
+| Riconnessione dopo la partizione | `{inconsistent_database, running_partitioned_network, _}` **è normale** e va solo loggato: Mnesia lo emette alla rilevazione della partizione, non della divergenza. Ciò che si verifica è l'assenza di **divergenza**: esattamente una scrittura di `snapshot_record` e un `round_ledger` per round |
+| Nessuna bet orfana | A gioco fermo, `SELECT * FROM bets WHERE status='PENDING'` deve tornare **vuota** |
+| Invariante di conservazione | Su snapshot consecutivi: `Σ wallet + Σ bet_bloccate + Σ payout_in_volo` costante |
+| Restart di un nodo ucciso | Rientra nel cluster, riceve `{set_leader, _}`, resta standby, riprende a consumare bet |
 
 ---
 
 ## Summary of All Files
 
-### New Files (4 — Phases 1–4)
+### New Files (5)
 | File | Type | Purpose |
 |------|------|---------|
-| `rabbitmq_manager.erl` | gen_server | ✅ **FATTO** — connessione/canali AMQP, `publish/2` via ETS, `subscribe/2` con PID del consumer, `ack/1`, riconnessione automatica |
-| `cluster_manager.erl` | gen_server | ✅ **FATTO** — discovery nodi con `net_adm:ping`, 🔧 `monitor_nodes(true, [{node_type, all}])`, reconnect periodico, chiamate a `leader_election` wrappate in `try/catch` |
-| `leader_election.erl` | gen_server | Bully Algorithm, role assignment (leader/standby) |
-| `snapshot.erl` | gen_server | Chandy-Lamport consistent snapshot at "No more bets" |
+| `rabbitmq_manager.erl` | gen_server | ✅ **FATTO** — connessione/canali AMQP, `publish/2` via ETS, `subscribe/2` con PID del consumer, `ack/1`, `reject/2`, riconnessione automatica |
+| `cluster_manager.erl` | gen_server | ✅ **FATTO** — discovery con `net_adm:ping`, `monitor_nodes(true, [{node_type, all}])`, reconnect periodico. 🔧 Restano `configured_nodes/0`, `get_participants/0`, bootstrap Mnesia, delega a `node_down/1` |
+| `leader_election.erl` | gen_server | ✅ **FATTO** — Bully Algorithm, ruoli leader/standby. 🔧 Restano guardia di quorum, `{set_leader, N}`, rimozione dei cast al worker |
+| `cl_recorder.erl` | modulo puro | Logica Chandy-Lamport lato partecipante, condivisa da `wheel_process` e `worker` |
+| `snapshot.erl` | gen_server | **Collector** del taglio: congela i partecipanti, raccoglie le porzioni, persiste su Mnesia, pubblica il ledger. Non è un partecipante |
+| tabella `snapshot_record` | Mnesia | `ordered_set` con chiave `{Round, Initiator}`, `disc_copies` replicate: checkpoint del round e audit trail |
 
-### Modified Files (Phase 0 Bug Fixes — 12 files)
+### Modified Files (Phase 0 Bug Fixes)
 | File | Changes |
 |------|---------|
-| `WalletController.java` | Add `@Transactional`, pessimistic locking, phase check, admin-only force-result |
-| `PayoutListener.java` | Add `@Transactional`, fix duplicate payout, null-safe JSON access |
-| `RefundListener.java` | Add `@Transactional`, mark bets as `REFUNDED` |
-| `GameResultListener.java` | Replace regex `extractField` with Jackson |
-| `GameController.java` | Null checks + Jackson for JSON serialization |
-| `GameStateCache.java` | Atomic state updates via immutable record |
-| `AuthInterceptor.java` | UTF-8 encoding |
-| `PlayerRepository.java` | Add `findByUsernameForUpdate` with `@Lock` |
-| `wheel_process.erl` | Catch-all `segment_type`, safe `maps:get/3`, charlist JSON fix, `find_segment_index` fix |
-| `worker.erl` | Remove redundant `inets:start()`, escape JSON strings |
-| `cashhunt.erl` | Robust `parse_cell_index` for all input types |
-| `crazytime.erl` | 120° flapper spacing, case-insensitive choice matching |
-| `pachinko.erl` | Max drop cap, O(N) list building |
-| `app.js` | CashHunt default choice fix, CrazyTime dedup, logout server call, cache bust fix, div/0 fix |
+| `WalletController.java` | `@Transactional`, pessimistic locking, phase check, force-result admin-only, **`bet_id` UUID + Jackson (FIX 0.1.14)** |
+| `PayoutListener.java` | `@Transactional`, fix duplicate payout, accesso JSON null-safe |
+| `RefundListener.java` | `@Transactional`, marcatura `REFUNDED` (classe poi **rimossa** in Fase 5) |
+| `GameResultListener.java` | Jackson al posto delle regex |
+| `GameController.java` | Null check + Jackson |
+| `GameStateCache.java` | Aggiornamenti atomici via record immutabile |
+| `AuthInterceptor.java` | Encoding UTF-8 |
+| `PlayerRepository.java` | `findByUsernameForUpdate` con `@Lock` |
+| `Bet.java` / `BetRepository.java` | **`betId` univoco, `findByBetId`, `findByRoundAndStatus` (FIX 0.1.14)** |
+| `wheel_process.erl` | Catch-all `segment_type`, `maps:get/3`, charlist JSON, `find_segment_index` |
+| `worker.erl` | Rimozione `inets:start()`, escaping JSON |
+| `cashhunt.erl` / `crazytime.erl` / `pachinko.erl` | Parser robusto, flapper a 120°, cap sulle ricorsioni |
+| `app.js` | CashHunt default choice, CrazyTime dedup, logout server-side, cache bust, div/0 |
 
-### Modified Files (Phases 1–6 — 8 files)
+### Modified Files (Phases 1–6)
 | File | Changes |
 |------|---------|
 | `rebar.config` | ✅ **FATTO** — `{amqp_client, "4.3.4"}` (🔧 non 3.12.14: incompatibile con OTP 28) |
-| `game_engine.app.src` | ✅ Fasi 1-2 **FATTE** — `amqp_client` aggiunto, `inets` rimosso, `rabbitmq_manager` + `cluster_manager` registrati, config broker + `peer_nodes` in `env`. Resta da aggiungere `leader_election` (Fase 3) |
-| `game_engine_sup.erl` | ✅ Fasi 1-2 **FATTE** — `rest_for_one` + `rabbitmq_manager` + `cluster_manager` come primi due figli. Restano 2 figli da aggiungere (Fasi 3-4: `leader_election`, `snapshot`) |
-| `wheel_process.erl` | ✅ Fase 1 **FATTA** — `publish_to_queue/2` ora usa AMQP. Restano flag `active`, cast `activate/deactivate`, snapshot, `get_bets` (Fasi 3-4) |
-| `worker.erl` | ✅ Fase 1 **FATTA** — polling HTTP rimosso, 🔧 il worker è consumer diretto con **ack manuale**. Resta da aggiungere il flag `active` (Fase 3) |
-| `GameResultListener.java` | Handle `round_cancelled` message type for crash recovery refunds |
-| `app.js` | Handle `round_cancelled` WebSocket event |
-| `istruzioni.txt` | Update with multi-node startup instructions |
+| `game_engine.app.src` | ✅ Fasi 1-3 **FATTE** — `amqp_client`, `inets` rimosso, processi registrati, config broker + `peer_nodes`. 🔧 Restano `mnesia` fra le `applications` e `snapshot` fra i `registered` |
+| `game_engine_sup.erl` | ✅ Fasi 1-3 **FATTE** — `rest_for_one` con `rabbitmq_manager`, `cluster_manager`, `leader_election` come primi tre figli. 🔧 Resta `snapshot` come **ultimo** figlio |
+| `cluster_manager.erl` | 🔧 Fase 2 estesa — due liste esposte, bootstrap Mnesia, `mnesia:subscribe(system)`, delega a `leader_election:node_down/1` |
+| `leader_election.erl` | 🔧 Fase 3 — quorum in due punti, `{set_leader, N}`, `apply_role/1` non tocca più il worker, recovery dal checkpoint |
+| `wheel_process.erl` | ✅ Fasi 1-3 **FATTE** — AMQP, flag `active`, `activate`/`deactivate`. 🔧 Restano stato del round nel record, `{bet, _}` asincrona con dedup, trigger del taglio, `bet_rejected`, `complete_round` |
+| `worker.erl` | ✅ Fasi 1-3 **FATTE** — AMQP con ack manuale, consumer su ogni nodo. 🔧 Restano rimozione del flag `active`, `{set_leader, N}`, instradamento al leader di **tutti** i percorsi, ack differito con `inflight` |
+| `GameResultListener.java` | Dispatch sul campo `type` (oggi ignorato) verso i 4 handler |
+| `LedgerListener.java` | **NUOVO** — regole R1/R2, riconciliazione per round e per `bet_id` |
+| `PayoutListener.java` | Query per round + match per `bet_id` |
+| `RefundListener.java` | **Rimosso** insieme a `refunds_queue` (solo dopo che l'UNDO passa da `bet_rejected`) |
+| `app.js` | Gestione di `round_cancelled` |
+| `istruzioni.txt` | ✅ **FATTO** — istruzioni per il cluster a 3 nodi |
 
 ---
 
@@ -1777,31 +2019,40 @@ call ..\..\rebar3 shell
 
 ```mermaid
 graph TD
-    Z["Phase 0: Bug Fixes"] --> A["Phase 1: AMQP Client ✅"]
+    Z["Phase 0: Bug Fixes<br/>+ bet_id UUID"] --> A["Phase 1: AMQP Client ✅"]
     A --> B["Phase 2: Multi-Node Cluster ✅"]
-    B --> C["Phase 3: Bully Leader Election"]
-    C --> D["Phase 4: Chandy-Lamport Snapshot"]
-    D --> E["Phase 5: Fault Tolerance"]
+    B --> C["Phase 3: Bully Election ✅"]
+    C --> R["🔧 RETROFIT<br/>worker attivo ovunque, set_leader"]
+    R --> P["Prerequisiti<br/>stato del round, cast + ack differito"]
+    P --> M["Phase 2 estesa<br/>Mnesia + partecipanti"]
+    M --> Q["Quorum<br/>anti split-brain"]
+    Q --> D["Phase 4: Chandy-Lamport 🔧"]
+    D --> J["UC2 Java<br/>dispatch + LedgerListener"]
+    J --> E["Phase 5: Fault Tolerance 🔧"]
     E --> F["Phase 6: Integration Testing"]
 ```
 
 > [!CAUTION]
-> **Do NOT skip phases or implement them out of order.** Phase 0 stabilizes the codebase. Each subsequent phase depends on the previous one. For example, leader election (Phase 3) requires cluster_manager (Phase 2), which requires AMQP (Phase 1) to be working for message flow.
+> **Il retrofit viene prima di tutto.** Finché `apply_role/1` disattiva il worker sugli standby, l'ingestione resta su un solo nodo, i canali dello snapshot restano vuoti e la Fase 4 torna a essere l'artefatto ridondante che la riscrittura elimina.
+>
+> **Il quorum viene prima della Fase 4.** Senza, gli `snapshot_record` concorrenti di due leader corrompono Mnesia al primo test di partizione.
+>
+> **`bet_id` viene prima dell'ack differito.** Senza, il differimento introduce puntate duplicate invece di proteggerle.
 
 ---
 
 ## Verification Plan
 
 ### Automated Tests
-- `rebar3 compile` — Verify all Erlang code compiles without errors after each phase.
-- `rebar3 eunit` — Run any existing unit tests (if present).
-- `mvn test` — Run Java gateway unit tests after changes.
+- `rebar3 compile` — dopo ogni fase.
+- `rebar3 eunit` — in particolare i test puri di `cl_recorder`.
+- `mvn test` — gateway Java.
 
 ### Manual Verification
-1. **Phase 0**: Run existing game loop end-to-end. Place bets, complete rounds, verify payouts. Test UNDO during betting, test bets after "No more bets" (refund + status update). Test concurrent bet placement.
-2. **Phase 1** ✅: verificata — compilazione, avvio con e senza broker, consumo di una bet con ack, stop/restart del broker a caldo con ri-sottoscrizione automatica. Manca solo il giro end-to-end con il gateway Java (bet → payout).
-3. **Phase 2-3**: Start 3 nodes, verify cluster formation and leader election in logs.
-4. **Phase 4**: Observe snapshot logs when betting closes. Verify bets are correctly locked.
-5. **Phase 5**: Kill leader during different phases (betting, spinning, minigame), verify refund and recovery.
-6. **Phase 6**: Full end-to-end test with all 3 nodes, frontend, and multiple concurrent players.
-
+1. **Phase 0**: giro end-to-end, UNDO durante `betting`, bet dopo "No more bets" (rimborso + stato aggiornato), piazzamento concorrente.
+2. **Phase 1** ✅: verificata — compilazione, avvio con e senza broker, consumo di una bet con ack, stop/restart del broker a caldo con ri-sottoscrizione automatica.
+3. **Phase 2** ✅: verificata — 3 nodi che si trovano in qualsiasi ordine di avvio, reconnect periodico. 🔧 Da verificare: bootstrap Mnesia e replica del checkpoint su un nodo standby.
+4. **Phase 3** ✅: verificata — elezione del leader, ruoli assegnati. 🔧 Da verificare dopo il retrofit: comandi non-bet consumati da uno standby, partizione 2-1 con il leader isolato.
+5. **Phase 4**: il test che conta è **«canali non vuoti»** (`in_flight_bets > 0`). Se resta a zero, lo snapshot non sta catturando nulla e la riscrittura non ha raggiunto il suo scopo.
+6. **Phase 5**: kill del leader nelle diverse fasi, verificando che il ramo A **completi** il round e il ramo B rimborsi **solo** le bet realmente perse (`Σ wallet` invariato).
+7. **Phase 6**: sessione completa a 3 nodi con più giocatori concorrenti.
