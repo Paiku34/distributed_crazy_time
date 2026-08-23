@@ -4,6 +4,20 @@ Sintesi ad alto livello delle modifiche descritte in [snapshot_implementation_pl
 
 ---
 
+## Stato del codice — da dove si parte
+
+> **Aggiornato al commit `6ef3b73`.** La prima stesura di questo riassunto era scritta sul codice della sola **Fase 1** (AMQP nativo). Nel frattempo sono state implementate anche la **Fase 2** (cluster manager) e la **Fase 3** (elezione del leader con algoritmo Bully), ma **seguendo il piano originale**, cioè senza applicare prima le correzioni strutturali che questo piano richiedeva. Parte di quel lavoro va quindi corretta, non aggiunta.
+
+Tre categorie:
+
+- **Già fatto e utilizzabile così com'è**: la connessione AMQP con pubblicazione lock-free, l'ack manuale e — prerequisito importante — la **possibilità di rifiutare un messaggio** rimettendolo in coda, che nella prima stesura figurava fra le cose da aggiungere. Inoltre **ogni nodo è già sottoscritto alla coda delle scommesse**: la topologia a *competing consumers* esiste già a livello di broker, quindi il lavoro da fare è più piccolo del previsto.
+- **Da correggere perché scritto secondo il piano vecchio**: l'elezione attiva e disattiva **anche il worker**, mentre questo piano richiede l'opposto (worker attivo ovunque, solo il processo della ruota è esclusivo del leader); e il worker in standby **rifiuta ogni messaggio rimettendolo in coda**, producendo un rimbalzo continuo fra broker e nodi passivi finché il messaggio non capita sul leader.
+- **Ancora da scrivere**: tutto il resto — identificativo univoco di bet, ack differito, persistenza su Mnesia, quorum, snapshot vero e proprio, riconciliazione lato Java.
+
+Un chiarimento che cambia un'argomentazione della prima stesura: oggi il worker inoltra la scommessa al processo della ruota con una **chiamata sincrona locale** e conferma al broker solo dopo la risposta. La finestra di perdita descritta più avanti quindi **non esiste ancora**: verrebbe *introdotta* dal passaggio a comunicazione asincrona, ed è l'ack differito a chiuderla prima che si apra.
+
+---
+
 ## Obiettivo e idea di fondo
 
 Lo snapshot previsto originariamente dalla Fase 4 era **ridondante**: catturava uno stato già interamente disponibile in locale sul leader, su canali vuoti per costruzione, e nessuno ne consumava il risultato.
@@ -15,12 +29,24 @@ Il rifacimento nasce da una sola idea: **spostare i marker sui canali applicativ
 
 ### Architettura risultante
 
-- L'ingestione delle bet diventa **distribuita**: tutti i nodi consumano da `bets_queue` come *competing consumers* e inoltrano le puntate in modo **asincrono** al wheel del leader.
+- L'ingestione delle bet diventa **distribuita**: tutti i nodi consumano dalla coda delle scommesse come *competing consumers* e inoltrano le puntate in modo **asincrono** al wheel del leader.
 - Ne risulta un grafo **fortemente connesso** (stella bidirezionale) con canali asincroni e FIFO: il canale `worker → wheel` contiene le bet in transito al momento del gong — l'unica cosa che la specifica chiede di catturare e l'unica non disponibile in locale da nessuna parte.
 - **Partecipanti allo snapshot** sono il processo wheel e gli N worker. Il modulo `snapshot` diventa un puro **collector**: assegna l'id, congela la lista dei partecipanti, arma il timeout, raccoglie le porzioni, persiste e pubblica il ledger. Non interroga mai i partecipanti, sono loro a fare push.
 - Gli snapshot vengono persistiti su **Mnesia replicata**, colmando anche il divario con il diagramma architetturale della specifica, dove Mnesia compare ma non era mai stata usata.
 - **Costo in latenza nullo**: lo snapshot parte al gong con un budget di 5 secondi, mentre la risoluzione del round è già schedulata più tardi per l'animazione della ruota.
 - **Ordine importante nel tick del gong**: prima si estrae il segmento vincente, poi si avvia lo snapshot. Così il taglio cattura insieme puntate ed esito, e un nuovo leader eletto dopo un crash ha entrambi.
+
+---
+
+## Fase 0 — Retrofit di ciò che le Fasi 2-3 hanno già scritto
+
+Il passo che rimette il codice sulla traiettoria di questo piano. Finché non è fatto, tutto il resto lavora contro un'architettura che lo contraddice.
+
+- **L'elezione non deve più attivare e disattivare il worker.** L'ingestione delle bet è replicata su tutti i nodi; solo il processo della ruota resta esclusivo del leader. I due comandi verso il worker vanno rimossi e sostituiti dalla **comunicazione dell'identità del leader corrente**, propagata sia da chi vince l'elezione sia da chi riceve l'annuncio del nuovo coordinatore.
+- **Il flag «attivo/passivo» del worker sparisce**, e con esso il rifiuto sistematico dei messaggi sui nodi passivi. Il discriminante non è più il ruolo del nodo ma la presenza di un leader noto: si rimette un messaggio in coda **solo quando nessuno può servirlo** (nessun leader eletto, o nodo finito nella minoranza di una partizione). Sparisce così anche il rimbalzo continuo fra broker e standby introdotto dalla Fase 3.
+- **Il cluster manager espone due nuove liste** (vedi Fase 2) e **delega all'elezione la decisione sulla caduta di un nodo**: oggi lancia un'elezione a ogni evento di topologia, incondizionatamente, mentre con il quorum quella rielezione non deve avvenire quando ci si trova nella minoranza. Il controllo va dove risiedono il ruolo corrente e il conteggio del quorum, cioè nel modulo di elezione.
+
+> Nota a margine, indipendente dallo snapshot ma resa visibile dal quorum: l'elezione registra se ne ha già una in corso ma non lo controlla mai, e il cluster manager ne lancia una a ogni nodo che si connette. Con tre nodi che partono insieme si ottiene una raffica di elezioni innocua ma rumorosa: vale la pena aggiungere la guardia mentre si tocca il modulo.
 
 ---
 
@@ -30,16 +56,16 @@ Modifiche indipendenti dallo snapshot, da fare per prime perché tutto il resto 
 
 - **Identificatore univoco di bet**: un `bet_id` UUID generato da Java, presente sia sul messaggio AMQP sia sull'entità persistita, mentre il numero di round resta assegnato in modo autoritativo da Erlang. È il prerequisito di tutto il resto e la correzione alla radice di bug finora affrontati solo per sintomo.
 - **Stato del round promosso nello stato del processo wheel**: oggi segmento vincente, indice e dettagli del minigioco vivono solo dentro messaggi temporizzati in volo. Senza questo, nessun recovery è possibile.
-- **Possibilità di rifiutare messaggi AMQP** (oltre al solo ack), esposta dal gestore della connessione: senza, il worker non ha modo di rimettere una bet in coda.
+- ✅ **Possibilità di rifiutare messaggi AMQP** (oltre al solo ack): **già disponibile** nel gestore della connessione. Resta l'unica avvertenza di sempre — il worker deve passare dal gestore e mai dal canale AMQP diretto, perché il canale cambia a ogni riconnessione e solo il gestore sa qual è quello valido.
 - **Comunicazione worker → wheel da sincrona ad asincrona**, con l'esito che torna indietro come messaggio dedicato.
 - **Ack differito** (vedi sotto) e **deduplica per `bet_id`**.
 - **Nuovo evento di rifiuto puntuale di una singola bet**, con il relativo handler lato Java, **incluso il percorso di annullamento puntate (UNDO)**, che deve passare da questo evento *prima* che venga rimossa la vecchia coda dei rimborsi.
 
 ### Durabilità: l'ack differito
 
-Oggi il worker consuma dalla coda, acka subito, e solo dopo inoltra al leader. Nella finestra fra l'ack e l'arrivo del messaggio la bet **non esiste in nessuno stato replicato**: è uscita dal broker, il wallet è già stato addebitato, e se il leader crasha in fase di puntata la bet è persa in silenzio — il giocatore ha pagato, il sistema non sa che esiste.
+Oggi il worker conferma al broker **dopo** una chiamata sincrona al processo della ruota, che gira sullo stesso nodo: la conferma significa già «il wheel ha deciso». Passando alla comunicazione asincrona cross-nodo, quella garanzia si perderebbe: fra la conferma e l'arrivo del messaggio la bet **non esisterebbe in nessuno stato replicato** — è uscita dal broker, il wallet è già stato addebitato, e se il leader crasha in fase di puntata la bet è persa in silenzio: il giocatore ha pagato, il sistema non sa che esiste.
 
-**Rimedio**: l'ack viene differito fino alla risposta del wheel, diventando la conferma che il wheel *ha deciso*, non che il worker *ha ricevuto*. Se il leader muore prima di rispondere, il broker riconsegna automaticamente i messaggi non ackati a un worker vivo e la bet entra nel round successivo — strettamente meglio di un rimborso. Il broker torna a essere il buffer durevole che è. Il rischio introdotto (riconsegna di una bet già accettata il cui ack si è perso) è coperto dalla deduplica per `bet_id`: senza l'UUID questo rimedio non sarebbe praticabile.
+**Rimedio**: l'ack viene differito fino alla risposta del wheel, conservando anche dopo il passaggio ad asincrono il significato che ha oggi. Se il leader muore prima di rispondere, il broker riconsegna automaticamente i messaggi non ackati a un worker vivo e la bet entra nel round successivo — strettamente meglio di un rimborso. Il broker torna a essere il buffer durevole che è. Il rischio introdotto (riconsegna di una bet già accettata il cui ack si è perso) è coperto dalla deduplica per `bet_id`: senza l'UUID questo rimedio non sarebbe praticabile.
 
 Il worker acquisisce inoltre un **timeout sulle bet in attesa di risposta**: allo scadere rimette la puntata in coda invece di perderla.
 
@@ -47,10 +73,13 @@ Il worker acquisisce inoltre un **timeout sulle bet in attesa di risposta**: all
 
 ## Fase 2 — Infrastruttura di cluster e persistenza
 
-- **Bootstrap di Mnesia** con join dinamico in due rami distinti (primo nodo che crea lo schema; nodo che si aggiunge a un cluster dove la tabella esiste già), sempre dopo la formazione del cluster. Il passo che si dimentica più spesso è la conversione dello schema su disco: senza, un nodo perde la propria copia a ogni riavvio, vanificando la persistenza.
+Il cluster manager esiste già: qui si tratta di estenderlo.
+
+- **Bootstrap di Mnesia** con join dinamico in due rami distinti (primo nodo che crea lo schema; nodo che si aggiunge a un cluster dove la tabella esiste già), sempre dopo la formazione del cluster — il punto d'aggancio naturale è lo stesso ritardo che oggi precede la prima elezione, mai l'avvio del processo. Il passo che si dimentica più spesso è la conversione dello schema su disco: senza, un nodo perde la propria copia a ogni riavvio, vanificando la persistenza. Va inoltre dichiarata la dipendenza da Mnesia nella configurazione dell'applicazione, oggi assente.
 - Il gestore del cluster espone due liste distinte:
   - la lista **ordinata e stabile dei nodi vivi**, che è quella che lo snapshot congela all'avvio del taglio;
   - la lista **statica dei nodi configurati**, che è il denominatore del quorum. Usare la lista dei nodi correntemente connessi renderebbe la guardia inutile, perché in partizione si riduce da sola.
+  Entrambe vanno **intersecate con l'elenco dei nodi configurati**: il monitoraggio include anche i nodi nascosti e le shell diagnostiche, che altrimenti regalerebbero quorum al lato sbagliato e diventerebbero partecipanti fantasma dello snapshot. La lista statica **non richiede nuova configurazione**: l'elenco completo dei tre nodi è già presente fra i parametri dell'applicazione, va solo riesposto includendo il nodo locale, che oggi viene filtrato all'avvio.
 - **Sottoscrizione agli eventi di sistema di Mnesia** con log rumoroso in caso di database inconsistente.
 - Va documentato che il checkpoint esiste **solo dopo il gong**: copre quindi il crash nelle fasi successive, mentre un crash in fase di puntata ricade sul percorso di riconciliazione (ack differito + annullamento selettivo). Le due protezioni sono complementari, nessuna basta da sola.
 
@@ -58,7 +87,7 @@ Il worker acquisisce inoltre un **timeout sulle bet in attesa di risposta**: all
 
 ## Fase 3 — Elezione del leader e quorum
 
-Modifica sostanziale rispetto al piano originale.
+Modifica sostanziale rispetto al piano originale, e **in parte correzione di codice già scritto** (vedi Fase 0).
 
 - **Il worker resta attivo su tutti i nodi**, non solo sul leader: l'ingestione delle bet è replicata, solo il processo wheel resta esclusivo del leader.
 - Il worker riceve dall'elezione l'identità del leader corrente e **instrada verso il leader tutti i percorsi dei messaggi in ingresso**, non solo le bet. È la conseguenza meno ovvia dell'ingestione distribuita e la più facile da dimenticare: comandi come la scelta del minigioco, l'annullamento delle puntate e i comandi del pannello dev, se consumati da uno standby, finirebbero al wheel dormiente di quel nodo e sparirebbero in silenzio — con 3 nodi, circa due volte su tre.
@@ -73,6 +102,8 @@ L'elezione scatta alla caduta di un nodo senza distinguere un **crash** da una *
 1. quando un nodo *sta per diventare* leader;
 2. quando un leader **già in carica** rileva la caduta di un nodo — questo è il punto che conta davvero, perché il leader isolato nella minoranza non ripassa mai dall'elezione e resterebbe attivo a produrre il ledger divergente.
 
+Una precisazione rispetto alla prima stesura: **la caduta dei nodi è rilevata dal cluster manager**, non dal modulo di elezione. Anziché duplicare la sottoscrizione agli eventi di rete, è il cluster manager a notificare l'elezione, che decide se rieleggere o autoretrocedersi.
+
 Il nodo che perde il quorum si autoretrocede a standby; i suoi worker, non avendo più un leader, rimettono le bet nel broker, che le farà servire dalla maggioranza. Nessuna bet persa, nessun ledger divergente, e con al più un leader nessuna scrittura concorrente su Mnesia.
 
 Due accorgimenti a corredo: la chiave dei record di snapshot include l'iniziatore, così due leader concorrenti produrrebbero record **distinti e diagnosticabili** invece di sovrascriversi in silenzio; e le inconsistenze di Mnesia vanno loggate esplicitamente.
@@ -86,10 +117,11 @@ Due accorgimenti a corredo: la chiave dei record di snapshot include l'iniziator
 Sostituisce integralmente la Fase 4 del piano originale. Cosa cambia:
 
 - **I marker viaggiano sui canali applicativi reali**, emessi dai worker e dal wheel, non fra istanze del modulo snapshot: è la correzione che rende l'algoritmo effettivamente Chandy-Lamport. Il marker deve partire dal processo applicativo stesso, così da condividere mailbox e ordine FIFO con i messaggi che deve delimitare.
-- Il modulo snapshot è un **collector**, non un partecipante, e viene avviato in modo asincrono.
-- La **lista dei partecipanti è congelata** all'avvio del taglio, una volta sola.
+- Il modulo snapshot è un **collector**, non un partecipante, e viene avviato in modo asincrono. Non interroga mai i partecipanti: sono loro a inviargli la propria porzione. Ne consegue che la funzione di lettura delle bet che il piano originale prevedeva di aggiungere al wheel **non va aggiunta** — sarebbe una chiamata sincrona verso un processo che durante il minigioco resta bloccato fino a 10 secondi, e farebbe cadere il collector per timeout.
+- La **lista dei partecipanti è congelata** all'avvio del taglio, una volta sola, e presa dal cluster manager anziché dall'elenco dei nodi connessi: quest'ultimo può cambiare fra l'invio dei marker e la verifica di completamento.
+- Viene finalmente **popolato lo stato dei canali**: nel piano originale il campo esisteva ma nessun handler vi accodava messaggi, il che è la dimostrazione formale della vacuità denunciata dall'analisi.
 - Sono aggiunti gli handler mancanti e un **timer di abort locale a ciascun partecipante**: se il collector muore, nessuno resta in registrazione per sempre.
-- Il collector diventa l'**ultimo figlio del supervisore**: con la strategia di ripartenza adottata, un suo crash non deve azzerare il round in corso.
+- Il collector diventa l'**ultimo figlio del supervisore**: con la strategia di ripartenza adottata, un suo crash non deve azzerare il round in corso. È l'unica modifica all'albero di supervisione, che per il resto resta quello attuale.
 
 ### Componenti
 
@@ -126,11 +158,15 @@ L'approccio «annulla il round e rimborsa tutto» viene sostituito da un percors
 - **Checkpoint presente e risultato non ancora pubblicato** → il nuovo leader **completa** il round: ricarica le bet dal ledger, riusa l'esito catturato nel taglio, calcola i payout e pubblica. Nessun rimborso.
 - **Nessun checkpoint** (crash durante la fase di puntata) → annullamento del **solo** round interessato, ma **non** di tutte le sue bet: il messaggio di annullamento porta con sé l'elenco delle bet da escludere (quelle che il broker riconsegnerà), e Java rimborsa solo le pendenti di quel round che non vi compaiono.
 
-Viene inoltre eliminato il rimborso globale su tutte le bet pendenti, che colpiva anche round estranei, e il wheel non azzera più incondizionatamente le bet alla riattivazione, ma consulta prima il checkpoint.
+Due dettagli del piano originale vanno corretti mentre si tocca questa fase: il frammento di recovery **reintroduce la disattivazione del worker** proprio nel momento in cui il nuovo leader si attiva, vanificando l'ingestione distribuita; e il flag «il leader precedente è crashato», tenuto nel dizionario di processo dell'elezione, va **sostituito** dalla lettura del checkpoint — un flag in memoria non sopravvive al riavvio del processo e soprattutto non dice *quale* round è stato interrotto, informazione indispensabile per annullare un solo round anziché tutti.
+
+Viene inoltre eliminato il rimborso globale su tutte le bet pendenti, che colpiva anche round estranei. Da notare che il reset incondizionato delle bet alla riattivazione del wheel, previsto dalla Fase 5 originale, **non è mai stato implementato**: la riattivazione conserva le bet. Non va quindi introdotto nella forma descritta là, ma direttamente in quella corretta — consultare prima il checkpoint.
 
 ---
 
 ## Fase 6 — Allineamento del gateway Java e del frontend
+
+Il gateway Java è rimasto **invariato** rispetto alla prima stesura di questo piano: tutto quanto segue è ancora interamente da fare.
 
 - **Entità e API**: nuovo campo identificativo univoco sulla bet, generato all'accettazione e incluso nel messaggio; ricerche per identificativo e per round + stato. Contestualmente, la costruzione del JSON passa a una serializzazione vera invece della concatenazione di stringhe (oggi l'username non viene mai escapato).
 - **Dispatch sul tipo di messaggio**, oggi completamente ignorato: qualunque messaggio in arrivo viene trattato come risultato di round. I quattro tipi (risultato, ledger, annullamento round, rifiuto puntuale) vanno instradati ai rispettivi handler.
