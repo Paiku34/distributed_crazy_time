@@ -16,16 +16,16 @@ Questo piano definisce le modifiche al codice e a `implementation_plan.md` per r
 ## Stato del codice — baseline di questo piano
 
 > [!IMPORTANT]
-> **Questo documento è stato riscritto sul codice reale al commit `6ef3b73`, e poi aggiornato dopo il retrofit.** Gli Step 1-7 di [ordine_implementazione.md](ordine_implementazione.md) — Blocchi **A e B** — sono stati **implementati e verificati** su cluster a 3 nodi con broker e gateway attivi: i punti relativi sono marcati ✅ qui sotto. La prima stesura era ancorata al codice della sola **Fase 1** (AMQP nativo). Nel frattempo sono state implementate anche la **Fase 2** (`cluster_manager.erl`) e la **Fase 3** (`leader_election.erl`) **seguendo la stesura originale** di `implementation_plan.md`, cioè senza applicare prima le correzioni strutturali che questo piano richiedeva. Parte del lavoro delle Fasi 2-3 va quindi **corretta**, non aggiunta: i punti interessati sono marcati inline con 🔧.
+> **Questo documento è stato riscritto sul codice reale al commit `6ef3b73`, e poi aggiornato dopo il retrofit.** Gli Step 1-8 di [ordine_implementazione.md](ordine_implementazione.md) — Blocchi **A, B e C** — sono stati **implementati e verificati** su cluster a 3 nodi con broker e gateway attivi: i punti relativi sono marcati ✅ qui sotto. La prima stesura era ancorata al codice della sola **Fase 1** (AMQP nativo). Nel frattempo sono state implementate anche la **Fase 2** (`cluster_manager.erl`) e la **Fase 3** (`leader_election.erl`) **seguendo la stesura originale** di `implementation_plan.md`, cioè senza applicare prima le correzioni strutturali che questo piano richiedeva. Parte del lavoro delle Fasi 2-3 va quindi **corretta**, non aggiunta: i punti interessati sono marcati inline con 🔧.
 
 | Componente | Stato |
 | :--- | :--- |
 | [rabbitmq_manager.erl](erlang-engine/game_engine/src/rabbitmq_manager.erl) | ✅ Fase 1 + `refunds_queue` rimossa da `?QUEUES`. `publish/2` lock-free via ETS, `subscribe/2` col PID del consumer, `ack/1`, `reject/2` ([:91-95](erlang-engine/game_engine/src/rabbitmq_manager.erl#L91-L95)), riconnessione automatica |
-| [cluster_manager.erl](erlang-engine/game_engine/src/cluster_manager.erl) | ✅ Fase 2 + retrofit. Discovery, `monitor_nodes(true, [{node_type, all}])`, reconnect, **`configured_nodes/0` e `get_participants/0`** (intersecate con la lista statica), delega a `leader_election:node_down/1`. ❌ manca il bootstrap Mnesia |
+| [cluster_manager.erl](erlang-engine/game_engine/src/cluster_manager.erl) | ✅ Completo. Discovery, `monitor_nodes(true, [{node_type, all}])`, reconnect, **`configured_nodes/0` e `get_participants/0`**, delega a `leader_election:node_down/1`, **bootstrap Mnesia** a due rami, `subscribe(system)`, `force_load_snapshots/0` |
 | [leader_election.erl](erlang-engine/game_engine/src/leader_election.erl) | ✅ Fase 3 + retrofit. Bully completo, `apply_role/1` che tocca **solo** il wheel, `broadcast_leader/1` con `{set_leader, N}`, **guardia di quorum** in `declare_victory/1` e `node_down/1`, guardia su `election_in_progress` |
 | [worker.erl](erlang-engine/game_engine/src/worker.erl) | ✅ consumer AMQP su **ogni** nodo, campo `leader`, instradamento al leader di **tutti** i percorsi, **ack differito** con `inflight` + timeout a 15 s, `bet_id` estratto dal JSON. ❌ restano gli handler dei marker |
 | [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl) | ✅ flag `active`, `{bet, _, FromNode}` asincrona con **deduplica intra-round**, `bet_rejected` per `bet_id`, **stato del round nel record** (`winner_segment`, `winner_index`, `timer_ref`, …). ❌ `settled_bet_ids`, marker e taglio |
-| [game_engine.app.src](erlang-engine/game_engine/src/game_engine.app.src) | ✅ `amqp_client`, config broker, `peer_nodes` con tutti e 3 i nodi ([:27](erlang-engine/game_engine/src/game_engine.app.src#L27)). ❌ `mnesia` assente da `applications` ([:7-12](erlang-engine/game_engine/src/game_engine.app.src#L7-L12)) |
+| [game_engine.app.src](erlang-engine/game_engine/src/game_engine.app.src) | ✅ `amqp_client` e **`mnesia`** fra le `applications`, `snapshot` fra i `registered`, config broker, `peer_nodes` con tutti e 3 i nodi |
 | Java gateway | ✅ `bet_id` UUID sull'entity e nel messaggio (Jackson), `findByBetId`/`findByRoundAndStatus`, **dispatch sul campo `type`**, `BetRejectionHandler` idempotente, `RefundListener` e `refundsQueue` rimossi. ❌ restano `LedgerListener`, `PayoutListener` per round, `round_cancelled` |
 
 ### Divergenze fra questo piano e il codice attuale
@@ -184,7 +184,7 @@ Le tre regole rendono ogni percorso deterministico e sono ciò che i test «Kill
 
 ---
 
-## Parte 4A — Correzioni al codice già scritto (Fasi 2-3) — ✅ APPLICATE (tranne Mnesia)
+## Parte 4A — Correzioni al codice già scritto (Fasi 2-3) — ✅ APPLICATE
 
 > 🔧 Questa sezione **sostituisce** quella che nella prima stesura descriveva modifiche testuali alle Fasi 2-3 di `implementation_plan.md`: quel codice ora esiste, quindi si tratta di modificarlo, non di riscrivere il piano.
 
@@ -197,7 +197,7 @@ Le tre regole rendono ogni percorso deterministico e sono ciò che i test «Kill
    ```
    Non serve la nuova chiave `env` `{nodes, [...]}` proposta in origine: `peer_nodes` ([app.src:27](erlang-engine/game_engine/src/game_engine.app.src#L27)) contiene già tutti e tre i nodi.
 2. ✅ **FATTA — `get_participants/0`** — lista **ordinata e stabile dei nodi vivi**, quella che lo snapshot congela all'avvio del taglio. Va **intersecata con `configured_nodes/0`**, per la stessa ragione del numeratore del quorum: `connected_nodes` viene popolata da `{nodeup, Node, _}` ([cluster_manager.erl](erlang-engine/game_engine/src/cluster_manager.erl)), che con `{node_type, all}` ([cluster_manager.erl](erlang-engine/game_engine/src/cluster_manager.erl)) include anche le shell diagnostiche. Una shell attaccata al cluster diventerebbe altrimenti un partecipante allo snapshot, e il taglio non si chiuderebbe mai (nessun `snapshot` gira su quella shell) fino al timeout di 5 s, marcando ogni snapshot come `degraded`.
-3. ❌ **DA FARE — Bootstrap Mnesia** — **dopo** la formazione del cluster, mai in `init/1`. Il punto d'aggancio naturale è un nuovo `handle_info(mnesia_bootstrap, ...)` schedulato insieme a `initial_election` ([cluster_manager.erl](erlang-engine/game_engine/src/cluster_manager.erl)), cioè dopo che `ping_peers` ([cluster_manager.erl](erlang-engine/game_engine/src/cluster_manager.erl)) ha avuto il tempo di connettere i peer.
+3. ✅ **FATTA — Bootstrap Mnesia** — **dopo** la formazione del cluster, mai in `init/1`. Il punto d'aggancio naturale è un nuovo `handle_info(mnesia_bootstrap, ...)` schedulato insieme a `initial_election` ([cluster_manager.erl](erlang-engine/game_engine/src/cluster_manager.erl)), cioè dopo che `ping_peers` ([cluster_manager.erl](erlang-engine/game_engine/src/cluster_manager.erl)) ha avuto il tempo di connettere i peer.
    Non si può usare `mnesia:create_schema(AllNodes)`: quella forma esige Mnesia **arrestata su tutti i nodi elencati**, condizione che non si verifica mai con nodi che si avviano progressivamente. Serve il join dinamico, in due rami distinti:
 
    **Primo nodo** (nessun peer raggiungibile con la tabella):
@@ -219,7 +219,7 @@ Le tre regole rendono ogni percorso deterministico e sono ciò che i test «Kill
    ok = mnesia:wait_for_tables([snapshot_record], 5000).
    ```
    `MasterNode` = un nodo qualsiasi già nel cluster che possiede la tabella; discriminare i due rami interrogando `mnesia:table_info(snapshot_record, disc_copies)` via `rpc:call/4` sui peer raggiungibili. La `change_table_copy_type` dello schema è il passo che si dimentica più spesso: senza, il nodo tiene lo schema in RAM e **perde la propria copia a ogni riavvio**, vanificando `disc_copies`.
-4. ❌ **DA FARE — `mnesia:subscribe(system)`** + log rumoroso su `{inconsistent_database, _, _}`.
+4. ✅ **FATTA — `mnesia:subscribe(system)`** + log rumoroso su `{inconsistent_database, _, _}`.
 5. ✅ **FATTA — `leader_election:node_down/1`** al posto di `maybe_start_election_on_nodedown/1` ([cluster_manager.erl](erlang-engine/game_engine/src/cluster_manager.erl)): la decisione «rieleggere o retrocedere» ha bisogno del ruolo corrente e del quorum, e vive quindi nell'elezione. Il `try/catch error:undef` che proteggeva la Fase 2 dalla mancanza del modulo ([cluster_manager.erl](erlang-engine/game_engine/src/cluster_manager.erl)) non serve più: `leader_election` esiste ed è nel supervisore.
 
 > [!NOTE]
@@ -406,7 +406,7 @@ L'unica modifica prevista su questo file arriva al passo 5 della §Parte 8: togl
   3. **solo sul leader**: `rabbitmq_manager:publish(<<"results_queue">>, LedgerJson)`;
   4. log con conteggi separati: `local_bets`, `in_flight_bets`, `degraded`.
 
-### [NEW] tabella Mnesia `snapshot_record`
+### [NEW] tabella Mnesia `snapshot_record` — ✅ CREATA (in `include/game_engine.hrl`)
 ```erlang
 -record(snapshot_record, {
     id,              %% chiave = {Round, Initiator} — vedi §Parte 2: due leader concorrenti
@@ -523,7 +523,7 @@ cd java-gateway && mvn test
 0. ✅ **FATTO — Retrofit delle Fasi 2-3 già implementate** (§Parte 4A): `configured_nodes/0` e `get_participants/0` su `cluster_manager`; rimozione di `activate`/`deactivate` del worker da `apply_role/1`; `{set_leader, N}` da `declare_victory/1` e da `handle_cast({coordinator, _})`; flag `active` del worker rimosso e clausole di delivery fuse su `leader =:= undefined`; `leader_election:node_down/1` al posto di `maybe_start_election_on_nodedown/1`. È il passo che rimette il codice sulla traiettoria di questo piano; finché non è fatto, i passi successivi lavorano contro un'architettura che li contraddice.
 1. ✅ **FATTO — Prerequisiti** (indipendenti dallo snapshot): stato del round nel record di `wheel_process`; `bet_id` UUID lato Java; `worker → wheel` da `call` a `cast` con `{bet_result, ...}` di ritorno, **ack differito** + dedup per `bet_id` (§Parte 2 e R3 di §Parte 3), ed evento `bet_rejected` con il relativo handler Java, **incluso il percorso UNDO** (`undo_bets/1` restituisce i `bet_id`, `reason:"undo"`). L'ordine interno conta: `bet_id` prima dell'ack differito (altrimenti si introducono duplicati); il percorso UNDO su `bet_rejected` prima della rimozione di `refunds_queue` al passo 5 (altrimenti l'annullamento smette di rimborsare). `rabbitmq_manager:reject/2` non è più un prerequisito: ✅ esiste già.
 2. **Fase 2 estesa**: bootstrap Mnesia + `mnesia` in `applications` + `mnesia:subscribe(system)`.
-3. **Guardia di quorum** su `declare_victory/1` e `node_down/1`. Va prima della Fase 4: senza, gli `snapshot_record` concorrenti di due leader corrompono Mnesia al primo test di partizione.
+3. ✅ **FATTO — Guardia di quorum** su `declare_victory/1` e `node_down/1`. Va prima della Fase 4: senza, gli `snapshot_record` concorrenti di due leader corrompono Mnesia al primo test di partizione.
 4. **Fase 4 riscritta**: `cl_recorder` → partecipanti → collector `snapshot.erl` → persistenza Mnesia → pubblicazione ledger. Con Mnesia in piedi si chiude anche **R3**: `settled_bet_ids` ripopolato dai `snapshot_record` all'avvio e a ogni elezione. Fino a qui la dedup copre solo l'intra-round; è l'unico punto del percorso in cui il sistema è temporaneamente esposto alla doppia giocata, ed è per questo che R3 non può slittare oltre.
 5. 🔧 **PARZIALE — UC2 lato Java**: ✅ dispatch su `type`, handler `bet_rejected`, rimozione di `RefundListener` e `refunds_queue`. ❌ Restano `LedgerListener` con le regole R1/R2, `PayoutListener` per-round, rimozione di `RefundListener` e di `refunds_queue` (solo dopo il passo 1).
 6. **Fase 5 corretta**: recovery dal checkpoint; fallback `round_cancelled` con `exclude_bet_ids`, che dipende dal `{collect_inflight, R}` introdotto ai passi 0-1.

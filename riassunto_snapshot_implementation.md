@@ -14,7 +14,7 @@ Tre categorie:
 - ✅ **Corretto** (era la Fase 0 qui sotto, ora eseguita): l'elezione non tocca più il worker, che resta attivo su tutti i nodi e instrada al leader; il rifiuto con rimessa in coda avviene solo quando nessun leader è noto; ed è entrata in funzione la guardia di quorum. Verificato su un cluster a 3 nodi.
 - **Ancora da scrivere**: tutto il resto — identificativo univoco di bet, ack differito, persistenza su Mnesia, quorum, snapshot vero e proprio, riconciliazione lato Java.
 
-Le conclusioni di questo piano sono state **riportate in `implementation_plan.md`**, e il lavoro sul codice è iniziato: sono completate la **Fase 0 (retrofit)**, la **Fase 1 (prerequisiti)** e la parte di **Fase 3** relativa al quorum, oltre a metà della **Fase 6** (lato Java). Restano Mnesia, lo snapshot vero e proprio, la regola R3 e il recovery.
+Le conclusioni di questo piano sono state **riportate in `implementation_plan.md`**, e il lavoro sul codice è iniziato: sono completate la **Fase 0 (retrofit)**, la **Fase 1 (prerequisiti)**, la **Fase 2 (cluster e persistenza)** e la parte di **Fase 3** relativa al quorum, oltre a metà della **Fase 6** (lato Java). Restano lo snapshot vero e proprio, la regola R3 e il recovery.
 
 Un chiarimento che cambia un'argomentazione della prima stesura: oggi il worker inoltra la scommessa al processo della ruota con una **chiamata sincrona locale** e conferma al broker solo dopo la risposta. La finestra di perdita descritta più avanti quindi **non esiste ancora**: verrebbe *introdotta* dal passaggio a comunicazione asincrona, ed è l'ack differito a chiuderla prima che si apra.
 
@@ -73,16 +73,17 @@ Il worker acquisisce inoltre un **timeout sulle bet in attesa di risposta**: all
 
 ---
 
-## Fase 2 — Infrastruttura di cluster e persistenza
+## Fase 2 — Infrastruttura di cluster e persistenza — ✅ FATTA
 
-Il cluster manager esiste già: qui si tratta di estenderlo.
+Il cluster manager esisteva già: qui si trattava di estenderlo.
 
-- ❌ **Bootstrap di Mnesia** (unico punto ancora aperto di questa fase) con join dinamico in due rami distinti (primo nodo che crea lo schema; nodo che si aggiunge a un cluster dove la tabella esiste già), sempre dopo la formazione del cluster — il punto d'aggancio naturale è lo stesso ritardo che oggi precede la prima elezione, mai l'avvio del processo. Il passo che si dimentica più spesso è la conversione dello schema su disco: senza, un nodo perde la propria copia a ogni riavvio, vanificando la persistenza. Va inoltre dichiarata la dipendenza da Mnesia nella configurazione dell'applicazione, oggi assente.
+- ✅ **Bootstrap di Mnesia** con join dinamico in due rami distinti (primo nodo che crea lo schema; nodo che si aggiunge a un cluster dove la tabella esiste già), sempre dopo la formazione del cluster — il punto d'aggancio naturale è lo stesso ritardo che oggi precede la prima elezione, mai l'avvio del processo. Il passo che si dimentica più spesso è la conversione dello schema su disco: senza, un nodo perde la propria copia a ogni riavvio, vanificando la persistenza. Va inoltre dichiarata la dipendenza da Mnesia nella configurazione dell'applicazione, oggi assente.
 - ✅ Il gestore del cluster espone due liste distinte:
   - la lista **ordinata e stabile dei nodi vivi**, che è quella che lo snapshot congela all'avvio del taglio;
   - la lista **statica dei nodi configurati**, che è il denominatore del quorum. Usare la lista dei nodi correntemente connessi renderebbe la guardia inutile, perché in partizione si riduce da sola.
   Entrambe vanno **intersecate con l'elenco dei nodi configurati**: il monitoraggio include anche i nodi nascosti e le shell diagnostiche, che altrimenti regalerebbero quorum al lato sbagliato e diventerebbero partecipanti fantasma dello snapshot. La lista statica **non richiede nuova configurazione**: l'elenco completo dei tre nodi è già presente fra i parametri dell'applicazione, va solo riesposto includendo il nodo locale, che oggi viene filtrato all'avvio.
-- **Sottoscrizione agli eventi di sistema di Mnesia** con log rumoroso in caso di database inconsistente.
+- ✅ **Sottoscrizione agli eventi di sistema di Mnesia** con log rumoroso in caso di database inconsistente.
+- Due cose imparate implementando: quando nessun nodo possiede ancora la tabella, **crea solo il nodo con il nome più basso** fra quelli connessi (altrimenti tre nodi avviati insieme si creano tre database indipendenti); e un nodo riavviato **da solo** carica la propria copia solo se era l'ultimo a spegnersi, altrimenti attende le altre repliche — con una funzione esplicita per forzare il caricamento quando quei nodi non torneranno.
 - Va documentato che il checkpoint esiste **solo dopo il gong**: copre quindi il crash nelle fasi successive, mentre un crash in fase di puntata ricade sul percorso di riconciliazione (ack differito + annullamento selettivo). Le due protezioni sono complementari, nessuna basta da sola.
 
 ---

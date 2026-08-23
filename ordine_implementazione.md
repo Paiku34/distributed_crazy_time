@@ -174,12 +174,24 @@ Qui il rimborso **cambia formato**: i due percorsi che dallo Step 2 pubblicavano
 
 ## Blocco C — Persistenza
 
-### - [ ] Step 8 — Bootstrap di Mnesia · M
-**File**: [cluster_manager.erl](erlang-engine/game_engine/src/cluster_manager.erl), [game_engine.app.src](erlang-engine/game_engine/src/game_engine.app.src)
+### - [x] Step 8 — Bootstrap di Mnesia · M — ✅ FATTO
+**File**: [cluster_manager.erl](erlang-engine/game_engine/src/cluster_manager.erl), [game_engine.app.src](erlang-engine/game_engine/src/game_engine.app.src), `include/game_engine.hrl` (nuovo)
 
 `mnesia` fra le `applications`; bootstrap a due rami (primo nodo / nodo che si aggiunge) **dopo** la formazione del cluster, mai in `init/1`; tabella `snapshot_record` `ordered_set` con `disc_copies`; `mnesia:subscribe(system)` con log rumoroso su `inconsistent_database`.
 
 **Verifica**: avvia i nodi **uno alla volta**, poi riavvia un secondario e controlla che `mnesia:table_info(snapshot_record, disc_copies)` lo elenchi ancora. Se non lo elenca, manca la `change_table_copy_type(schema, node(), disc_copies)`.
+
+> ✅ **Eseguita**, con il record `snapshot_record` spostato in `include/game_engine.hrl` perché servirà anche a `snapshot.erl` e al wheel:
+> - `game1` da solo → `Schema su disco creato` + `Tabella snapshot_record creata`;
+> - `game2` e `game3` → ramo `add_table_copy`: `conversione dello schema in disc_copies: ok`, `copia locale di snapshot_record: ok`. `disc_copies` arriva a elencare tutti e tre;
+> - **replica**: record scritto su `game1`, letto identico da `game2` e `game3`; `dirty_last` restituisce la chiave `{99, game1@localhost}`, cioè l'`ordered_set` si comporta come previsto;
+> - **persistenza**: spenti tutti e tre e riavviati, ogni nodo ritrova la **propria** copia (`già presente` su entrambe le operazioni) e il record scritto prima è ancora leggibile. È la prova che `change_table_copy_type(schema, …)` ha fatto il suo lavoro.
+>
+> ⚠️ **Comportamento di Mnesia da conoscere** (emerso dal test, non è un difetto del codice): un nodo riavviato **da solo** carica subito la sua copia **solo se era l'ultimo a essersi spento**. Altrimenti Mnesia attende i nodi che possiedono le altre repliche, perché la copia locale potrebbe non essere la più recente. Il bootstrap lo dice esplicitamente, nominando i nodi attesi, e il gioco continua a funzionare; per ripartire da soli dopo un guasto definitivo c'è `cluster_manager:force_load_snapshots()` — che carica la copia locale accettando di perdere ciò che gli altri avessero scritto nel frattempo. Entrambi i rami sono stati provati.
+
+> ✅ **Blocco C COMPLETATO.** Mnesia è dichiarata fra le `applications`, il bootstrap avviene dopo la formazione del cluster, la tabella `snapshot_record` è replicata `disc_copies` su tutti i nodi e gli eventi di sistema (`inconsistent_database`) sono loggati in modo rumoroso. Le directory `Mnesia.*` sono in `.gitignore`.
+>
+> Una scelta presa qui e non prevista dal piano: **crea lo schema solo il nodo con il nome più basso fra quelli connessi**, gli altri attendono (con un numero massimo di tentativi, per non restare bloccati se quel nodo non parte mai). Senza, tre nodi avviati insieme si creerebbero tre database indipendenti che Mnesia non unisce da sola — ed è la ragione per cui il piano diceva «avviare i nodi uno alla volta». Ora non è più necessario.
 
 ---
 

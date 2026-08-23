@@ -9,7 +9,7 @@ The Distributed Crazy Time project is a real-time betting web app with a hybrid 
 | # | Funzionalità | Stato |
 |---|---|---|
 | 1 | **Native AMQP integration** — `amqp_client` al posto del polling sulla Management API | ✅ **Fase 1 implementata** |
-| 2 | **Multi-node Erlang cluster** — engine su 2+ nodi che si scoprono a vicenda | ✅ **Fase 2 implementata** + liste partecipanti/quorum. 🔧 resta il bootstrap **Mnesia** |
+| 2 | **Multi-node Erlang cluster** — engine su 2+ nodi che si scoprono a vicenda | ✅ **Fase 2 completa**: discovery, liste partecipanti/quorum e **Mnesia replicata** |
 | 3 | **Leader Election** — Bully Algorithm per eleggere un solo "Dealer" | ✅ **Fase 3 implementata e CORRETTA** (retrofit + quorum applicati) |
 | 4 | **Chandy-Lamport Snapshot** — stato globale consistente al "No more bets" | 🔧 **riscritta**; prerequisiti (canale asincrono, ack differito, `bet_id`, stato del round) ✅ **fatti**, resta il taglio |
 | 5 | **Fault tolerance & recovery** — crash del dealer, nuovo leader, nessuna puntata persa | 🔧 **riscritta**; rimborso puntuale per `bet_id` ✅ **fatto**, resta il recovery dal checkpoint |
@@ -1206,9 +1206,9 @@ Le aggiunte che le Fasi 4-5 danno per presenti: tre su `cluster_manager`, una in
 | Estensione | Stato |
 |---|---|
 | 1. `configured_nodes/0` e `get_participants/0` | ✅ **FATTA** |
-| 2. Bootstrap di Mnesia | ❌ da fare |
+| 2. Bootstrap di Mnesia | ✅ **FATTA** |
 | 3. Delega di `nodedown` a `leader_election:node_down/1` | ✅ **FATTA** |
-| 4. `mnesia` fra le `applications`, `snapshot` fra i `registered` | ❌ da fare (dipende dal punto 2) |
+| 4. `mnesia` fra le `applications`, `snapshot` fra i `registered` | ✅ **FATTA** |
 
 #### 1. Due liste distinte esposte come API — ✅ FATTA
 
@@ -1234,7 +1234,7 @@ handle_call(get_participants, _From, State) ->
 > [!IMPORTANT]
 > Il denominatore del quorum **non** può essere `nodes()`: in una partizione si riduce da solo e la guardia diventa inutile. Per lo stesso motivo anche il numeratore va intersecato con la lista statica.
 
-#### 2. Bootstrap di Mnesia — ❌ DA FARE
+#### 2. Bootstrap di Mnesia — ✅ FATTA
 
 Va eseguito **dopo** la formazione del cluster, mai in `init/1`: il punto d'aggancio naturale è un `handle_info(mnesia_bootstrap, ...)` schedulato insieme a `initial_election`, quando i ping ai peer hanno già avuto il tempo di connettere.
 
@@ -1261,6 +1261,12 @@ ok = mnesia:wait_for_tables([snapshot_record], 5000).
 
 `MasterNode` = un nodo qualsiasi già nel cluster che possiede la tabella; discriminare i due rami interrogando `mnesia:table_info(snapshot_record, disc_copies)` via `rpc:call/4` sui peer raggiungibili.
 
+> [!IMPORTANT]
+> **Chi crea lo schema quando nessuno ce l'ha.** Se tre nodi partono insieme e nessuno possiede la tabella, tutti e tre prenderebbero il ramo «primo nodo» e si creerebbero **tre database indipendenti**, che Mnesia non unisce da sola. Nel codice crea solo il nodo con il **nome più basso** fra quelli connessi; gli altri riprovano ogni 2 s e, dopo 5 tentativi, procedono comunque — così un cluster in cui quel nodo non parte mai non resta bloccato. È ciò che rende superfluo l'avvio «uno alla volta».
+
+> [!NOTE]
+> **Un nodo riavviato da solo non sempre carica la propria copia.** Mnesia la carica subito solo se quel nodo era l'**ultimo a spegnersi**; altrimenti attende i nodi che hanno le altre repliche, perché la copia locale potrebbe non essere la più recente. Non è un errore: il bootstrap lo logga nominando i nodi attesi e il gioco continua a funzionare. Per ripartire da soli dopo un guasto definitivo c'è `cluster_manager:force_load_snapshots()`, che carica la copia locale **accettando di perdere** i checkpoint scritti dagli altri nel frattempo — da usare consapevolmente, non come prassi.
+
 > [!CAUTION]
 > La `change_table_copy_type(schema, ...)` è il passo che si dimentica più spesso: senza, il nodo tiene lo schema in RAM e **perde la propria copia a ogni riavvio**, vanificando `disc_copies`.
 
@@ -1277,7 +1283,7 @@ leader_election:node_down(Node),
 
 Il `try/catch error:undef` che proteggeva la Fase 2 dall'assenza del modulo non serve più: `leader_election` esiste ed è nel supervisore.
 
-#### 4. Configurazione — ❌ DA FARE
+#### 4. Configurazione — ✅ FATTA
 
 ```erlang
 {applications, [kernel, stdlib, crypto, mnesia, amqp_client]},   %% mnesia AGGIUNTA
@@ -1285,6 +1291,10 @@ Il `try/catch error:undef` che proteggeva la Fase 2 dall'assenza del modulo non 
               worker, snapshot, minigames_sup,                    %% snapshot AGGIUNTO
               pachinko, coinflip, cashhunt, crazytime]},
 ```
+
+Il record `snapshot_record` vive in **`include/game_engine.hrl`**, perché serve a `cluster_manager` (che crea la tabella), al collector `snapshot` e al `wheel_process` (che ricarica i checkpoint).
+
+Le directory `Mnesia.<nodo>` create a runtime sono in `.gitignore`.
 
 > [!NOTE]
 > Con `rebar3 shell` la directory Mnesia di default è `Mnesia.<nodo>` nella cwd: avviando i tre nodi dalla stessa cartella si ottengono tre directory distinte, che è il comportamento voluto.
@@ -1995,11 +2005,11 @@ mnesia:dirty_last(snapshot_record).     %% ultimo checkpoint replicato
 | File | Type | Purpose |
 |------|------|---------|
 | `rabbitmq_manager.erl` | gen_server | ✅ **FATTO** — connessione/canali AMQP, `publish/2` via ETS, `subscribe/2` con PID del consumer, `ack/1`, `reject/2`, riconnessione automatica |
-| `cluster_manager.erl` | gen_server | ✅ **FATTO** — discovery, `monitor_nodes`, reconnect periodico, `configured_nodes/0`, `get_participants/0`, delega a `leader_election:node_down/1`. 🔧 Resta il bootstrap **Mnesia** |
+| `cluster_manager.erl` | gen_server | ✅ **FATTO** — discovery, `monitor_nodes`, reconnect, `configured_nodes/0`, `get_participants/0`, delega a `node_down/1`, **bootstrap Mnesia** a due rami + `subscribe(system)` |
 | `leader_election.erl` | gen_server | ✅ **FATTO** — Bully Algorithm, ruoli leader/standby, guardia di **quorum** nei due punti, `{set_leader, N}` a tutti i worker, `node_down/1` |
 | `cl_recorder.erl` | modulo puro | Logica Chandy-Lamport lato partecipante, condivisa da `wheel_process` e `worker` |
 | `snapshot.erl` | gen_server | **Collector** del taglio: congela i partecipanti, raccoglie le porzioni, persiste su Mnesia, pubblica il ledger. Non è un partecipante |
-| tabella `snapshot_record` | Mnesia | `ordered_set` con chiave `{Round, Initiator}`, `disc_copies` replicate: checkpoint del round e audit trail |
+| tabella `snapshot_record` | Mnesia | ✅ **FATTA** — `ordered_set` con chiave `{Round, Initiator}`, `disc_copies` replicate su tutti i nodi; record definito in `include/game_engine.hrl` |
 
 ### Modified Files (Phase 0 Bug Fixes)
 | File | Changes |
@@ -2022,9 +2032,9 @@ mnesia:dirty_last(snapshot_record).     %% ultimo checkpoint replicato
 | File | Changes |
 |------|---------|
 | `rebar.config` | ✅ **FATTO** — `{amqp_client, "4.3.4"}` (🔧 non 3.12.14: incompatibile con OTP 28) |
-| `game_engine.app.src` | ✅ Fasi 1-3 **FATTE** — `amqp_client`, `inets` rimosso, processi registrati, config broker + `peer_nodes`. 🔧 Restano `mnesia` fra le `applications` e `snapshot` fra i `registered` |
+| `game_engine.app.src` | ✅ **FATTO** — `amqp_client` e `mnesia` fra le `applications`, `snapshot` fra i `registered`, config broker + `peer_nodes` |
 | `game_engine_sup.erl` | ✅ Fasi 1-3 **FATTE** — `rest_for_one` con `rabbitmq_manager`, `cluster_manager`, `leader_election` come primi tre figli. 🔧 Resta `snapshot` come **ultimo** figlio |
-| `cluster_manager.erl` | ✅ due liste esposte e delega a `node_down/1` **FATTE**. 🔧 Restano bootstrap Mnesia e `mnesia:subscribe(system)` |
+| `cluster_manager.erl` | ✅ **FATTO** — due liste, delega a `node_down/1`, bootstrap Mnesia, `mnesia:subscribe(system)`, `force_load_snapshots/0` |
 | `leader_election.erl` | ✅ Fase 3 **FATTA** — quorum nei due punti, `{set_leader, N}`, `apply_role/1` non tocca più il worker. 🔧 Resta il recovery dal checkpoint (Fase 5) |
 | `wheel_process.erl` | ✅ AMQP, flag `active`, `{bet, _}` asincrona con deduplica intra-round, `bet_rejected` per `bet_id`, stato del round nel record. 🔧 Restano `settled_bet_ids`, trigger del taglio, `complete_round` |
 | `worker.erl` | ✅ AMQP, attivo su ogni nodo, `{set_leader, N}`, instradamento al leader di tutti i percorsi, **ack differito** con `inflight` e timeout. 🔧 Restano gli handler dei marker (Fase 4) |
@@ -2047,7 +2057,7 @@ graph TD
     B --> C["Phase 3: Bully Election ✅"]
     C --> R["✅ RETROFIT<br/>worker attivo ovunque, set_leader, quorum"]
     R --> P["✅ PREREQUISITI<br/>bet_id, cast + ack differito, bet_rejected"]
-    P --> M["Phase 2 estesa<br/>Mnesia + partecipanti"]
+    P --> M["✅ Phase 2 estesa<br/>Mnesia + partecipanti"]
     M --> Q["Quorum<br/>anti split-brain"]
     Q --> D["Phase 4: Chandy-Lamport 🔧"]
     D --> J["UC2 Java<br/>dispatch + LedgerListener"]
@@ -2074,7 +2084,7 @@ graph TD
 ### Manual Verification
 1. **Phase 0**: giro end-to-end, UNDO durante `betting`, bet dopo "No more bets" (rimborso + stato aggiornato), piazzamento concorrente.
 2. **Phase 1** ✅: verificata — compilazione, avvio con e senza broker, consumo di una bet con ack, stop/restart del broker a caldo con ri-sottoscrizione automatica.
-3. **Phase 2** ✅: verificata — 3 nodi che si trovano in qualsiasi ordine di avvio, reconnect periodico. 🔧 Da verificare: bootstrap Mnesia e replica del checkpoint su un nodo standby.
+3. **Phase 2** ✅: verificata — 3 nodi che si trovano in qualsiasi ordine di avvio, reconnect periodico, bootstrap Mnesia nei due rami, replica del checkpoint su tutti i nodi e persistenza su disco dopo il riavvio.
 4. **Phase 3** ✅: verificata su cluster a 3 nodi — elezione, rielezione alla caduta del leader, retrocessione a standby con quorum 1/3, bet distribuite fra i tre worker e tutte inoltrate al wheel del leader, UNDO con rimborso. 🔧 Restano da verificare: partizione di rete vera (finora solo crash) e comandi non-bet consumati da uno standby durante il minigioco.
 5. **Phase 4**: prerequisiti ✅ verificati (canale asincrono, ack differito con riconsegna dopo timeout, deduplica intra-round, `bet_rejected` idempotente end-to-end fino al saldo). Il test che conta per il taglio vero e proprio è **«canali non vuoti»** (`in_flight_bets > 0`): se resta a zero, lo snapshot non sta catturando nulla e la riscrittura non ha raggiunto il suo scopo.
 6. **Phase 5**: kill del leader nelle diverse fasi, verificando che il ramo A **completi** il round e il ramo B rimborsi **solo** le bet realmente perse (`Σ wallet` invariato).
