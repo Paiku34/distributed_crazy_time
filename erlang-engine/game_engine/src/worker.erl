@@ -1,12 +1,20 @@
 %%%-------------------------------------------------------------------
 %% @doc Worker process — consuma le scommesse da bets_queue via AMQP e
-%%      le inoltra al wheel_process come mappe gia' parsate.
-%%      Runs as a gen_server under the main supervisor.
+%%      le inoltra al wheel_process del LEADER.
 %%
-%%      Il worker si registra come consumer presso il rabbitmq_manager,
-%%      che sottoscrive la coda passando il PID di questo processo: le
-%%      delivery arrivano quindi direttamente qui, e vengono confermate
-%%      con un ack manuale solo dopo l'elaborazione.
+%%      Il worker gira su TUTTI i nodi del cluster: i worker sono
+%%      competing consumers della stessa coda, quindi l'ingestione delle
+%%      scommesse e' distribuita. Solo wheel_process e' leader-only.
+%%
+%%      Ne segue che ogni messaggio consumato va instradato al nodo
+%%      leader, non al wheel_process locale: su uno standby quel processo
+%%      e' dormiente e il messaggio sparirebbe in silenzio. L'identita'
+%%      del leader arriva da leader_election con {set_leader, Node}.
+%%
+%%      Se non c'e' un leader noto (nessuna elezione conclusa, oppure
+%%      nodo finito nella minoranza di una partizione) il messaggio viene
+%%      rimesso in coda: restera' nel broker finche' un nodo che puo'
+%%      servirlo lo consumera'.
 %% @end
 %%%-------------------------------------------------------------------
 -module(worker).
@@ -19,8 +27,14 @@
 
 -define(BETS_QUEUE, <<"bets_queue">>).
 
+%% Timeout della call verso il wheel del leader. Deve essere piu' alto dei
+%% 10 s in cui il wheel resta bloccato nella call al minigioco: con il
+%% default di 5 s il worker crollerebbe ogni volta che una scommessa in
+%% ritardo arriva durante un bonus.
+-define(WHEEL_CALL_TIMEOUT, 15000).
+
 -record(state, {
-    active = false :: boolean()
+    leader = undefined :: node() | undefined
 }).
 
 start_link() ->
@@ -29,21 +43,23 @@ start_link() ->
 init([]) ->
     io:format("~n=================================~n"),
     io:format("  Worker RabbitMQ (AMQP) avviato~n"),
-    io:format("  Consumer su bets_queue... (In attesa elezione)~n"),
+    io:format("  Consumer su bets_queue (tutti i nodi)~n"),
     io:format("=================================~n~n"),
     ok = rabbitmq_manager:subscribe(?BETS_QUEUE, self()),
-    {ok, #state{active = false}}.
+    %% Dopo un restart del worker nessuno ri-annuncia il leader: ce lo
+    %% facciamo dire subito da leader_election, che parte prima di noi.
+    Leader = current_leader(),
+    {ok, #state{leader = Leader}}.
 
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
-handle_cast(activate, State) ->
-    io:format("[WORKER] ACTIVATO come leader — inizio elaborazione scommesse~n"),
-    {noreply, State#state{active = true}};
-
-handle_cast(deactivate, State) ->
-    io:format("[WORKER] DISATTIVATO — in standby~n"),
-    {noreply, State#state{active = false}};
+handle_cast({set_leader, Node}, State) ->
+    case Node =:= State#state.leader of
+        true  -> ok;
+        false -> io:format("[WORKER] Leader corrente: ~p~n", [Node])
+    end,
+    {noreply, State#state{leader = Node}};
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -57,22 +73,26 @@ handle_info(#'basic.cancel'{}, State) ->
     io:format("[WORKER] Consumer cancellato dal broker.~n"),
     {noreply, State};
 
-handle_info({#'basic.deliver'{delivery_tag = Tag}, #amqp_msg{payload = Payload}}, State = #state{active = true}) ->
-    %% L'ack viene sempre inviato, anche in caso di errore di parsing: un
-    %% messaggio malformato rimesso in coda verrebbe riconsegnato all'infinito.
+%% Nessun leader noto: il messaggio torna al broker, che lo fara' servire
+%% da un nodo in grado di elaborarlo. E' l'unico caso in cui si rifiuta.
+handle_info({#'basic.deliver'{delivery_tag = Tag}, _Msg}, State = #state{leader = undefined}) ->
+    io:format("[WORKER] Nessun leader eletto: messaggio rimesso in coda~n"),
+    rabbitmq_manager:reject(Tag, true),
+    {noreply, State};
+
+handle_info({#'basic.deliver'{delivery_tag = Tag}, #amqp_msg{payload = Payload}},
+            State = #state{leader = Leader}) ->
+    %% process_message/3 decide da se' se ackare o rimettere in coda.
+    %% Su errore di elaborazione si acka comunque: un messaggio malformato
+    %% rimesso in coda verrebbe riconsegnato all'infinito.
     try
-        process_message(binary_to_list(Payload))
+        process_message(binary_to_list(Payload), Tag, Leader)
     catch
         Class:Err:Stack ->
             io:format("[WORKER] Errore elaborazione messaggio: ~p:~p~nStacktrace: ~p~n",
-                      [Class, Err, Stack])
+                      [Class, Err, Stack]),
+            rabbitmq_manager:ack(Tag)
     end,
-    rabbitmq_manager:ack(Tag),
-    {noreply, State};
-
-handle_info({#'basic.deliver'{delivery_tag = Tag}, _Msg}, State = #state{active = false}) ->
-    %% Non sono il leader, rifiuto il messaggio e lo rimetto in coda per il leader
-    rabbitmq_manager:reject(Tag, true),
     {noreply, State};
 
 handle_info(_Info, State) ->
@@ -88,49 +108,87 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal — parsing e forwarding
 %%====================================================================
 
-%% PayloadStr e' il JSON della scommessa cosi' come arriva dal broker:
-%% con AMQP non c'e' piu' il wrapper della Management API da sbucciare.
-process_message(PayloadStr) ->
+%% Chiede a leader_election chi e' il leader corrente. Usata solo all'avvio.
+current_leader() ->
+    try leader_election:get_leader() of
+        {ok, Node} -> Node;
+        _          -> undefined
+    catch
+        _:_ -> undefined
+    end.
+
+%% PayloadStr e' il JSON della scommessa cosi' come arriva dal broker.
+%% Tutti i percorsi vengono instradati al wheel_process del LEADER: se
+%% finissero al wheel_process locale, su uno standby sparirebbero in
+%% silenzio (con 3 nodi succede circa 2 volte su 3).
+process_message(PayloadStr, Tag, Leader) ->
     case parse_bet_json(PayloadStr) of
         {ok, BetMap} ->
-            io:format("[WORKER] Bet ricevuta: ~p~n", [BetMap]),
+            io:format("[WORKER] Messaggio ricevuto: ~p~n", [BetMap]),
             case maps:get(<<"type">>, BetMap, <<"bet">>) of
                 <<"force_segment">> ->
-                    wheel_process:force_segment(maps:get(<<"segment">>, BetMap));
+                    cast_to_wheel(Leader, {force_segment, maps:get(<<"segment">>, BetMap)}),
+                    rabbitmq_manager:ack(Tag);
                 <<"minigame_choice">> ->
-                    wheel_process:submit_choice(
-                        maps:get(<<"username">>, BetMap),
-                        maps:get(<<"choice">>, BetMap));
+                    cast_to_wheel(Leader, {minigame_choice,
+                                           maps:get(<<"username">>, BetMap),
+                                           maps:get(<<"choice">>, BetMap)}),
+                    rabbitmq_manager:ack(Tag);
                 _ ->
                     case maps:get(<<"segment">>, BetMap, <<>>) of
                         <<"UNDO_BETS">> ->
                             Username = maps:get(<<"username">>, BetMap),
                             io:format("[WORKER] Comando UNDO per utente: ~s~n", [Username]),
-                            TotalRefund = wheel_process:undo_bets(Username),
-                            if TotalRefund > 0 ->
-                                   io:format("[WORKER] Rimborso totale per ~s: ~p~n", [Username, TotalRefund]),
-                                   RefundMap = #{<<"username">> => Username, <<"amount">> => TotalRefund, <<"segment">> => <<"REFUND">>},
-                                   publish_refund(RefundMap);
-                               true ->
-                                   io:format("[WORKER] Nessuna scommessa da annullare per ~s~n", [Username])
-                            end;
+                            %% cast, non call: come call cross-nodo andrebbe in
+                            %% timeout quando il wheel e' bloccato nel minigioco.
+                            %% Il rimborso lo pubblica il wheel, che conosce gli
+                            %% importi annullati.
+                            cast_to_wheel(Leader, {undo_bets, Username}),
+                            rabbitmq_manager:ack(Tag);
                         <<"FORCE_", Seg/binary>> ->
                             io:format("[WORKER] Comando FORZATURA segmento: ~s~n", [Seg]),
-                            wheel_process:force_segment(Seg);
+                            cast_to_wheel(Leader, {force_segment, Seg}),
+                            rabbitmq_manager:ack(Tag);
                         _ ->
-                            case wheel_process:place_bet(BetMap) of
-                                {ok, accepted} ->
-                                    io:format("[WORKER] Bet accettata dal wheel_process.~n");
-                                {error, betting_closed} ->
-                                    io:format("[WORKER] Bet RIFIUTATA — scommesse chiuse. Invio rimborso.~n"),
-                                    publish_refund(BetMap);
-                                Other ->
-                                    io:format("[WORKER] Risposta wheel_process: ~p~n", [Other])
-                            end
+                            forward_bet(BetMap, Tag, Leader)
                     end
             end;
         {error, Reason} ->
-            io:format("[WORKER] Errore parsing bet: ~p~n", [Reason])
+            io:format("[WORKER] Errore parsing bet: ~p~n", [Reason]),
+            rabbitmq_manager:ack(Tag)
+    end.
+
+cast_to_wheel(Leader, Msg) ->
+    gen_server:cast({wheel_process, Leader}, Msg).
+
+%% Inoltro della scommessa al wheel del leader.
+%%
+%% NOTA: impalcatura temporanea. Il canale worker -> wheel diventera'
+%% asincrono ({bet, _} in cast con {bet_result, _, _} di ritorno) insieme
+%% all'ack differito; fino ad allora la call sincrona con timeout esplicito
+%% e' cio' che garantisce che nessuna scommessa venga ackata senza esito.
+forward_bet(BetMap, Tag, Leader) ->
+    try gen_server:call({wheel_process, Leader}, {place_bet, BetMap}, ?WHEEL_CALL_TIMEOUT) of
+        {ok, accepted} ->
+            io:format("[WORKER] Bet accettata dal wheel_process su ~p.~n", [Leader]),
+            rabbitmq_manager:ack(Tag);
+        {error, betting_closed} ->
+            io:format("[WORKER] Bet RIFIUTATA — scommesse chiuse. Invio rimborso.~n"),
+            publish_refund(BetMap),
+            rabbitmq_manager:ack(Tag);
+        {error, not_leader} ->
+            %% Il leader e' cambiato mentre il messaggio era in volo.
+            io:format("[WORKER] ~p non e' piu' leader: bet rimessa in coda~n", [Leader]),
+            rabbitmq_manager:reject(Tag, true);
+        Other ->
+            io:format("[WORKER] Risposta inattesa dal wheel_process: ~p~n", [Other]),
+            rabbitmq_manager:reject(Tag, true)
+    catch
+        exit:Reason ->
+            %% Leader morto, irraggiungibile o bloccato oltre il timeout.
+            io:format("[WORKER] Wheel su ~p non raggiungibile (~p): bet rimessa in coda~n",
+                      [Leader, Reason]),
+            rabbitmq_manager:reject(Tag, true)
     end.
 
 %% Parser semplice per JSON
@@ -138,10 +196,10 @@ parse_bet_json(JsonStr) ->
     try
         TypeMatch = extract_string_field(JsonStr, "type"),
         Type = case TypeMatch of {ok, T} -> list_to_binary(T); _ -> <<>> end,
-        
+
         UsernameMatch = extract_string_field(JsonStr, "username"),
         Username = case UsernameMatch of {ok, U} -> list_to_binary(U); _ -> <<"unknown">> end,
-        
+
         case Type of
             <<"minigame_choice">> ->
                 ChoiceMatch = extract_string_field(JsonStr, "choice"),
@@ -169,7 +227,7 @@ parse_bet_json(JsonStr) ->
                 end
         end
     catch
-        Class:Err:Stack -> 
+        Class:Err:Stack ->
             io:format("[WORKER] EXCEPTION in parse_bet_json: ~p:~p~nStacktrace: ~p~n", [Class, Err, Stack]),
             {error, Err}
     end.
@@ -197,7 +255,10 @@ escape_json_string(Str) when is_binary(Str) ->
 escape_json_string(Str) ->
     lists:flatmap(fun($") -> "\\\""; ($\\) -> "\\\\"; (C) -> [C] end, Str).
 
-%% Pubblica un messaggio di rimborso su refunds_queue
+%% Pubblica un messaggio di rimborso su refunds_queue.
+%% Resta qui il solo caso "scommessa rifiutata perche' le puntate sono
+%% chiuse": il rimborso dell'UNDO e' passato al wheel, che conosce gli
+%% importi. Entrambi diventeranno eventi bet_rejected per bet_id.
 publish_refund(BetMap) ->
     Username = maps:get(<<"username">>, BetMap, <<"unknown">>),
     Amount = maps:get(<<"amount">>, BetMap, 0),

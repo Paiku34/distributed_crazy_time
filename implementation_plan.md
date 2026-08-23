@@ -9,16 +9,16 @@ The Distributed Crazy Time project is a real-time betting web app with a hybrid 
 | # | Funzionalità | Stato |
 |---|---|---|
 | 1 | **Native AMQP integration** — `amqp_client` al posto del polling sulla Management API | ✅ **Fase 1 implementata** |
-| 2 | **Multi-node Erlang cluster** — engine su 2+ nodi che si scoprono a vicenda | ✅ **Fase 2 implementata** (🔧 restano le estensioni per Mnesia e i partecipanti) |
-| 3 | **Leader Election** — Bully Algorithm per eleggere un solo "Dealer" | ✅ **Fase 3 implementata** (🔧 con correzioni da applicare) |
+| 2 | **Multi-node Erlang cluster** — engine su 2+ nodi che si scoprono a vicenda | ✅ **Fase 2 implementata** + liste partecipanti/quorum. 🔧 resta il bootstrap **Mnesia** |
+| 3 | **Leader Election** — Bully Algorithm per eleggere un solo "Dealer" | ✅ **Fase 3 implementata e CORRETTA** (retrofit + quorum applicati) |
 | 4 | **Chandy-Lamport Snapshot** — stato globale consistente al "No more bets" | 🔧 **riscritta**, da implementare |
 | 5 | **Fault tolerance & recovery** — crash del dealer, nuovo leader, nessuna puntata persa | 🔧 **riscritta**, da implementare |
 
 > [!IMPORTANT]
 > **Le Fasi 4 e 5 sono state riscritte.** L'analisi in `snapshot_analisi.md` ha mostrato che lo snapshot come era progettato era **ridondante**: catturava uno stato già disponibile in locale sul leader, su canali vuoti per costruzione, e nessuno ne consumava il risultato. Il progetto definitivo — con le motivazioni, la verifica contro il codice e l'ordine di esecuzione dettagliato — è in [snapshot_implementation_plan.md](snapshot_implementation_plan.md), di cui esiste anche un [riassunto](riassunto_snapshot_implementation.md). Questo documento ne recepisce le conclusioni.
 
-> [!CAUTION]
-> Le Fasi 2 e 3 sono state implementate **prima** che quella riscrittura esistesse, quindi parte del codice già scritto va **corretto**, non solo esteso. Le correzioni sono marcate 🔧 dentro le rispettive fasi, e vengono **prima** di tutto il resto (vedi «Execution Order» in fondo). La principale: il `worker` deve restare attivo su **tutti** i nodi, non solo sul leader — altrimenti i canali che lo snapshot deve catturare restano vuoti.
+> [!NOTE]
+> Le Fasi 2 e 3 erano state implementate **prima** che quella riscrittura esistesse, quindi parte del codice andava **corretta**, non solo estesa. ✅ **Il retrofit è stato eseguito**: il `worker` è ora attivo su **tutti** i nodi e instrada al leader, e la guardia di quorum è in funzione. Il percorso operativo completo, step per step, è in [ordine_implementazione.md](ordine_implementazione.md).
 
 > [!NOTE]
 > Ogni fase si appoggia sulla precedente. Ognuna elenca i file esatti da creare/modificare, la struttura del codice Erlang e i punti di integrazione. **Si parte dalla Fase 0 (Bug Fixes)** per stabilizzare la base prima di aggiungere le funzionalità distribuite.
@@ -1197,11 +1197,18 @@ erl -sname game3@localhost -setcookie crazytime -pa _build/default/lib/*/ebin -e
 
 ---
 
-### Estensioni richieste dalla Fase 4 (snapshot) — DA FARE
+### Estensioni richieste dalla Fase 4 (snapshot)
 
 Le aggiunte che le Fasi 4-5 danno per presenti: tre su `cluster_manager`, una in configurazione.
 
-#### 1. Due liste distinte esposte come API
+| Estensione | Stato |
+|---|---|
+| 1. `configured_nodes/0` e `get_participants/0` | ✅ **FATTA** |
+| 2. Bootstrap di Mnesia | ❌ da fare |
+| 3. Delega di `nodedown` a `leader_election:node_down/1` | ✅ **FATTA** |
+| 4. `mnesia` fra le `applications`, `snapshot` fra i `registered` | ❌ da fare (dipende dal punto 2) |
+
+#### 1. Due liste distinte esposte come API — ✅ FATTA
 
 ```erlang
 -export([start_link/0, get_nodes/0, get_connected_nodes/0,
@@ -1225,7 +1232,7 @@ handle_call(get_participants, _From, State) ->
 > [!IMPORTANT]
 > Il denominatore del quorum **non** può essere `nodes()`: in una partizione si riduce da solo e la guardia diventa inutile. Per lo stesso motivo anche il numeratore va intersecato con la lista statica.
 
-#### 2. Bootstrap di Mnesia
+#### 2. Bootstrap di Mnesia — ❌ DA FARE
 
 Va eseguito **dopo** la formazione del cluster, mai in `init/1`: il punto d'aggancio naturale è un `handle_info(mnesia_bootstrap, ...)` schedulato insieme a `initial_election`, quando i ping ai peer hanno già avuto il tempo di connettere.
 
@@ -1257,7 +1264,7 @@ ok = mnesia:wait_for_tables([snapshot_record], 5000).
 
 Aggiungere inoltre `mnesia:subscribe(system)` e loggare in modo rumoroso `{inconsistent_database, _, _}`.
 
-#### 3. Delega della caduta di un nodo all'elezione
+#### 3. Delega della caduta di un nodo all'elezione — ✅ FATTA
 
 `handle_info({nodedown, Node, _}, ...)` chiama oggi `maybe_start_election_on_nodedown/1`, che decide da sé se rieleggere. Con il quorum la decisione dipende dal ruolo corrente e dalla maggioranza, quindi vive nell'elezione:
 
@@ -1268,7 +1275,7 @@ leader_election:node_down(Node),
 
 Il `try/catch error:undef` che proteggeva la Fase 2 dall'assenza del modulo non serve più: `leader_election` esiste ed è nel supervisore.
 
-#### 4. Configurazione
+#### 4. Configurazione — ❌ DA FARE
 
 ```erlang
 {applications, [kernel, stdlib, crypto, mnesia, amqp_client]},   %% mnesia AGGIUNTA
@@ -1282,22 +1289,26 @@ Il `try/catch error:undef` che proteggeva la Fase 2 dall'assenza del modulo non 
 
 ---
 
-## Phase 3: Bully Leader Election Algorithm ✅ IMPLEMENTATA — 🔧 con correzioni da applicare
+## Phase 3: Bully Leader Election Algorithm ✅ IMPLEMENTATA E CORRETTA
 
 **Goal**: Implement the Bully Election algorithm so that exactly **one node** is elected as the "Dealer" (leader). The leader runs the game loop (`wheel_process` attivo); i nodi standby tengono i propri processi vivi ma dormienti.
 
 > [!NOTE]
-> **Questa sezione è stata allineata al codice realmente implementato.** L'algoritmo Bully è completo e funzionante. Sono però emerse 5 divergenze rispetto alla stesura originale: **le prime quattro richiedono di modificare codice già scritto**, non di aggiungerne. Sono elencate qui sotto e marcate inline con **🔧 CORREZIONE #n**.
+> **Questa sezione descrive il codice realmente implementato.** L'algoritmo Bully era già completo; le **5 divergenze** emerse rispetto alla stesura originale sono state **tutte applicate** (retrofit degli Step 1-3 di [ordine_implementazione.md](ordine_implementazione.md)). Restano marcate inline con **🔧 CORREZIONE #n** perché spiegano *perché* il codice ha la forma che ha.
+>
+> ✅ **Verificato su cluster a 3 nodi**: elezione del nodo col nome più alto, rielezione entro pochi secondi alla caduta del leader, retrocessione automatica a standby quando il quorum si perde (1/3), 6 bet distribuite fra i tre worker e tutte arrivate al wheel del solo leader, UNDO consumato da un worker qualsiasi con rimborso pubblicato correttamente.
 
 ### Divergenze rispetto alla stesura originale
 
+> Tutte e cinque **applicate** nel codice (✅ nella prima colonna).
+
 | # | Stesura originale | Problema | Soluzione adottata |
 |---|---|---|---|
-| 1 | `apply_role/1` attiva e disattiva **anche il `worker`** | Con il worker attivo solo sul leader, l'ingestione delle bet non è distribuita: i canali `worker → wheel` sono tutti locali e vuoti, e lo snapshot della Fase 4 torna a essere l'artefatto vacuo che la riscrittura vuole eliminare | Il **worker resta attivo su tutti i nodi**; solo `wheel_process` è leader-only. Il worker riceve `{set_leader, Node}` e instrada al leader |
-| 2 | Il worker in standby rifiuta ogni delivery con `reject(Tag, true)` | Loop caldo: il messaggio rimbalza fra broker e nodi passivi finché non capita sul leader | Il rifiuto avviene **solo** quando `leader =:= undefined`, cioè quando nessuno può servirlo |
-| 3 | Nessuna guardia di quorum | In una partizione 2-1 entrambi i lati eleggono un leader: due ledger divergenti per lo stesso round, scritture concorrenti su Mnesia, audit trail senza valore | `has_quorum/0` applicata in **due** punti: `declare_victory/1` e caduta di un nodo |
-| 4 | `undo_bets/1` come `gen_server:call` | Come call cross-nodo va in timeout quando il wheel è bloccato fino a 10 s nella call al minigioco, facendo crollare il worker | Convertita a `cast`; il rimborso non torna più come valore di ritorno ma come evento `bet_rejected` pubblicato dal wheel |
-| 5 | Il `nodedown` gestito dentro `leader_election` | Il monitoraggio dei nodi è già in `cluster_manager`, duplicarlo significa due sottoscrizioni e due verità | `cluster_manager` chiama `leader_election:node_down/1` |
+| 1 ✅ | `apply_role/1` attiva e disattiva **anche il `worker`** | Con il worker attivo solo sul leader, l'ingestione delle bet non è distribuita: i canali `worker → wheel` sono tutti locali e vuoti, e lo snapshot della Fase 4 torna a essere l'artefatto vacuo che la riscrittura vuole eliminare | Il **worker resta attivo su tutti i nodi**; solo `wheel_process` è leader-only. Il worker riceve `{set_leader, Node}` e instrada al leader |
+| 2 ✅ | Il worker in standby rifiuta ogni delivery con `reject(Tag, true)` | Loop caldo: il messaggio rimbalza fra broker e nodi passivi finché non capita sul leader | Il rifiuto avviene **solo** quando `leader =:= undefined`, cioè quando nessuno può servirlo |
+| 3 ✅ | Nessuna guardia di quorum | In una partizione 2-1 entrambi i lati eleggono un leader: due ledger divergenti per lo stesso round, scritture concorrenti su Mnesia, audit trail senza valore | `has_quorum/0` applicata in **due** punti: `declare_victory/1` e caduta di un nodo |
+| 4 ✅ | `undo_bets/1` come `gen_server:call` | Come call cross-nodo va in timeout quando il wheel è bloccato fino a 10 s nella call al minigioco, facendo crollare il worker | Convertita a `cast`; il rimborso non torna più come valore di ritorno ma come evento `bet_rejected` pubblicato dal wheel |
+| 5 ✅ | Il `nodedown` gestito dentro `leader_election` | Il monitoraggio dei nodi è già in `cluster_manager`, duplicarlo significa due sottoscrizioni e due verità | `cluster_manager` chiama `leader_election:node_down/1` |
 
 ---
 
@@ -1384,6 +1395,9 @@ handle_cast({node_down, Node}, State) ->
         false -> {noreply, State#state{leader = undefined}}
     end;
 ```
+
+> [!WARNING]
+> **Conseguenza sull'uso a nodo singolo.** `peer_nodes` elenca tutti e tre i nodi, quindi un solo nodo avviato con `-sname` vede quorum 1/3 e **resta standby**: il gioco non parte. È il comportamento corretto (si sceglie la consistenza sulla disponibilità), ma per lo sviluppo su un nodo solo bisogna avviare **senza** `-sname` — un nodo non distribuito non può essere in partizione, quindi la guardia non si applica — oppure sovrascrivere la lista con `-game_engine peer_nodes "['game1@localhost']"`.
 
 `maybe_reelect/2` lancia `start_election` solo se il nodo caduto era il leader o se non c'è leader noto: oggi `cluster_manager` ne lancia una a **ogni** evento di topologia, incondizionatamente, e con tre nodi che partono insieme si ottiene una raffica di elezioni. Vale la pena aggiungere anche la guardia su `election_in_progress`, oggi memorizzato ma mai controllato.
 
@@ -1522,7 +1536,7 @@ L'idea è una sola: **spostare i marker sui canali applicativi e rendere quei ca
 
 ---
 
-### [NEW] [cl_recorder.erl](erlang-engine/game_engine/src/cl_recorder.erl)
+### [NEW] `erlang-engine/game_engine/src/cl_recorder.erl`
 
 Modulo di **funzioni pure** (nessun processo) con la logica Chandy-Lamport lato partecipante, condivisa da `wheel_process` e `worker` per non duplicarla. Essendo puro, è anche l'unica parte banalmente testabile in isolamento.
 
@@ -1660,7 +1674,7 @@ gen_server:cast({snapshot, InitiatorNode},
 
 ---
 
-### [NEW] [snapshot.erl](erlang-engine/game_engine/src/snapshot.erl) — collector
+### [NEW] `erlang-engine/game_engine/src/snapshot.erl` — collector
 
 ```erlang
 -record(state, {
@@ -1973,8 +1987,8 @@ mnesia:dirty_last(snapshot_record).     %% ultimo checkpoint replicato
 | File | Type | Purpose |
 |------|------|---------|
 | `rabbitmq_manager.erl` | gen_server | ✅ **FATTO** — connessione/canali AMQP, `publish/2` via ETS, `subscribe/2` con PID del consumer, `ack/1`, `reject/2`, riconnessione automatica |
-| `cluster_manager.erl` | gen_server | ✅ **FATTO** — discovery con `net_adm:ping`, `monitor_nodes(true, [{node_type, all}])`, reconnect periodico. 🔧 Restano `configured_nodes/0`, `get_participants/0`, bootstrap Mnesia, delega a `node_down/1` |
-| `leader_election.erl` | gen_server | ✅ **FATTO** — Bully Algorithm, ruoli leader/standby. 🔧 Restano guardia di quorum, `{set_leader, N}`, rimozione dei cast al worker |
+| `cluster_manager.erl` | gen_server | ✅ **FATTO** — discovery, `monitor_nodes`, reconnect periodico, `configured_nodes/0`, `get_participants/0`, delega a `leader_election:node_down/1`. 🔧 Resta il bootstrap **Mnesia** |
+| `leader_election.erl` | gen_server | ✅ **FATTO** — Bully Algorithm, ruoli leader/standby, guardia di **quorum** nei due punti, `{set_leader, N}` a tutti i worker, `node_down/1` |
 | `cl_recorder.erl` | modulo puro | Logica Chandy-Lamport lato partecipante, condivisa da `wheel_process` e `worker` |
 | `snapshot.erl` | gen_server | **Collector** del taglio: congela i partecipanti, raccoglie le porzioni, persiste su Mnesia, pubblica il ledger. Non è un partecipante |
 | tabella `snapshot_record` | Mnesia | `ordered_set` con chiave `{Round, Initiator}`, `disc_copies` replicate: checkpoint del round e audit trail |
@@ -2002,10 +2016,10 @@ mnesia:dirty_last(snapshot_record).     %% ultimo checkpoint replicato
 | `rebar.config` | ✅ **FATTO** — `{amqp_client, "4.3.4"}` (🔧 non 3.12.14: incompatibile con OTP 28) |
 | `game_engine.app.src` | ✅ Fasi 1-3 **FATTE** — `amqp_client`, `inets` rimosso, processi registrati, config broker + `peer_nodes`. 🔧 Restano `mnesia` fra le `applications` e `snapshot` fra i `registered` |
 | `game_engine_sup.erl` | ✅ Fasi 1-3 **FATTE** — `rest_for_one` con `rabbitmq_manager`, `cluster_manager`, `leader_election` come primi tre figli. 🔧 Resta `snapshot` come **ultimo** figlio |
-| `cluster_manager.erl` | 🔧 Fase 2 estesa — due liste esposte, bootstrap Mnesia, `mnesia:subscribe(system)`, delega a `leader_election:node_down/1` |
-| `leader_election.erl` | 🔧 Fase 3 — quorum in due punti, `{set_leader, N}`, `apply_role/1` non tocca più il worker, recovery dal checkpoint |
-| `wheel_process.erl` | ✅ Fasi 1-3 **FATTE** — AMQP, flag `active`, `activate`/`deactivate`. 🔧 Restano stato del round nel record, `{bet, _}` asincrona con dedup, trigger del taglio, `bet_rejected`, `complete_round` |
-| `worker.erl` | ✅ Fasi 1-3 **FATTE** — AMQP con ack manuale, consumer su ogni nodo. 🔧 Restano rimozione del flag `active`, `{set_leader, N}`, instradamento al leader di **tutti** i percorsi, ack differito con `inflight` |
+| `cluster_manager.erl` | ✅ due liste esposte e delega a `node_down/1` **FATTE**. 🔧 Restano bootstrap Mnesia e `mnesia:subscribe(system)` |
+| `leader_election.erl` | ✅ Fase 3 **FATTA** — quorum nei due punti, `{set_leader, N}`, `apply_role/1` non tocca più il worker. 🔧 Resta il recovery dal checkpoint (Fase 5) |
+| `wheel_process.erl` | ✅ Fasi 1-3 **FATTE** — AMQP, flag `active`, `undo_bets` come cast con rimborso pubblicato dal wheel. 🔧 Restano stato del round nel record, `{bet, _}` asincrona con dedup, trigger del taglio, `bet_rejected`, `complete_round` |
+| `worker.erl` | ✅ Fasi 1-3 **FATTE** — AMQP con ack manuale, attivo su ogni nodo, `{set_leader, N}`, instradamento al leader di **tutti** i percorsi, requeue solo senza leader. 🔧 Resta l'ack differito con `inflight` |
 | `GameResultListener.java` | Dispatch sul campo `type` (oggi ignorato) verso i 4 handler |
 | `LedgerListener.java` | **NUOVO** — regole R1/R2, riconciliazione per round e per `bet_id` |
 | `PayoutListener.java` | Query per round + match per `bet_id` |
@@ -2022,7 +2036,7 @@ graph TD
     Z["Phase 0: Bug Fixes<br/>+ bet_id UUID"] --> A["Phase 1: AMQP Client ✅"]
     A --> B["Phase 2: Multi-Node Cluster ✅"]
     B --> C["Phase 3: Bully Election ✅"]
-    C --> R["🔧 RETROFIT<br/>worker attivo ovunque, set_leader"]
+    C --> R["✅ RETROFIT<br/>worker attivo ovunque, set_leader, quorum"]
     R --> P["Prerequisiti<br/>stato del round, cast + ack differito"]
     P --> M["Phase 2 estesa<br/>Mnesia + partecipanti"]
     M --> Q["Quorum<br/>anti split-brain"]
@@ -2052,7 +2066,7 @@ graph TD
 1. **Phase 0**: giro end-to-end, UNDO durante `betting`, bet dopo "No more bets" (rimborso + stato aggiornato), piazzamento concorrente.
 2. **Phase 1** ✅: verificata — compilazione, avvio con e senza broker, consumo di una bet con ack, stop/restart del broker a caldo con ri-sottoscrizione automatica.
 3. **Phase 2** ✅: verificata — 3 nodi che si trovano in qualsiasi ordine di avvio, reconnect periodico. 🔧 Da verificare: bootstrap Mnesia e replica del checkpoint su un nodo standby.
-4. **Phase 3** ✅: verificata — elezione del leader, ruoli assegnati. 🔧 Da verificare dopo il retrofit: comandi non-bet consumati da uno standby, partizione 2-1 con il leader isolato.
+4. **Phase 3** ✅: verificata su cluster a 3 nodi — elezione, rielezione alla caduta del leader, retrocessione a standby con quorum 1/3, bet distribuite fra i tre worker e tutte inoltrate al wheel del leader, UNDO con rimborso. 🔧 Restano da verificare: partizione di rete vera (finora solo crash) e comandi non-bet consumati da uno standby durante il minigioco.
 5. **Phase 4**: il test che conta è **«canali non vuoti»** (`in_flight_bets > 0`). Se resta a zero, lo snapshot non sta catturando nulla e la riscrittura non ha raggiunto il suo scopo.
 6. **Phase 5**: kill del leader nelle diverse fasi, verificando che il ramo A **completi** il round e il ramo B rimborsi **solo** le bet realmente perse (`Σ wallet` invariato).
 7. **Phase 6**: sessione completa a 3 nodi con più giocatori concorrenti.

@@ -7,19 +7,24 @@
 %%        - sottoscriversi con net_kernel:monitor_nodes/2 per ricevere
 %%          notifiche {nodeup, Node} e {nodedown, Node};
 %%        - tenere aggiornata la lista dei nodi connessi;
-%%        - notificare il leader_election (Fase 3) quando la topologia
-%%          cambia, in modo che venga lanciata una elezione.
+%%        - esporre le due liste su cui si appoggiano elezione e snapshot:
+%%            * configured_nodes/0 : lista STATICA dei nodi configurati,
+%%              denominatore del quorum;
+%%            * get_participants/0 : lista ORDINATA dei nodi vivi, che lo
+%%              snapshot congela all'avvio del taglio;
+%%        - notificare leader_election quando la topologia cambia.
 %%
-%%      Il modulo leader_election potrebbe non esistere ancora (viene
-%%      creato nella Fase 3): ogni chiamata verso di lui e' protetta
-%%      da un try/catch o da un controllo di esistenza, cosicche' la
-%%      Fase 2 possa funzionare e essere testata autonomamente.
+%%      Entrambe le liste sono intersecate con i nodi configurati: il
+%%      monitoraggio e' attivo con {node_type, all}, quindi una shell
+%%      diagnostica attaccata al cluster comparirebbe altrimenti nel
+%%      conteggio del quorum e fra i partecipanti allo snapshot.
 %% @end
 %%%-------------------------------------------------------------------
 -module(cluster_manager).
 -behaviour(gen_server).
 
--export([start_link/0, get_nodes/0, get_connected_nodes/0]).
+-export([start_link/0, get_nodes/0, get_connected_nodes/0,
+         configured_nodes/0, get_participants/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -35,7 +40,7 @@
 -define(RECONNECT_INTERVAL, 10000).
 
 -record(state, {
-    known_nodes     = [] :: [node()],   %% Nodi peer configurati
+    known_nodes     = [] :: [node()],   %% Nodi peer configurati (senza il nostro)
     connected_nodes = [] :: [node()],   %% Nodi attualmente connessi
     self_node       :: node()
 }).
@@ -47,15 +52,29 @@
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
-%% Restituisce tutti i nodi peer configurati (connessi o meno).
+%% Restituisce tutti i nodi peer configurati (connessi o meno), escluso il nostro.
 -spec get_nodes() -> [node()].
 get_nodes() ->
     gen_server:call(?SERVER, get_nodes).
 
-%% Restituisce solo i nodi attualmente connessi.
+%% Restituisce solo i nodi peer attualmente connessi.
 -spec get_connected_nodes() -> [node()].
 get_connected_nodes() ->
     gen_server:call(?SERVER, get_connected_nodes).
+
+%% Lista STATICA di tutti i nodi del cluster, incluso il nostro.
+%% E' il denominatore del quorum in leader_election: deve essere statica,
+%% perche' una lista che si restringe da sola durante una partizione
+%% renderebbe la guardia di maggioranza inutile.
+-spec configured_nodes() -> [node()].
+configured_nodes() ->
+    gen_server:call(?SERVER, configured_nodes).
+
+%% Lista ORDINATA e stabile dei nodi vivi del cluster, incluso il nostro.
+%% E' la lista che lo snapshot congela all'avvio del taglio.
+-spec get_participants() -> [node()].
+get_participants() ->
+    gen_server:call(?SERVER, get_participants).
 
 %%====================================================================
 %% gen_server callbacks
@@ -97,6 +116,16 @@ handle_call(get_nodes, _From, State) ->
 handle_call(get_connected_nodes, _From, State) ->
     {reply, State#state.connected_nodes, State};
 
+handle_call(configured_nodes, _From, State) ->
+    {reply, all_configured(State), State};
+
+handle_call(get_participants, _From, State) ->
+    %% Nodi vivi secondo il kernel, intersecati con quelli configurati:
+    %% una shell distribuita non deve diventare un partecipante fantasma.
+    Cfg = all_configured(State),
+    Live = lists:usort([node() | nodes()]),
+    {reply, [N || N <- Live, lists:member(N, Cfg)], State};
+
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
 
@@ -136,7 +165,7 @@ handle_info(reconnect_tick, State) ->
 %%--------------------------------------------------------------------
 handle_info(initial_election, State) ->
     io:format("[CLUSTER] Trigger elezione iniziale~n"),
-    maybe_start_election(),
+    leader_election:start_election(),
     {noreply, State};
 
 %%--------------------------------------------------------------------
@@ -147,7 +176,7 @@ handle_info({nodeup, Node, _InfoList}, State) ->
     NewConnected = lists:usort([Node | State#state.connected_nodes]),
     %% Un nuovo nodo nel cluster: serve un'elezione cosi' tutti sanno chi
     %% e' il leader (incluso il nuovo arrivato).
-    maybe_start_election(),
+    leader_election:start_election(),
     {noreply, State#state{connected_nodes = NewConnected}};
 
 %%--------------------------------------------------------------------
@@ -156,9 +185,10 @@ handle_info({nodeup, Node, _InfoList}, State) ->
 handle_info({nodedown, Node, _InfoList}, State) ->
     io:format("[CLUSTER] Nodo disconnesso: ~p~n", [Node]),
     NewConnected = lists:delete(Node, State#state.connected_nodes),
-    %% Se il nodo caduto era il leader dobbiamo eleggerne uno nuovo.
-    %% La logica "era il leader?" e' dentro leader_election, se esiste.
-    maybe_start_election_on_nodedown(Node),
+    %% La decisione "rieleggere o retrocedere" dipende dal ruolo corrente e
+    %% dal quorum, quindi vive dentro leader_election: qui ci limitiamo a
+    %% notificare l'evento.
+    leader_election:node_down(Node),
     {noreply, State#state{connected_nodes = NewConnected}};
 
 %% Varianti senza InfoList (net_kernel:monitor_nodes(true) senza opzioni)
@@ -181,6 +211,11 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal
 %%====================================================================
 
+%% Lista statica completa: peer configurati + il nodo locale.
+%% init/1 filtra se stesso da peer_nodes, quindi va ri-aggiunto qui.
+all_configured(#state{known_nodes = Known, self_node = Self}) ->
+    lists:usort([Self | Known]).
+
 %% Pinga una lista di nodi, ritorna quelli che hanno risposto pong.
 -spec ping_all([node()]) -> [node()].
 ping_all(Nodes) ->
@@ -193,36 +228,3 @@ ping_all(Nodes) ->
                 false
         end
     end, Nodes).
-
-%% Chiama leader_election:start_election() se il modulo esiste.
-%% Se siamo ancora in Fase 2 (leader_election non compilato),
-%% il tentativo fallisce silenziosamente.
-maybe_start_election() ->
-    try
-        leader_election:start_election()
-    catch
-        error:undef ->
-            io:format("[CLUSTER] leader_election non ancora disponibile, elezione rimandata~n");
-        _Class:_Reason ->
-            ok
-    end.
-
-%% In caso di nodedown, controlla se il nodo caduto era il leader.
-%% Se si', lancia un'elezione d'emergenza.
-maybe_start_election_on_nodedown(DownNode) ->
-    try
-        case leader_election:get_leader() of
-            {ok, DownNode} ->
-                io:format("[CLUSTER] *** LEADER ~p CADUTO! Elezione d'emergenza ***~n", [DownNode]),
-                leader_election:start_election();
-            _ ->
-                %% Il nodo caduto non era il leader: lanciamo comunque
-                %% un'elezione per riallineare tutti.
-                leader_election:start_election()
-        end
-    catch
-        error:undef ->
-            io:format("[CLUSTER] leader_election non ancora disponibile~n");
-        _Class:_Reason ->
-            ok
-    end.

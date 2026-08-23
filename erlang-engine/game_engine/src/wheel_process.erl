@@ -65,8 +65,11 @@ get_state() ->
 force_segment(Seg) ->
     gen_server:cast(?MODULE, {force_segment, Seg}).
 
+%% cast, non call: il worker lo invoca da un altro nodo e una call
+%% andrebbe in timeout mentre il wheel e' bloccato nel minigioco.
+%% Il rimborso non torna piu' come valore di ritorno: lo pubblica il wheel.
 undo_bets(Username) ->
-    gen_server:call(?MODULE, {undo_bets, Username}).
+    gen_server:cast(?MODULE, {undo_bets, Username}).
 
 submit_choice(Username, Choice) ->
     gen_server:cast(?MODULE, {minigame_choice, Username, Choice}).
@@ -101,21 +104,6 @@ handle_call(get_state, _From, State) ->
     },
     {reply, Reply, State};
 
-%% maps:get/3 con default: una bet malformata non deve far crashare il processo
-handle_call({undo_bets, Username}, _From, State = #state{phase = betting, bets = Bets}) ->
-    % Trova tutte le scommesse dell'utente
-    UserBets = lists:filter(fun(B) -> maps:get(<<"username">>, B, <<"">>) == Username end, Bets),
-    OtherBets = lists:filter(fun(B) -> maps:get(<<"username">>, B, <<"">>) =/= Username end, Bets),
-    
-    % Calcola il totale da rimborsare
-    TotalRefund = lists:foldl(fun(B, Acc) -> Acc + maps:get(<<"amount">>, B, 0.0) end, 0.0, UserBets),
-    io:format("[WHEEL] Scommesse annullate per ~s: totale ~p~n", [Username, TotalRefund]),
-    
-    {reply, TotalRefund, State#state{bets = OtherBets}};
-handle_call({undo_bets, _Username}, _From, State) ->
-    % Se non è in fase betting, non rimborsiamo (oppure gestiamo altrimenti)
-    {reply, 0.0, State};
-
 handle_call(_Req, _From, State) ->
     {reply, {error, unknown}, State}.
 
@@ -126,6 +114,27 @@ handle_cast({force_segment, Seg}, State) ->
     io:format("[WHEEL] Forzando segmento per il prossimo giro: ~s~n", [Seg]),
     {noreply, State#state{forced_segment = Seg}};
     
+%% maps:get/3 con default: una bet malformata non deve far crashare il processo.
+%% Il rimborso viene pubblicato da qui e non piu' dal worker: con undo_bets
+%% diventata un cast, il worker non riceve piu' il totale annullato e senza
+%% questo l'annullamento smetterebbe di restituire i soldi.
+handle_cast({undo_bets, Username}, State = #state{active = true, phase = betting, bets = Bets}) ->
+    UserBets  = lists:filter(fun(B) -> maps:get(<<"username">>, B, <<"">>) == Username end, Bets),
+    OtherBets = lists:filter(fun(B) -> maps:get(<<"username">>, B, <<"">>) =/= Username end, Bets),
+    TotalRefund = lists:foldl(fun(B, Acc) -> Acc + maps:get(<<"amount">>, B, 0.0) end, 0.0, UserBets),
+    case TotalRefund > 0 of
+        true ->
+            io:format("[WHEEL] Scommesse annullate per ~s: totale ~p~n", [Username, TotalRefund]),
+            publish_refund(Username, TotalRefund);
+        false ->
+            io:format("[WHEEL] Nessuna scommessa da annullare per ~s~n", [Username])
+    end,
+    {noreply, State#state{bets = OtherBets}};
+handle_cast({undo_bets, Username}, State) ->
+    io:format("[WHEEL] UNDO ignorato per ~s (fase: ~p, active: ~p)~n",
+              [Username, State#state.phase, State#state.active]),
+    {noreply, State};
+
 handle_cast({minigame_choice, Username, Choice}, State) ->
     NewChoices = maps:put(Username, Choice, State#state.minigame_choices),
     {noreply, State#state{minigame_choices = NewChoices}};
@@ -462,6 +471,22 @@ publish_minigame_start(Round, MinigameName, WinnerIndex, Details, History, TimeL
         "{\"type\":\"timer\",\"round\":~p,\"time_left\":~p,\"phase\":\"minigame\",\"minigame\":\"~s\",\"winner_index\":~p,\"details\":~s,\"history\":~s}",
         [Round, TimeLeftSec, MinigameName, WinnerIndex, DetailsJSON, HistStr])),
     publish_to_queue("state_queue", Payload).
+
+%% Rimborso dell'annullamento puntate, pubblicato dal wheel perche' e' lui
+%% a conoscere gli importi annullati. Formato identico a quello che
+%% pubblicava il worker, cosi' il gateway Java non cambia.
+publish_refund(Username, Amount) ->
+    Payload = lists:flatten(io_lib:format(
+        "{\"username\":\"~s\",\"amount\":~p,\"reason\":\"undo\"}",
+        [escape_json_string(Username), Amount])),
+    publish_to_queue("refunds_queue", Payload),
+    io:format("[WHEEL] Rimborso UNDO pubblicato per ~s ($~p)~n", [Username, Amount]).
+
+%% Escaping minimale per gli username dentro il JSON.
+escape_json_string(Str) when is_binary(Str) ->
+    escape_json_string(binary_to_list(Str));
+escape_json_string(Str) ->
+    lists:flatmap(fun($") -> "\\\""; ($\\) -> "\\\\"; (C) -> [C] end, Str).
 
 %% Pubblica un messaggio su una coda RabbitMQ via AMQP.
 %% unicode:characters_to_binary/1 (e non list_to_binary/1) perche' i payload

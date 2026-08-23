@@ -11,7 +11,7 @@ Sintesi ad alto livello delle modifiche descritte in [snapshot_implementation_pl
 Tre categorie:
 
 - **Già fatto e utilizzabile così com'è**: la connessione AMQP con pubblicazione lock-free, l'ack manuale e — prerequisito importante — la **possibilità di rifiutare un messaggio** rimettendolo in coda, che nella prima stesura figurava fra le cose da aggiungere. Inoltre **ogni nodo è già sottoscritto alla coda delle scommesse**: la topologia a *competing consumers* esiste già a livello di broker, quindi il lavoro da fare è più piccolo del previsto.
-- **Da correggere perché scritto secondo il piano vecchio**: l'elezione attiva e disattiva **anche il worker**, mentre questo piano richiede l'opposto (worker attivo ovunque, solo il processo della ruota è esclusivo del leader); e il worker in standby **rifiuta ogni messaggio rimettendolo in coda**, producendo un rimbalzo continuo fra broker e nodi passivi finché il messaggio non capita sul leader.
+- ✅ **Corretto** (era la Fase 0 qui sotto, ora eseguita): l'elezione non tocca più il worker, che resta attivo su tutti i nodi e instrada al leader; il rifiuto con rimessa in coda avviene solo quando nessun leader è noto; ed è entrata in funzione la guardia di quorum. Verificato su un cluster a 3 nodi.
 - **Ancora da scrivere**: tutto il resto — identificativo univoco di bet, ack differito, persistenza su Mnesia, quorum, snapshot vero e proprio, riconciliazione lato Java.
 
 Le conclusioni di questo piano sono state **riportate in `implementation_plan.md`**: le Fasi 4 e 5 di quel documento sono riscritte, le Fasi 2 e 3 marcate come implementate con le correzioni da applicare. Resta da fare il lavoro sul codice.
@@ -40,9 +40,9 @@ Il rifacimento nasce da una sola idea: **spostare i marker sui canali applicativ
 
 ---
 
-## Fase 0 — Retrofit di ciò che le Fasi 2-3 hanno già scritto
+## Fase 0 — Retrofit di ciò che le Fasi 2-3 hanno già scritto — ✅ FATTA
 
-Il passo che rimette il codice sulla traiettoria di questo piano. Finché non è fatto, tutto il resto lavora contro un'architettura che lo contraddice.
+Il passo che rimette il codice sulla traiettoria di questo piano. È stato eseguito e verificato: 6 scommesse pubblicate sulla coda si distribuiscono fra i tre worker e arrivano **tutte** al wheel del solo leader; l'annullamento puntate rimborsa correttamente; alla caduta del leader se ne elegge un altro, e un nodo rimasto solo su tre si rifiuta di autoeleggersi.
 
 - **L'elezione non deve più attivare e disattivare il worker.** L'ingestione delle bet è replicata su tutti i nodi; solo il processo della ruota resta esclusivo del leader. I due comandi verso il worker vanno rimossi e sostituiti dalla **comunicazione dell'identità del leader corrente**, propagata sia da chi vince l'elezione sia da chi riceve l'annuncio del nuovo coordinatore.
 - **Il flag «attivo/passivo» del worker sparisce**, e con esso il rifiuto sistematico dei messaggi sui nodi passivi. Il discriminante non è più il ruolo del nodo ma la presenza di un leader noto: si rimette un messaggio in coda **solo quando nessuno può servirlo** (nessun leader eletto, o nodo finito nella minoranza di una partizione). Sparisce così anche il rimbalzo continuo fra broker e standby introdotto dalla Fase 3.
@@ -77,8 +77,8 @@ Il worker acquisisce inoltre un **timeout sulle bet in attesa di risposta**: all
 
 Il cluster manager esiste già: qui si tratta di estenderlo.
 
-- **Bootstrap di Mnesia** con join dinamico in due rami distinti (primo nodo che crea lo schema; nodo che si aggiunge a un cluster dove la tabella esiste già), sempre dopo la formazione del cluster — il punto d'aggancio naturale è lo stesso ritardo che oggi precede la prima elezione, mai l'avvio del processo. Il passo che si dimentica più spesso è la conversione dello schema su disco: senza, un nodo perde la propria copia a ogni riavvio, vanificando la persistenza. Va inoltre dichiarata la dipendenza da Mnesia nella configurazione dell'applicazione, oggi assente.
-- Il gestore del cluster espone due liste distinte:
+- ❌ **Bootstrap di Mnesia** (unico punto ancora aperto di questa fase) con join dinamico in due rami distinti (primo nodo che crea lo schema; nodo che si aggiunge a un cluster dove la tabella esiste già), sempre dopo la formazione del cluster — il punto d'aggancio naturale è lo stesso ritardo che oggi precede la prima elezione, mai l'avvio del processo. Il passo che si dimentica più spesso è la conversione dello schema su disco: senza, un nodo perde la propria copia a ogni riavvio, vanificando la persistenza. Va inoltre dichiarata la dipendenza da Mnesia nella configurazione dell'applicazione, oggi assente.
+- ✅ Il gestore del cluster espone due liste distinte:
   - la lista **ordinata e stabile dei nodi vivi**, che è quella che lo snapshot congela all'avvio del taglio;
   - la lista **statica dei nodi configurati**, che è il denominatore del quorum. Usare la lista dei nodi correntemente connessi renderebbe la guardia inutile, perché in partizione si riduce da sola.
   Entrambe vanno **intersecate con l'elenco dei nodi configurati**: il monitoraggio include anche i nodi nascosti e le shell diagnostiche, che altrimenti regalerebbero quorum al lato sbagliato e diventerebbero partecipanti fantasma dello snapshot. La lista statica **non richiede nuova configurazione**: l'elenco completo dei tre nodi è già presente fra i parametri dell'applicazione, va solo riesposto includendo il nodo locale, che oggi viene filtrato all'avvio.
@@ -87,9 +87,9 @@ Il cluster manager esiste già: qui si tratta di estenderlo.
 
 ---
 
-## Fase 3 — Elezione del leader e quorum
+## Fase 3 — Elezione del leader e quorum — ✅ FATTA
 
-Modifica sostanziale rispetto al piano originale, e **in parte correzione di codice già scritto** (vedi Fase 0).
+Modifica sostanziale rispetto al piano originale, e in parte correzione di codice già scritto (vedi Fase 0). Tutto ciò che segue è ora nel codice.
 
 - **Il worker resta attivo su tutti i nodi**, non solo sul leader: l'ingestione delle bet è replicata, solo il processo wheel resta esclusivo del leader.
 - Il worker riceve dall'elezione l'identità del leader corrente e **instrada verso il leader tutti i percorsi dei messaggi in ingresso**, non solo le bet. È la conseguenza meno ovvia dell'ingestione distribuita e la più facile da dimenticare: comandi come la scelta del minigioco, l'annullamento delle puntate e i comandi del pannello dev, se consumati da uno standby, finirebbero al wheel dormiente di quel nodo e sparirebbero in silenzio — con 3 nodi, circa due volte su tre.

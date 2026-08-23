@@ -38,14 +38,16 @@ Gli step **1, 4, 7, 8, 9** sono indipendenti fra loro: se lavorate in due, si po
 
 Nessuna funzionalità nuova: rimette il codice sulla traiettoria dei due piani. Finché non è chiuso, tutto il resto lavora contro un'architettura che lo contraddice.
 
-### - [ ] Step 1 — Le due liste del cluster manager · S
+### - [x] Step 1 — Le due liste del cluster manager · S — ✅ FATTO
 **File**: [cluster_manager.erl](erlang-engine/game_engine/src/cluster_manager.erl)
 
 `configured_nodes/0` (= `peer_nodes` ∪ `node()`, lista **statica**, denominatore del quorum) e `get_participants/0` (nodi vivi ordinati, **intersecati** con la statica). L'intersezione non è pedanteria: `monitor_nodes` è attivo con `{node_type, all}`, quindi una shell diagnostica finirebbe fra i partecipanti allo snapshot e nel conteggio del quorum.
 
 **Verifica**: con 3 nodi entrambe tornano i 3; spegnendone uno, `get_participants` scende a 2 e `configured_nodes` resta a 3. Una shell extra non deve comparire in nessuna delle due.
 
-### - [ ] Step 2 — Worker attivo su tutti i nodi · M — **lo step delicato**
+> ✅ **Eseguita** su cluster a 3 nodi: `configured=[game1,game2,game3]` costante, `participants` sceso a 2 e poi a 1 man mano che i nodi cadevano. La shell di controllo `-hidden` non è mai comparsa in nessuna delle due liste.
+
+### - [x] Step 2 — Worker attivo su tutti i nodi · M — **lo step delicato** — ✅ FATTO
 **File**: [leader_election.erl](erlang-engine/game_engine/src/leader_election.erl), [worker.erl](erlang-engine/game_engine/src/worker.erl)
 
 - `apply_role/1`: via i cast `activate`/`deactivate` verso il `worker` (restano quelli verso `wheel_process`).
@@ -55,7 +57,7 @@ Nessuna funzionalità nuova: rimette il codice sulla traiettoria dei due piani. 
 - **Spostare la pubblicazione del rimborso dal worker al wheel**, mantenendo per ora il formato attuale su `refunds_queue`.
 
 > [!CAUTION]
-> Il percorso **bet** va instradato in questo stesso step, non dopo. Oggi una `place_bet` che ritorna `{error, not_leader}` cade nel ramo `Other` ([worker.erl:127](erlang-engine/game_engine/src/worker.erl#L127)): la bet viene loggata e **ackata senza rimborso** — saldo scalato, scommessa sparita. Finché il canale non diventa asincrono (Step 5), usa un'impalcatura temporanea:
+> Il percorso **bet** va instradato in questo stesso step, non dopo. Oggi una `place_bet` che ritorna `{error, not_leader}` cadeva nel ramo `Other` di `process_message/1`: la bet viene loggata e **ackata senza rimborso** — saldo scalato, scommessa sparita. Finché il canale non diventa asincrono (Step 5), usa un'impalcatura temporanea:
 > ```erlang
 > try gen_server:call({wheel_process, Leader}, {place_bet, BetMap}, 15000) of
 >     {ok, accepted}          -> rabbitmq_manager:ack(Tag);
@@ -67,7 +69,7 @@ Nessuna funzionalità nuova: rimette il codice sulla traiettoria dei due piani. 
 > Il timeout esplicito serve perché il wheel resta bloccato fino a 10 s nella call al minigioco: con il default a 5 s il worker crollerebbe. L'impalcatura si butta allo Step 5.
 
 > [!CAUTION]
-> **Convertire `undo_bets` a `cast` senza spostare il rimborso rompe l'annullamento delle puntate.** Oggi il worker usa il valore di ritorno della `call` per pubblicare il rimborso aggregato ([worker.erl:109-113](erlang-engine/game_engine/src/worker.erl#L109-L113)): con il `cast` quel valore sparisce, l'utente annulla, le bet spariscono dalla ruota e **i soldi non tornano**. Fino allo Step 6 il rimborso lo pubblica il **wheel**, nello stesso formato di oggi:
+> **Convertire `undo_bets` a `cast` senza spostare il rimborso rompe l'annullamento delle puntate.** Oggi il worker usa il valore di ritorno della `call` per pubblicare il rimborso aggregato (ramo `UNDO_BETS` di `process_message/1`): con il `cast` quel valore sparisce, l'utente annulla, le bet spariscono dalla ruota e **i soldi non tornano**. Fino allo Step 6 il rimborso lo pubblica il **wheel**, nello stesso formato di oggi:
 > ```erlang
 > %% in wheel_process.erl, dentro handle_cast({undo_bets, Username}, State)
 > %% Interim: stesso payload che pubblicava il worker. Allo Step 6 diventa
@@ -80,14 +82,32 @@ Nessuna funzionalità nuova: rimette il codice sulla traiettoria dei due piani. 
 
 **Verifica**: piazza bet da 3 browser e ripeti `minigame_choice` / `UNDO_BETS` / `force_segment` finché i log mostrano che li ha presi un worker **non** sul leader (con 3 nodi capita ~2 volte su 3): l'effetto dev'essere identico. Nessun rimbalzo continuo nei log degli standby. UNDO durante il minigioco: il worker non crasha.
 
-### - [ ] Step 3 — Guardia di quorum · S/M
+> ✅ **Eseguita** con RabbitMQ attivo e 3 nodi, pubblicando 6 bet direttamente su `bets_queue`:
+> - distribuite **2 / 2 / 2** fra i tre worker (competing consumers), quindi 4 su 6 consumate da uno **standby**;
+> - tutte e 6 arrivate al wheel del **leader** (`num_bets = 6` su `game3`, `0` sui due standby): l'instradamento funziona;
+> - `UNDO_BETS` → la bet sparisce dal wheel del leader (6 → 5) **e** il rimborso arriva su `refunds_queue`: `{"username":"p1","amount":10.0,"reason":"undo"}`. È la regressione che questo step rischiava di introdurre, ed è coperta;
+> - **zero** messaggi rimessi in coda, nessun crash, nessun report d'errore.
+>
+> Non verificati in questa sessione, perché richiedono il gateway Java e tempi di gioco lunghi: UNDO consumato da uno standby (qui l'ha preso il leader — stesso percorso di codice) e UNDO durante la fase `minigame`.
+
+### - [x] Step 3 — Guardia di quorum · S/M — ✅ FATTO
 **File**: [leader_election.erl](erlang-engine/game_engine/src/leader_election.erl), [cluster_manager.erl](erlang-engine/game_engine/src/cluster_manager.erl)
 
 `has_quorum/0` sulla lista statica dello Step 1, applicata in **due** punti: `declare_victory/1` e `node_down/1` (che sostituisce `maybe_start_election_on_nodedown/1`). Il secondo è quello che conta: il leader isolato nella minoranza non ripassa mai da `declare_victory`. Già che il modulo è aperto, aggiungi la guardia su `election_in_progress`, oggi memorizzato e mai letto.
 
 **Verifica**: partizione 2-1 isolando il **leader in carica** → si autoretrocede a standby; isolando uno standby → la minoranza non elegge nessuno e le sue bet vengono servite dalla maggioranza. Usa `-hidden` per la shell di osservazione.
 
-> ✅ **Fine Blocco A: la Phase 3 di `implementation_plan.md` è implementata con tutte le correzioni.**
+> ✅ **Eseguita** per crash (non ancora per partizione di rete vera):
+> - `game3` (nome più alto) eletto leader, riconosciuto da tutti e tre i nodi;
+> - ucciso `game3` → `game2` eletto in pochi secondi, quorum 2/3 ancora valido;
+> - ucciso `game2` → `game1` resta solo: `Quorum 1/3 non raggiunto`, `leader = undefined`, `is_leader = false`. **Non si autoelegge**, che è il comportamento voluto;
+> - il worker di `game1` riceve `{set_leader, undefined}` e da quel momento rimetterebbe in coda tutto ciò che consuma.
+>
+> Nota emersa dal test: un nodo `-hidden` che si disconnette **genera comunque** un `nodedown` (il monitoraggio è `{node_type, all}`), ma non entra né nel quorum né fra i partecipanti grazie all'intersezione dello Step 1. La protezione è quindi verificata sul campo.
+
+> ✅ **Blocco A COMPLETATO.** La Phase 3 di `implementation_plan.md` è implementata con tutte e cinque le correzioni. `escript ../rebar3 compile` pulito, zero warning.
+>
+> ⚠️ Attenzione all'uso a **nodo singolo**: `peer_nodes` elenca tutti e 3 i nodi, quindi un solo nodo avviato con `-sname` vede quorum 1/3 e **resta standby**, cioè il gioco non parte. È il comportamento corretto (consistenza sulla disponibilità), ma per lo sviluppo su un nodo solo bisogna o avviare senza `-sname` (nodo non distribuito: la guardia non si applica), oppure sovrascrivere la lista con `-game_engine peer_nodes "['game1@localhost']"`.
 
 ---
 
@@ -196,7 +216,7 @@ Sono quelli che, se invertiti, rompono qualcosa **in silenzio**:
 
 1. **`bet_id` (Step 4) prima dell'ack differito (Step 5)** — altrimenti una riconsegna del broker viene giocata due volte e pagata due volte.
 2. **UNDO su `bet_rejected` prima di rimuovere `refunds_queue`** (dentro lo Step 6) — altrimenti l'annullamento delle puntate smette di rimborsare.
+3. **Quorum (Step 3) prima del taglio (Step 10)** — altrimenti due leader concorrenti scrivono `snapshot_record` divergenti e Mnesia va riparata a mano al primo test di partizione.
+
 > [!IMPORTANT]
 > **Invariante da rispettare a ogni step**: nessuno step può lasciare una bet **addebitata senza esito e senza rimborso**. È la ragione delle impalcature negli Step 2 e 5: il percorso di rimborso non deve mai restare scoperto, nemmeno per uno step intermedio. Controllo rapido dopo ogni step: annulla una puntata e verifica che il saldo torni.
-
-3. **Quorum (Step 3) prima del taglio (Step 10)** — altrimenti due leader concorrenti scrivono `snapshot_record` divergenti e Mnesia va riparata a mano al primo test di partizione.
