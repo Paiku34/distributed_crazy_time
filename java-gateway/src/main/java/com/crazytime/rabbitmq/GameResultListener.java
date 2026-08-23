@@ -33,14 +33,38 @@ public class GameResultListener {
     private PayoutListener payoutListener;
 
     @Autowired
+    private BetRejectionHandler betRejectionHandler;
+
+    @Autowired
     private ObjectMapper objectMapper;
 
+    /**
+     * Unico punto di ingresso di results_queue. Il campo "type" decide chi
+     * elabora il messaggio: prima veniva ignorato e QUALUNQUE messaggio finiva
+     * a PayoutListener come se fosse l'esito di un round.
+     */
     @RabbitListener(queues = "results_queue")
     public void receiveGameResult(String message) {
-        log.info("Risultato ricevuto da Erlang: {}", message);
-        payoutListener.processPayouts(message);
-        gameStateCache.setLastResult(message);
-        messagingTemplate.convertAndSend("/topic/game-results", message);
+        log.info("Messaggio ricevuto da Erlang: {}", message);
+
+        String type = "result";
+        JsonNode root = null;
+        try {
+            root = objectMapper.readTree(message);
+            type = root.path("type").asText("result");
+        } catch (Exception e) {
+            log.warn("Messaggio non parsabile su results_queue: {}", e.getMessage());
+        }
+
+        switch (type) {
+            case "result" -> {
+                payoutListener.processPayouts(message);
+                gameStateCache.setLastResult(message);
+                messagingTemplate.convertAndSend("/topic/game-results", message);
+            }
+            case "bet_rejected" -> betRejectionHandler.rejectBet(root);
+            default -> log.warn("Tipo di messaggio non gestito su results_queue: {}", type);
+        }
     }
     
     @RabbitListener(queues = "state_queue")

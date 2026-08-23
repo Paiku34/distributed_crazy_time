@@ -26,8 +26,10 @@
 %% chiamanti di publish/2 e ack/1 (nessun hop attraverso il gen_server).
 -define(TAB, rabbitmq_manager_tab).
 
-%% Le stesse 4 code dichiarate da GatewayApplication.java, tutte durable.
--define(QUEUES, [<<"bets_queue">>, <<"state_queue">>, <<"results_queue">>, <<"refunds_queue">>]).
+%% Le stesse code dichiarate da GatewayApplication.java, tutte durable.
+%% refunds_queue e' stata rimossa: i rimborsi passano ora da un evento
+%% bet_rejected su results_queue, indirizzato per bet_id.
+-define(QUEUES, [<<"bets_queue">>, <<"state_queue">>, <<"results_queue">>]).
 
 -define(DEFAULT_CFG, #{
     host => "localhost",

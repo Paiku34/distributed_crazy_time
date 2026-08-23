@@ -37,6 +37,17 @@ public class Bet {
     @Column
     private Integer round;
 
+    /**
+     * Identificativo univoco della scommessa, generato dal gateway all'accettazione
+     * e propagato nel messaggio AMQP. E' cio' che rende indirizzabile una singola
+     * puntata: senza, rimborsi e payout devono essere riconciliati per importo o
+     * per username, e due puntate di pari importo diventano indistinguibili.
+     *
+     * Nullable per compatibilita' con le righe gia' presenti nel database.
+     */
+    @Column(unique = true)
+    private String betId;
+
     // Costruttore vuoto per JPA
     public Bet() {}
 
@@ -71,4 +82,6 @@ public class Bet {
     public void setPayout(BigDecimal payout) { this.payout = payout; }
     public Integer getRound() { return round; }
     public void setRound(Integer round) { this.round = round; }
+    public String getBetId() { return betId; }
+    public void setBetId(String betId) { this.betId = betId; }
 }

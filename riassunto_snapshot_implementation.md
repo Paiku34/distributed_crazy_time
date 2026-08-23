@@ -14,7 +14,7 @@ Tre categorie:
 - ✅ **Corretto** (era la Fase 0 qui sotto, ora eseguita): l'elezione non tocca più il worker, che resta attivo su tutti i nodi e instrada al leader; il rifiuto con rimessa in coda avviene solo quando nessun leader è noto; ed è entrata in funzione la guardia di quorum. Verificato su un cluster a 3 nodi.
 - **Ancora da scrivere**: tutto il resto — identificativo univoco di bet, ack differito, persistenza su Mnesia, quorum, snapshot vero e proprio, riconciliazione lato Java.
 
-Le conclusioni di questo piano sono state **riportate in `implementation_plan.md`**: le Fasi 4 e 5 di quel documento sono riscritte, le Fasi 2 e 3 marcate come implementate con le correzioni da applicare. Resta da fare il lavoro sul codice.
+Le conclusioni di questo piano sono state **riportate in `implementation_plan.md`**, e il lavoro sul codice è iniziato: sono completate la **Fase 0 (retrofit)**, la **Fase 1 (prerequisiti)** e la parte di **Fase 3** relativa al quorum, oltre a metà della **Fase 6** (lato Java). Restano Mnesia, lo snapshot vero e proprio, la regola R3 e il recovery.
 
 Un chiarimento che cambia un'argomentazione della prima stesura: oggi il worker inoltra la scommessa al processo della ruota con una **chiamata sincrona locale** e conferma al broker solo dopo la risposta. La finestra di perdita descritta più avanti quindi **non esiste ancora**: verrebbe *introdotta* dal passaggio a comunicazione asincrona, ed è l'ack differito a chiuderla prima che si apra.
 
@@ -52,9 +52,9 @@ Il passo che rimette il codice sulla traiettoria di questo piano. È stato esegu
 
 ---
 
-## Fase 1 — Prerequisiti
+## Fase 1 — Prerequisiti — ✅ FATTA
 
-Modifiche indipendenti dallo snapshot, da fare per prime perché tutto il resto vi si appoggia. **L'ordine interno conta.**
+Modifiche indipendenti dallo snapshot, da fare per prime perché tutto il resto vi si appoggia. **L'ordine interno conta**, ed è stato rispettato: identificativo di bet prima dell'ack differito, percorso di annullamento spostato sul nuovo evento prima di rimuovere la vecchia coda dei rimborsi.
 
 - **Identificatore univoco di bet**: un `bet_id` UUID generato da Java, presente sia sul messaggio AMQP sia sull'entità persistita, mentre il numero di round resta assegnato in modo autoritativo da Erlang. È il prerequisito di tutto il resto e la correzione alla radice di bug finora affrontati solo per sintomo.
 - **Stato del round promosso nello stato del processo wheel**: oggi segmento vincente, indice e dettagli del minigioco vivono solo dentro messaggi temporizzati in volo. Senza questo, nessun recovery è possibile.
@@ -65,7 +65,7 @@ Modifiche indipendenti dallo snapshot, da fare per prime perché tutto il resto 
 
 ### Durabilità: l'ack differito
 
-Oggi il worker conferma al broker **dopo** una chiamata sincrona al processo della ruota, che gira sullo stesso nodo: la conferma significa già «il wheel ha deciso». Passando alla comunicazione asincrona cross-nodo, quella garanzia si perderebbe: fra la conferma e l'arrivo del messaggio la bet **non esisterebbe in nessuno stato replicato** — è uscita dal broker, il wallet è già stato addebitato, e se il leader crasha in fase di puntata la bet è persa in silenzio: il giocatore ha pagato, il sistema non sa che esiste.
+Il canale è passato ad asincrono **insieme** all'ack differito, quindi la finestra di perdita non si è mai aperta. Il ragionamento, per memoria: con la vecchia chiamata sincrona la conferma al broker significava già «il wheel ha deciso»; passando alla comunicazione asincrona cross-nodo quella garanzia si sarebbe persa e fra la conferma e l'arrivo del messaggio la bet **non esisterebbe in nessuno stato replicato** — è uscita dal broker, il wallet è già stato addebitato, e se il leader crasha in fase di puntata la bet è persa in silenzio: il giocatore ha pagato, il sistema non sa che esiste.
 
 **Rimedio**: l'ack viene differito fino alla risposta del wheel, conservando anche dopo il passaggio ad asincrono il significato che ha oggi. Se il leader muore prima di rispondere, il broker riconsegna automaticamente i messaggi non ackati a un worker vivo e la bet entra nel round successivo — strettamente meglio di un rimborso. Il broker torna a essere il buffer durevole che è. Il rischio introdotto (riconsegna di una bet già accettata il cui ack si è perso) è coperto dalla deduplica per `bet_id`: senza l'UUID questo rimedio non sarebbe praticabile.
 
@@ -166,9 +166,10 @@ Viene inoltre eliminato il rimborso globale su tutte le bet pendenti, che colpiv
 
 ---
 
-## Fase 6 — Allineamento del gateway Java e del frontend
+## Fase 6 — Allineamento del gateway Java e del frontend — 🔧 A METÀ
 
-Il gateway Java è rimasto **invariato** rispetto alla prima stesura di questo piano: tutto quanto segue è ancora interamente da fare.
+✅ Già fatti: identificativo univoco sulla bet con serializzazione vera, ricerche per identificativo e per round, dispatch sul tipo di messaggio, handler del rifiuto puntuale (idempotente), rimozione della vecchia coda dei rimborsi e del suo listener.
+❌ Restano: handler del ledger con le regole R1/R2, payout per round, rimozione dei blocchi che inghiottono le eccezioni, notifica di round annullato sul frontend.
 
 - **Entità e API**: nuovo campo identificativo univoco sulla bet, generato all'accettazione e incluso nel messaggio; ricerche per identificativo e per round + stato. Contestualmente, la costruzione del JSON passa a una serializzazione vera invece della concatenazione di stringhe (oggi l'username non viene mai escapato).
 - **Dispatch sul tipo di messaggio**, oggi completamente ignorato: qualunque messaggio in arrivo viene trattato come risultato di round. I quattro tipi (risultato, ledger, annullamento round, rifiuto puntuale) vanno instradati ai rispettivi handler.

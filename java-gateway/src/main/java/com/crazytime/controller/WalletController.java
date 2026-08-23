@@ -14,9 +14,13 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 @RestController
@@ -36,6 +40,9 @@ public class WalletController {
 
     @Autowired
     private GameStateCache gameStateCache;
+
+    @Autowired
+    private ObjectMapper objectMapper;
 
     private Player reloadPlayer(Player player) {
         return playerRepository.findById(player.getId())
@@ -59,8 +66,11 @@ public class WalletController {
             return ResponseEntity.status(403).body(Map.of("success", false, "error", "Admin only"));
         }
         log.info("Ricevuto comando DEV force-result per segmento: {}", segment);
-        String json = String.format("{\"username\":\"admin\",\"amount\":0,\"segment\":\"FORCE_%s\"}", segment);
-        rabbitTemplate.convertAndSend("bets_queue", json);
+        ObjectNode payload = objectMapper.createObjectNode();
+        payload.put("username", "admin");
+        payload.put("amount", 0);
+        payload.put("segment", "FORCE_" + segment);
+        rabbitTemplate.convertAndSend("bets_queue", payload.toString());
         return ResponseEntity.ok(Map.of("success", true, "segment", segment));
     }
 
@@ -155,17 +165,30 @@ public class WalletController {
             String segment = entry.getKey();
             BigDecimal segAmount = entry.getValue();
 
+            // L'UUID viaggia con il messaggio ed e' persistito: e' cio' che rende
+            // la singola puntata indirizzabile da Erlang (deduplica, ledger, rimborso
+            // puntuale) senza doverla riconoscere per importo o per username.
+            String betId = UUID.randomUUID().toString();
+
             Bet bet = new Bet(updatedPlayer.getUsername(), segAmount, segment, currentRound);
+            bet.setBetId(betId);
             betRepository.save(bet);
 
-            String message = String.format(java.util.Locale.US,
-                "{\"username\":\"%s\",\"amount\":%.2f,\"segment\":\"%s\"}",
-                updatedPlayer.getUsername(), segAmount, segment);
+            // Serializzazione vera al posto della concatenazione: un username con
+            // un apice o un backslash produceva JSON malformato.
+            ObjectNode payload = objectMapper.createObjectNode();
+            payload.put("bet_id", betId);
+            payload.put("username", updatedPlayer.getUsername());
+            payload.put("amount", segAmount);
+            payload.put("segment", segment);
+            String message = payload.toString();
+
             rabbitTemplate.convertAndSend("bets_queue", message);
             log.info("Bet inviata a RabbitMQ: {}", message);
 
             savedBetsInfo.add(Map.of(
                 "id", bet.getId(),
+                "bet_id", betId,
                 "segment", segment,
                 "amount", segAmount,
                 "round", currentRound

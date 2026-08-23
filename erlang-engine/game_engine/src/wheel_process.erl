@@ -23,11 +23,19 @@
     phase = betting,          %% betting | spinning | minigame | cooldown
     time_left = ?BET_DURATION,
     round = 1,
-    bets = [],                %% [{Username, Amount, Segment}, ...]
+    bets = [],                %% [BetMap, ...] scommesse accettate del round
     forced_segment = undefined,
     history = [],             %% [{Segment, Multiplier}, ...]
     minigame_choices = #{},   %% #{Username => Choice}
-    active = false            %% only leader processes game ticks
+    active = false,           %% only leader processes game ticks
+    %% Esito del round nello stato del processo: prima viveva solo dentro i
+    %% messaggi send_after in volo, quindi un nuovo leader eletto dopo un crash
+    %% non aveva modo di sapere su cosa si fosse fermata la ruota.
+    winner_segment   = undefined,
+    winner_index     = undefined,
+    minigame_mod     = undefined,
+    minigame_details = undefined,
+    timer_ref        = undefined   %% timer di fase, ispezionabile e cancellabile
 }).
 
 %%====================================================================
@@ -54,10 +62,10 @@ wheel_segments() ->
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
-%% place_bet/1 — chiamata dal worker quando arriva una scommessa da RabbitMQ.
-%% Bet = #{username => ..., amount => ..., segment => ...}
+%% place_bet/1 — inoltro asincrono di una scommessa (usata dal worker locale
+%% e dalla shell). L'esito torna come {bet_result, BetId, Verdict} al mittente.
 place_bet(Bet) ->
-    gen_server:call(?MODULE, {place_bet, Bet}).
+    gen_server:cast(?MODULE, {bet, Bet, node()}).
 
 get_state() ->
     gen_server:call(?MODULE, get_state).
@@ -83,29 +91,53 @@ init([]) ->
     io:format("========================================~n~n"),
     {ok, #state{active = false}}.
 
-%% --- PLACE BET (solo durante betting, solo se active) ---
-handle_call({place_bet, _Bet}, _From, State = #state{active = false}) ->
-    io:format("[WHEEL] Scommessa RIFIUTATA — non sono il leader~n"),
-    {reply, {error, not_leader}, State};
-handle_call({place_bet, Bet}, _From, State = #state{active = true, phase = betting, bets = Bets}) ->
-    io:format("[WHEEL] Scommessa accettata: ~p~n", [Bet]),
-    {reply, {ok, accepted}, State#state{bets = [Bet | Bets]}};
-handle_call({place_bet, _Bet}, _From, State) ->
-    io:format("[WHEEL] Scommessa RIFIUTATA — fase: ~p~n", [State#state.phase]),
-    {reply, {error, betting_closed}, State};
-
 %% --- GET STATE ---
 handle_call(get_state, _From, State) ->
     Reply = #{
         phase => State#state.phase,
         time_left => State#state.time_left,
         round => State#state.round,
-        num_bets => length(State#state.bets)
+        num_bets => length(State#state.bets),
+        winner_segment => State#state.winner_segment,
+        winner_index => State#state.winner_index
     },
     {reply, Reply, State};
 
 handle_call(_Req, _From, State) ->
     {reply, {error, unknown}, State}.
+
+%% --- SCOMMESSA (asincrona, dal worker che l'ha consumata dal broker) ---
+%%
+%% L'esito torna al worker mittente: solo lui possiede il delivery tag da
+%% ackare. Tre verdetti: accepted, rejected (con rimborso), not_leader
+%% (il worker rimette la scommessa in coda invece di scartarla).
+handle_cast({bet, BetMap, FromNode}, State = #state{active = false}) ->
+    io:format("[WHEEL] Scommessa RIFIUTATA — non sono il leader~n"),
+    reply_bet_result(FromNode, bet_id(BetMap), not_leader),
+    {noreply, State};
+
+handle_cast({bet, BetMap, FromNode}, State = #state{active = true, phase = betting, bets = Bets}) ->
+    BetId = bet_id(BetMap),
+    case is_duplicate(BetId, Bets) of
+        true ->
+            %% Riconsegna del broker di una scommessa gia' accettata (l'ack
+            %% precedente si e' perso). Va riackata, non rigiocata.
+            io:format("[WHEEL] Bet ~s gia' presente nel round: deduplicata~n", [BetId]),
+            reply_bet_result(FromNode, BetId, accepted),
+            {noreply, State};
+        false ->
+            io:format("[WHEEL] Scommessa accettata: ~p~n", [BetMap]),
+            reply_bet_result(FromNode, BetId, accepted),
+            {noreply, State#state{bets = [BetMap | Bets]}}
+    end;
+
+handle_cast({bet, BetMap, FromNode}, State) ->
+    %% Puntate chiuse: la scommessa e' arrivata tardi. Va rimborsata subito e
+    %% in modo puntuale, altrimenti resterebbe PENDING con il saldo scalato.
+    io:format("[WHEEL] Scommessa RIFIUTATA — fase: ~p~n", [State#state.phase]),
+    publish_bet_rejected(bet_id(BetMap), State#state.round, <<"betting_closed">>),
+    reply_bet_result(FromNode, bet_id(BetMap), rejected),
+    {noreply, State};
 
 handle_cast({force_segment, <<"NONE">>}, State) ->
     io:format("[WHEEL] Annullamento forzatura segmento (esito casuale)~n"),
@@ -115,7 +147,7 @@ handle_cast({force_segment, Seg}, State) ->
     {noreply, State#state{forced_segment = Seg}};
     
 %% maps:get/3 con default: una bet malformata non deve far crashare il processo.
-%% Il rimborso viene pubblicato da qui e non piu' dal worker: con undo_bets
+%% Il rimborso viene pubblicato da qui e non dal worker: con undo_bets
 %% diventata un cast, il worker non riceve piu' il totale annullato e senza
 %% questo l'annullamento smetterebbe di restituire i soldi.
 handle_cast({undo_bets, Username}, State = #state{active = true, phase = betting, bets = Bets}) ->
@@ -125,7 +157,11 @@ handle_cast({undo_bets, Username}, State = #state{active = true, phase = betting
     case TotalRefund > 0 of
         true ->
             io:format("[WHEEL] Scommesse annullate per ~s: totale ~p~n", [Username, TotalRefund]),
-            publish_refund(Username, TotalRefund);
+            %% Un evento per ogni bet_id annullato: il rimborso aggregato per
+            %% importo non permetteva di sapere QUALE puntata veniva chiusa.
+            lists:foreach(fun(B) ->
+                publish_bet_rejected(bet_id(B), State#state.round, <<"undo">>)
+            end, UserBets);
         false ->
             io:format("[WHEEL] Nessuna scommessa da annullare per ~s~n", [Username])
     end,
@@ -189,8 +225,13 @@ handle_info(tick, State = #state{active = true, phase = betting, time_left = 1})
 
     io:format("[WHEEL] La ruota si ferma su: ~s (indice ~p)~n", [WinnerSeg, WinnerIndex]),
     
-    %% Reset forced_segment
-    State1 = State#state{forced_segment = undefined},
+    %% Esito e timer finiscono nello stato: senza, esistono solo dentro il
+    %% messaggio send_after in volo e un nuovo leader non potrebbe recuperarli.
+    State1 = State#state{forced_segment = undefined,
+                         winner_segment = WinnerSeg,
+                         winner_index = WinnerIndex,
+                         minigame_mod = undefined,
+                         minigame_details = undefined},
 
     %% Determina se è un moltiplicatore diretto o un minigioco
     case segment_type(WinnerSeg) of
@@ -198,15 +239,16 @@ handle_info(tick, State = #state{active = true, phase = betting, time_left = 1})
             %% Pubblica spinning state con winner_index per l'animazione
             publish_spinning(State1#state.round, WinnerIndex, WinnerSeg, State1#state.history),
             %% Dopo 10.5s (tempo per l'animazione), risolvi il round
-            erlang:send_after(10500, self(), {resolve_multiplier, WinnerSeg, Value, WinnerIndex}),
-            {noreply, State1#state{phase = spinning, time_left = 0}};
+            TRef = erlang:send_after(10500, self(), {resolve_multiplier, WinnerSeg, Value, WinnerIndex}),
+            {noreply, State1#state{phase = spinning, time_left = 0, timer_ref = TRef}};
         {minigame, Module} ->
             io:format("[WHEEL] BONUS! Entriamo in fase minigame: ~p~n", [Module]),
             %% Pubblica spinning state con winner_index
             publish_spinning(State1#state.round, WinnerIndex, WinnerSeg, State1#state.history),
             %% Dopo 10.5 secondi (tempo per l'animazione della ruota nel frontend), avvia il minigioco
-            erlang:send_after(10500, self(), {start_minigame, WinnerSeg, Module, WinnerIndex}),
-            {noreply, State1#state{phase = spinning, time_left = 0}}
+            TRef = erlang:send_after(10500, self(), {start_minigame, WinnerSeg, Module, WinnerIndex}),
+            {noreply, State1#state{phase = spinning, time_left = 0,
+                                   minigame_mod = Module, timer_ref = TRef}}
     end;
 
 %% --- RESOLVE MULTIPLIER (dopo animazione ruota) ---
@@ -233,8 +275,9 @@ handle_info({start_minigame, SegName, Module, WinnerIndex}, State) ->
             io:format("[WHEEL] Mini-game ~p in corso (attesa scelte utente per ~ps)...~n", [Module, TimeLeftSec]),
             publish_minigame_start(State#state.round, SegName, WinnerIndex, Details, State#state.history, TimeLeftSec),
             %% Schedula la risoluzione vera e propria
-            erlang:send_after(WaitTimeAsync, self(), {resolve_async_minigame, SegName, Details, BonusBets, WinnerIndex}),
-            {noreply, State#state{phase = minigame, time_left = TimeLeftSec}};
+            TRef = erlang:send_after(WaitTimeAsync, self(), {resolve_async_minigame, SegName, Details, BonusBets, WinnerIndex}),
+            {noreply, State#state{phase = minigame, time_left = TimeLeftSec,
+                                  minigame_details = Details, timer_ref = TRef}};
         {ok, Multiplier, Details} ->
             publish_minigame_start(State#state.round, SegName, State#state.history),
             io:format("[WHEEL] Mini-game ~p completato. Moltiplicatore: x~p~n", [Module, Multiplier]),
@@ -313,7 +356,11 @@ handle_info(new_round, State) ->
     io:format("========================================~n~n"),
     publish_timer(?BET_DURATION, NewRound, State#state.history),
     erlang:send_after(1000, self(), tick),
-    {noreply, State#state{phase = betting, time_left = ?BET_DURATION, round = NewRound, bets = [], minigame_choices = #{}}};
+    {noreply, State#state{phase = betting, time_left = ?BET_DURATION, round = NewRound,
+                          bets = [], minigame_choices = #{},
+                          winner_segment = undefined, winner_index = undefined,
+                          minigame_mod = undefined, minigame_details = undefined,
+                          timer_ref = undefined}};
 
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -472,15 +519,32 @@ publish_minigame_start(Round, MinigameName, WinnerIndex, Details, History, TimeL
         [Round, TimeLeftSec, MinigameName, WinnerIndex, DetailsJSON, HistStr])),
     publish_to_queue("state_queue", Payload).
 
-%% Rimborso dell'annullamento puntate, pubblicato dal wheel perche' e' lui
-%% a conoscere gli importi annullati. Formato identico a quello che
-%% pubblicava il worker, cosi' il gateway Java non cambia.
-publish_refund(Username, Amount) ->
+%% Identificativo della scommessa: undefined per i messaggi pubblicati a mano.
+bet_id(BetMap) when is_map(BetMap) -> maps:get(<<"bet_id">>, BetMap, undefined);
+bet_id(_) -> undefined.
+
+%% Deduplica: una riconsegna del broker non deve far giocare due volte la
+%% stessa puntata. Senza bet_id non si puo' decidere, quindi si accetta.
+is_duplicate(undefined, _Bets) -> false;
+is_duplicate(BetId, Bets) ->
+    lists:any(fun(B) -> bet_id(B) =:= BetId end, Bets).
+
+%% Esito verso il worker che ha consumato il messaggio dal broker.
+reply_bet_result(FromNode, BetId, Verdict) ->
+    gen_server:cast({worker, FromNode}, {bet_result, BetId, Verdict}).
+
+%% Rifiuto puntuale di una singola scommessa, su results_queue.
+%% Sostituisce il rimborso per importo su refunds_queue: due puntate di pari
+%% importo su segmenti diversi erano indistinguibili lato gateway.
+publish_bet_rejected(undefined, Round, Reason) ->
+    io:format("[WHEEL] Bet senza bet_id rifiutata nel round ~p (~s): "
+              "nessun rimborso pubblicabile~n", [Round, Reason]);
+publish_bet_rejected(BetId, Round, Reason) ->
     Payload = lists:flatten(io_lib:format(
-        "{\"username\":\"~s\",\"amount\":~p,\"reason\":\"undo\"}",
-        [escape_json_string(Username), Amount])),
-    publish_to_queue("refunds_queue", Payload),
-    io:format("[WHEEL] Rimborso UNDO pubblicato per ~s ($~p)~n", [Username, Amount]).
+        "{\"type\":\"bet_rejected\",\"bet_id\":\"~s\",\"round\":~p,\"reason\":\"~s\"}",
+        [escape_json_string(BetId), Round, Reason])),
+    publish_to_queue("results_queue", Payload),
+    io:format("[WHEEL] bet_rejected pubblicato per ~s (~s)~n", [BetId, Reason]).
 
 %% Escaping minimale per gli username dentro il JSON.
 escape_json_string(Str) when is_binary(Str) ->

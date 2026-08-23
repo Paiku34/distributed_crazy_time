@@ -113,14 +113,16 @@ Nessuna funzionalità nuova: rimette il codice sulla traiettoria dei due piani. 
 
 ## Blocco B — Prerequisiti dello snapshot
 
-### - [ ] Step 4 — `bet_id` UUID · M
+### - [x] Step 4 — `bet_id` UUID · M — ✅ FATTO
 **File**: `Bet.java`, `WalletController.java`, `BetRepository.java`, [worker.erl](erlang-engine/game_engine/src/worker.erl)
 
 FIX 0.1.14: colonna univoca sull'entity, UUID generato all'accettazione, **Jackson** al posto di `String.format` (oggi l'username non è escapato), `findByBetId` e `findByRoundAndStatus`. Lato Erlang, `parse_bet_json/1` estrae anche `bet_id`; i comandi che non ne hanno uno (`force_segment`, `minigame_choice`) restano ad ack immediato.
 
 **Verifica**: ogni messaggio su `bets_queue` porta `bet_id` e lo stesso valore è nel DB. Un username con accento o apice non rompe più il JSON.
 
-### - [ ] Step 5 — Canale asincrono, ack differito, deduplica · L
+> ✅ **Eseguita** con gateway + broker + 3 nodi: la risposta di `/api/wallet/place-bet` riporta il `bet_id`, il messaggio AMQP lo contiene (`{"bet_id":"6f147804-…","username":…}`) ed è lo stesso valore persistito. Il payload è costruito con Jackson, quindi apici e accenti nell'username non producono più JSON malformato. La colonna è `unique` ma **nullable**, così le righe già presenti nel database non bloccano l'avvio.
+
+### - [x] Step 5 — Canale asincrono, ack differito, deduplica · L — ✅ FATTO
 **File**: [worker.erl](erlang-engine/game_engine/src/worker.erl), [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)
 
 - `worker → wheel`: `gen_server:cast({wheel_process, Leader}, {bet, BetMap})`; il wheel risponde `{bet_result, BetId, accepted | rejected}`.
@@ -131,7 +133,14 @@ FIX 0.1.14: colonna univoca sull'entity, UUID generato all'accettazione, **Jacks
 
 **Verifica**: uccidi il leader in fase `betting` → le bet non ackate rientrano dal broker e finiscono nel round successivo, **`Σ wallet` non cala**. Una riconsegna nello stesso round produce una sola riga, nessun doppio addebito.
 
-### - [ ] Step 6 — `bet_rejected` e smantellamento di `refunds_queue` · M
+> ✅ **Eseguita**, con il wheel del leader **sospeso** (`sys:suspend`) per rendere il test deterministico invece di dipendere dai tempi di un crash:
+> - nessun esito entro 15 s → `[WORKER] Nessun esito per la bet id-suspend entro 15s: rimessa in coda`, quindi `reject(Tag, true)` e riconsegna dal broker;
+> - alla ripresa del wheel l'esito tardivo arriva a un worker che non possiede più quel tag → `[WORKER] Esito tardivo per id-suspend, ignorato`, nessun doppio ack;
+> - **deduplica**: 4 bet con `bet_id` distinti → `num_bets = 4`; ripubblicando lo stesso `bet_id` → `[WHEEL] Bet id-1 gia' presente nel round: deduplicata`, `num_bets` resta 4.
+>
+> Non ancora coperta la riconsegna **fra round diversi**: la deduplica guarda solo le bet del round corrente. È la regola R3, che arriva allo Step 11 quando ci sarà Mnesia.
+
+### - [x] Step 6 — `bet_rejected` e smantellamento di `refunds_queue` · M — ✅ FATTO
 **File**: [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl), `GameResultListener.java`, [worker.erl](erlang-engine/game_engine/src/worker.erl), `GatewayApplication.java`, [rabbitmq_manager.erl](erlang-engine/game_engine/src/rabbitmq_manager.erl)
 
 Qui il rimborso **cambia formato**: i due percorsi che dallo Step 2 pubblicavano su `refunds_queue` (annullamento e bet rifiutata) passano a un evento puntuale per `bet_id`. Il wheel pubblica `{"type":"bet_rejected","bet_id":"<uuid>","round":R,"reason":...}` su `results_queue`; `GameResultListener` **dispatcha sul campo `type`**, oggi completamente ignorato, e l'handler rimborsa la singola bet solo se ancora `PENDING` (idempotenza garantita dallo stato stesso). `undo_bets` restituisce i `bet_id` annullati → un `bet_rejected` con `"reason":"undo"` per ciascuno.
@@ -141,12 +150,25 @@ Qui il rimborso **cambia formato**: i due percorsi che dallo Step 2 pubblicavano
 
 **Verifica**: UNDO riaccredita l'intero importo; due bet di pari importo su segmenti diversi non si scambiano più l'attribuzione; una bet in ritardo durante `spinning` finisce `REFUNDED` invece di restare `PENDING`.
 
-### - [ ] Step 7 — Stato del round nel record del wheel · S
+> ✅ **Eseguita end-to-end**, dal browser-equivalente (`curl` sul gateway) fino al saldo:
+> - saldo 125 → bet da 30 → **95** → `UNDO_BETS` → `[WHEEL] bet_rejected pubblicato per 2a52dd00-… (undo)` → `BetRejectionHandler: Bet 2a52dd00-… rimborsata (undo): $30.00 riaccreditati` → saldo **125**. Il rimborso è indirizzato per `bet_id`, non più per importo;
+> - **un evento per ogni bet annullata**: UNDO su un utente con 2 puntate → esattamente 2 `bet_rejected`;
+> - bet pubblicata durante `spinning` → `bet_rejected` con `"reason":"betting_closed"`: non resta `PENDING` con il saldo scalato;
+> - **idempotenza**: ripubblicando lo stesso `bet_rejected`, il gateway logga `bet_rejected ignorato, bet … gia' in stato REFUNDED` e il saldo non cambia. Serve davvero: nel test dell'ack differito lo stesso `bet_rejected` è stato emesso **due volte** (una per il cast ritardato, una per la riconsegna), ed è la guardia sullo stato a impedire il doppio accredito;
+> - anche il percorso felice funziona: bet piazzata dall'API, vinta, `payout` accreditato correttamente.
+
+### - [x] Step 7 — Stato del round nel record del wheel · S — ✅ FATTO
 **File**: [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)
 
 `winner_segment`, `winner_index`, `minigame_mod`, `minigame_details`, `timer_ref`. Oggi l'esito vive **solo** dentro i messaggi `send_after` in volo: senza questo passo nessun recovery è possibile.
 
 **Verifica**: `wheel_process:get_state()` mostra il vincitore anche durante `spinning`.
+
+> ✅ **Eseguita**: `get_state/0` espone ora `winner_segment` e `winner_index`, popolati al gong e azzerati a ogni nuovo round; ogni timer di fase è salvato in `timer_ref`.
+
+> ✅ **Blocco B COMPLETATO.** `escript ../rebar3 compile` e `mvn compile` puliti. Il canale worker → wheel è asincrono con ack differito, ogni scommessa ha un identificativo che attraversa tutto il sistema, e i rimborsi sono puntuali e idempotenti. `refunds_queue` non esiste più: `RefundListener`, il bean e la coda in `?QUEUES` sono stati rimossi.
+>
+> ⚠️ Resta scoperta la riconsegna **cross-round** (regola R3): la deduplica guarda solo le bet del round corrente, quindi una riconsegna che arriva nel round successivo verrebbe rigiocata. Si chiude allo Step 11, che ha bisogno di Mnesia (Step 8). Fino ad allora è l'unico punto in cui l'ack differito è esposto.
 
 ---
 

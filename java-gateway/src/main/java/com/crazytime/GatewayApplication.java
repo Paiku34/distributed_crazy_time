@@ -23,11 +23,6 @@ public class GatewayApplication {
         return new Queue("state_queue", true);
     }
 
-    @Bean
-    public Queue refundsQueue() {
-        return new Queue("refunds_queue", true);
-    }
-
     public static void main(String[] args) {
         SpringApplication.run(GatewayApplication.class, args);
     }
