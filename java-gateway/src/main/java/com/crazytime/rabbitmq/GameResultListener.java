@@ -36,6 +36,9 @@ public class GameResultListener {
     private BetRejectionHandler betRejectionHandler;
 
     @Autowired
+    private LedgerListener ledgerListener;
+
+    @Autowired
     private ObjectMapper objectMapper;
 
     /**
@@ -62,6 +65,7 @@ public class GameResultListener {
                 gameStateCache.setLastResult(message);
                 messagingTemplate.convertAndSend("/topic/game-results", message);
             }
+            case "round_ledger" -> ledgerListener.processLedger(root);
             case "bet_rejected" -> betRejectionHandler.rejectBet(root);
             default -> log.warn("Tipo di messaggio non gestito su results_queue: {}", type);
         }

@@ -13,6 +13,8 @@
 -module(wheel_process).
 -behaviour(gen_server).
 
+-include("game_engine.hrl").
+
 -export([start_link/0, place_bet/1, get_state/0, force_segment/1, undo_bets/1, submit_choice/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
@@ -35,8 +37,20 @@
     winner_index     = undefined,
     minigame_mod     = undefined,
     minigame_details = undefined,
-    timer_ref        = undefined   %% timer di fase, ispezionabile e cancellabile
+    timer_ref        = undefined,  %% timer di fase, ispezionabile e cancellabile
+    %% Stato del taglio Chandy-Lamport (vedi cl_recorder).
+    cl = cl_recorder:new(),
+    %% bet_id gia' liquidate negli ultimi round, ricaricate dai checkpoint.
+    %% Serve alla regola R3: `bets` viene azzerato a ogni round, quindi da
+    %% solo copre la riconsegna intra-round ma non quella che arriva dopo.
+    settled_bet_ids = sets:new()
 }).
+
+%% Quanti round di storia tenere nell'insieme di deduplica.
+-define(SETTLED_ROUNDS, 3).
+%% Se il collector muore, il partecipante non deve restare in registrazione
+%% per sempre: chiude da solo e riporta cio' che ha.
+-define(CL_ABORT_TIMEOUT, 10000).
 
 %%====================================================================
 %% Canonical 54-segment wheel (same order as frontend)
@@ -111,33 +125,36 @@ handle_call(_Req, _From, State) ->
 %% L'esito torna al worker mittente: solo lui possiede il delivery tag da
 %% ackare. Tre verdetti: accepted, rejected (con rimborso), not_leader
 %% (il worker rimette la scommessa in coda invece di scartarla).
-handle_cast({bet, BetMap, FromNode}, State = #state{active = false}) ->
-    io:format("[WHEEL] Scommessa RIFIUTATA — non sono il leader~n"),
-    reply_bet_result(FromNode, bet_id(BetMap), not_leader),
-    {noreply, State};
-
-handle_cast({bet, BetMap, FromNode}, State = #state{active = true, phase = betting, bets = Bets}) ->
-    BetId = bet_id(BetMap),
-    case is_duplicate(BetId, Bets) of
+%% Taglio in corso e canale ancora aperto: la scommessa e' IN TRANSITO.
+%% Entra nello stato del canale e verra' unita alle bet del round quando il
+%% taglio si chiude; l'esito al worker parte da li'. Aggiungerla anche a
+%% `bets` adesso significherebbe contarla due volte.
+handle_cast({bet, BetMap, FromNode}, State = #state{active = true, cl = CL}) when CL =/= undefined ->
+    case lists:member({worker, FromNode}, cl_recorder:in_open(CL)) of
         true ->
-            %% Riconsegna del broker di una scommessa gia' accettata (l'ack
-            %% precedente si e' perso). Va riackata, non rigiocata.
-            io:format("[WHEEL] Bet ~s gia' presente nel round: deduplicata~n", [BetId]),
-            reply_bet_result(FromNode, BetId, accepted),
-            {noreply, State};
+            io:format("[WHEEL] Bet ~s in transito al taglio: registrata sul canale~n",
+                      [fmt_id(bet_id(BetMap))]),
+            {noreply, State#state{cl = cl_recorder:on_app_msg({worker, FromNode}, BetMap, CL)}};
         false ->
-            io:format("[WHEEL] Scommessa accettata: ~p~n", [BetMap]),
-            reply_bet_result(FromNode, BetId, accepted),
-            {noreply, State#state{bets = [BetMap | Bets]}}
+            handle_bet(BetMap, FromNode, State)
     end;
 
 handle_cast({bet, BetMap, FromNode}, State) ->
-    %% Puntate chiuse: la scommessa e' arrivata tardi. Va rimborsata subito e
-    %% in modo puntuale, altrimenti resterebbe PENDING con il saldo scalato.
-    io:format("[WHEEL] Scommessa RIFIUTATA — fase: ~p~n", [State#state.phase]),
-    publish_bet_rejected(bet_id(BetMap), State#state.round, <<"betting_closed">>),
-    reply_bet_result(FromNode, bet_id(BetMap), rejected),
-    {noreply, State};
+    handle_bet(BetMap, FromNode, State);
+
+%% --- MARKER dal worker: chiude il canale entrante di quel nodo ---
+handle_cast({cl_marker, SnapId, {worker, N}}, State = #state{cl = CL}) ->
+    case cl_recorder:id(CL) =:= SnapId of
+        false ->
+            io:format("[WHEEL] Marker per un taglio non attivo (~p), ignorato~n", [SnapId]),
+            {noreply, State};
+        true ->
+            CL1 = cl_recorder:close({worker, N}, CL),
+            case cl_recorder:is_complete(CL1) of
+                true  -> {noreply, close_cut(SnapId, CL1, false, State)};
+                false -> {noreply, State#state{cl = CL1}}
+            end
+    end;
 
 handle_cast({force_segment, <<"NONE">>}, State) ->
     io:format("[WHEEL] Annullamento forzatura segmento (esito casuale)~n"),
@@ -179,7 +196,11 @@ handle_cast(activate, State = #state{active = false}) ->
     io:format("[WHEEL] ACTIVATO come leader — avvio game loop~n"),
     erlang:send_after(1000, self(), tick),
     publish_timer(?BET_DURATION, State#state.round, State#state.history),
-    {noreply, State#state{active = true, phase = betting, time_left = ?BET_DURATION}};
+    %% Regola R3: il nuovo leader ricarica dai checkpoint le bet gia'
+    %% liquidate, altrimenti le riconsegne che arrivano subito dopo un
+    %% crash verrebbero rigiocate.
+    {noreply, State#state{active = true, phase = betting, time_left = ?BET_DURATION,
+                          settled_bet_ids = reload_settled()}};
 handle_cast(activate, State = #state{active = true}) ->
     {noreply, State};  %% Gia' attivo
 
@@ -224,10 +245,16 @@ handle_info(tick, State = #state{active = true, phase = betting, time_left = 1})
     end,
 
     io:format("[WHEEL] La ruota si ferma su: ~s (indice ~p)~n", [WinnerSeg, WinnerIndex]),
+
+    %% === TAGLIO CHANDY-LAMPORT ===
+    %% Si avvia QUI, dopo l'estrazione: cosi' il taglio cattura insieme le
+    %% puntate e l'esito, e un nuovo leader eletto dopo un crash puo'
+    %% completare il round invece di annullarlo.
+    StateCut = start_cut(WinnerSeg, WinnerIndex, State),
     
     %% Esito e timer finiscono nello stato: senza, esistono solo dentro il
     %% messaggio send_after in volo e un nuovo leader non potrebbe recuperarli.
-    State1 = State#state{forced_segment = undefined,
+    State1 = StateCut#state{forced_segment = undefined,
                          winner_segment = WinnerSeg,
                          winner_index = WinnerIndex,
                          minigame_mod = undefined,
@@ -249,6 +276,16 @@ handle_info(tick, State = #state{active = true, phase = betting, time_left = 1})
             TRef = erlang:send_after(10500, self(), {start_minigame, WinnerSeg, Module, WinnerIndex}),
             {noreply, State1#state{phase = spinning, time_left = 0,
                                    minigame_mod = Module, timer_ref = TRef}}
+    end;
+
+%% --- ABORT del taglio: il collector non ha risposto ---
+handle_info({cl_abort, SnapId}, State = #state{cl = CL}) ->
+    case cl_recorder:id(CL) =:= SnapId andalso cl_recorder:is_recording(CL) of
+        true ->
+            io:format("[WHEEL] Taglio ~p non chiuso entro il timeout: chiusura forzata~n", [SnapId]),
+            {noreply, close_cut(SnapId, cl_recorder:close_all(CL), true, State)};
+        false ->
+            {noreply, State}
     end;
 
 %% --- RESOLVE MULTIPLIER (dopo animazione ruota) ---
@@ -424,7 +461,8 @@ compute_payouts(WinnerSeg, Multiplier, Bets) ->
                 Username = maps:get(<<"username">>, Bet, <<"unknown">>),
                 Amount = maps:get(<<"amount">>, Bet, 0),
                 Payout = Amount + (Amount * Multiplier),
-                {true, #{username => Username, bet => Amount, payout => Payout}};
+                {true, #{username => Username, bet => Amount, payout => Payout,
+                         bet_id => maps:get(<<"bet_id">>, Bet, <<"">>)}};
             false ->
                 false
         end
@@ -433,8 +471,10 @@ compute_payouts(WinnerSeg, Multiplier, Bets) ->
 %% Costruisce il JSON del risultato con winner_index e dettagli minigioco
 build_result_json(Winner, Type, Multiplier, WinnerIndex, Details, Payouts, Round) ->
     PayoutsJson = lists:map(fun(P) ->
-        io_lib:format("{\"username\":\"~s\",\"bet\":~p,\"payout\":~p}",
-                      [maps:get(username, P), maps:get(bet, P), maps:get(payout, P)])
+        io_lib:format("{\"username\":\"~s\",\"bet_id\":\"~s\",\"bet\":~p,\"payout\":~p}",
+                      [escape_json_string(maps:get(username, P)),
+                       maps:get(bet_id, P, <<"">>),
+                       maps:get(bet, P), maps:get(payout, P)])
     end, Payouts),
     PayoutsStr = "[" ++ string:join([lists:flatten(J) || J <- PayoutsJson], ",") ++ "]",
     DetailsStr = build_details_json(Details),
@@ -519,15 +559,154 @@ publish_minigame_start(Round, MinigameName, WinnerIndex, Details, History, TimeL
         [Round, TimeLeftSec, MinigameName, WinnerIndex, DetailsJSON, HistStr])),
     publish_to_queue("state_queue", Payload).
 
+%%====================================================================
+%% Taglio Chandy-Lamport (lato wheel: e' l'iniziatore)
+%%====================================================================
+
+%% Avvia il taglio: congela i partecipanti, salva lo stato locale ed emette
+%% i marker verso tutti i worker. I marker partono da QUESTO processo, non
+%% dal collector: devono condividere mailbox e ordine FIFO con i {bet, ...}.
+start_cut(WinnerSeg, WinnerIndex, State) ->
+    Participants = participants(),
+    SnapId = {State#state.round, node()},
+    snapshot:begin_snapshot(SnapId, Participants),
+    Local = #{round => State#state.round,
+              bets => State#state.bets,
+              phase => spinning,
+              winner_segment => WinnerSeg,
+              winner_index => WinnerIndex},
+    InCh = [{worker, N} || N <- Participants],
+    CL = cl_recorder:start(SnapId, Local, InCh),
+    lists:foreach(fun(N) ->
+        gen_server:cast({worker, N}, {cl_marker, SnapId, {wheel, node()}})
+    end, Participants),
+    erlang:send_after(?CL_ABORT_TIMEOUT, self(), {cl_abort, SnapId}),
+    io:format("[WHEEL] Taglio ~p avviato verso ~p~n", [SnapId, Participants]),
+    State#state{cl = CL}.
+
+%% Chiusura del taglio: le bet in transito ENTRANO nel round (sono state
+%% spedite prima che il worker apprendesse del taglio, quindi per il taglio
+%% causale appartengono a questo round), i mittenti ricevono l'esito, e il
+%% collector riceve la porzione di questo partecipante.
+close_cut(SnapId, CL, Degraded, State) ->
+    Channels = cl_recorder:channels(CL),
+    InTransit = lists:append(maps:values(Channels)),
+    lists:foreach(fun({{worker, N}, Msgs}) ->
+        [reply_bet_result(N, bet_id(B), accepted) || B <- Msgs]
+    end, maps:to_list(Channels)),
+    gen_server:cast({snapshot, node()},
+                    {cl_part, SnapId, {wheel, node()}, cl_recorder:local(CL), Channels}),
+    case InTransit of
+        [] -> ok;
+        _  -> io:format("[WHEEL] Taglio ~p chiuso~s: ~p bet in transito entrano nel round~n",
+                        [SnapId, case Degraded of true -> " (degradato)"; false -> "" end,
+                         length(InTransit)])
+    end,
+    Bets = InTransit ++ State#state.bets,
+    %% Regola R3: da qui in avanti queste bet non rientrano piu' in gioco,
+    %% nemmeno se il broker le riconsegna nei round successivi.
+    Settled = add_settled(Bets, State#state.settled_bet_ids),
+    State#state{cl = cl_recorder:new(), bets = Bets, settled_bet_ids = Settled}.
+
+participants() ->
+    try cluster_manager:get_participants() of
+        L when is_list(L) -> L
+    catch
+        _:_ -> [node()]
+    end.
+
+%%====================================================================
+%% Deduplica (regola R3)
+%%====================================================================
+
+%% Ricarica dai checkpoint su Mnesia i bet_id degli ultimi round. Va fatto
+%% all'attivazione come leader: e' subito dopo un crash che le riconsegne
+%% del broker arrivano, quindi un nuovo leader con l'insieme vuoto e'
+%% esattamente il caso in cui la regola serve di piu'.
+reload_settled() ->
+    Ids = lists:foldl(fun(Rec, Acc) ->
+              [bet_id(B) || B <- Rec#snapshot_record.ledger] ++ Acc
+          end, [], last_records(?SETTLED_ROUNDS)),
+    Set = sets:from_list([I || I <- Ids, I =/= undefined]),
+    case sets:size(Set) of
+        0 -> ok;
+        N -> io:format("[WHEEL] Deduplica: ricaricati ~p bet_id dai checkpoint~n", [N])
+    end,
+    Set.
+
+last_records(N) -> last_records(N, mnesia_last(), []).
+
+last_records(0, _Key, Acc) -> Acc;
+last_records(_N, '$end_of_table', Acc) -> Acc;
+last_records(N, Key, Acc) ->
+    Recs = try mnesia:dirty_read(snapshot_record, Key) catch _:_ -> [] end,
+    Prev = try mnesia:dirty_prev(snapshot_record, Key) catch _:_ -> '$end_of_table' end,
+    last_records(N - 1, Prev, Recs ++ Acc).
+
+mnesia_last() ->
+    try mnesia:dirty_last(snapshot_record) catch _:_ -> '$end_of_table' end.
+
+add_settled(Bets, Set) ->
+    lists:foldl(fun(B, Acc) ->
+        case bet_id(B) of
+            undefined -> Acc;
+            Id -> sets:add_element(Id, Acc)
+        end
+    end, Set, Bets).
+
+fmt_id(undefined) -> "senza id";
+fmt_id(Id) when is_binary(Id) -> binary_to_list(Id);
+fmt_id(Id) -> lists:flatten(io_lib:format("~p", [Id])).
+
 %% Identificativo della scommessa: undefined per i messaggi pubblicati a mano.
 bet_id(BetMap) when is_map(BetMap) -> maps:get(<<"bet_id">>, BetMap, undefined);
 bet_id(_) -> undefined.
 
 %% Deduplica: una riconsegna del broker non deve far giocare due volte la
 %% stessa puntata. Senza bet_id non si puo' decidere, quindi si accetta.
-is_duplicate(undefined, _Bets) -> false;
-is_duplicate(BetId, Bets) ->
+%%
+%% Due termini, non uno: `bets` viene azzerato a ogni round e da solo copre
+%% solo la riconsegna intra-round; `settled_bet_ids` copre quella che arriva
+%% nei round successivi, che e' il caso frequente perche' nasce da un crash.
+is_duplicate(undefined, _Bets, _Settled) -> false;
+is_duplicate(BetId, Bets, Settled) ->
+    sets:is_element(BetId, Settled) orelse
     lists:any(fun(B) -> bet_id(B) =:= BetId end, Bets).
+
+%% Esito di una scommessa fuori dal taglio.
+handle_bet(BetMap, FromNode, State = #state{active = false}) ->
+    io:format("[WHEEL] Scommessa RIFIUTATA — non sono il leader~n"),
+    reply_bet_result(FromNode, bet_id(BetMap), not_leader),
+    {noreply, State};
+handle_bet(BetMap, FromNode, State = #state{phase = betting, bets = Bets}) ->
+    BetId = bet_id(BetMap),
+    case is_duplicate(BetId, Bets, State#state.settled_bet_ids) of
+        true ->
+            %% Riconsegna del broker di una scommessa gia' accettata (l'ack
+            %% precedente si e' perso). Va riackata, non rigiocata.
+            io:format("[WHEEL] Bet ~s gia' liquidata: deduplicata~n", [fmt_id(BetId)]),
+            reply_bet_result(FromNode, BetId, accepted),
+            {noreply, State};
+        false ->
+            io:format("[WHEEL] Scommessa accettata: ~p~n", [BetMap]),
+            reply_bet_result(FromNode, BetId, accepted),
+            {noreply, State#state{bets = [BetMap | Bets]}}
+    end;
+handle_bet(BetMap, FromNode, State) ->
+    %% Puntate chiuse: la scommessa e' arrivata tardi. Va rimborsata subito e
+    %% in modo puntuale, altrimenti resterebbe PENDING con il saldo scalato.
+    BetId = bet_id(BetMap),
+    case is_duplicate(BetId, State#state.bets, State#state.settled_bet_ids) of
+        true ->
+            io:format("[WHEEL] Bet ~s gia' liquidata (fuori fase): deduplicata~n", [fmt_id(BetId)]),
+            reply_bet_result(FromNode, BetId, accepted),
+            {noreply, State};
+        false ->
+            io:format("[WHEEL] Scommessa RIFIUTATA — fase: ~p~n", [State#state.phase]),
+            publish_bet_rejected(BetId, State#state.round, <<"betting_closed">>),
+            reply_bet_result(FromNode, BetId, rejected),
+            {noreply, State}
+    end.
 
 %% Esito verso il worker che ha consumato il messaggio dal broker.
 reply_bet_result(FromNode, BetId, Verdict) ->

@@ -406,9 +406,15 @@ wait_for_snapshot_table() ->
             io:format("[MNESIA] Tabella non disponibile: ~p~n", [Other])
     end.
 
+%% Ritorna SEMPRE una lista: quando la tabella non esiste ancora,
+%% mnesia:table_info/2 esce con {aborted,{no_exists,_}} e i chiamanti la
+%% usano con lists:member/2.
 disc_copies_of_table() ->
-    try mnesia:table_info(snapshot_record, disc_copies)
-    catch _:_ -> unavailable
+    try mnesia:table_info(snapshot_record, disc_copies) of
+        Copies when is_list(Copies) -> Copies;
+        _ -> []
+    catch
+        _:_ -> []
     end.
 
 subscribe_mnesia_events() ->

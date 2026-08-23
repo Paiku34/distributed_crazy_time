@@ -41,6 +41,10 @@
 
 -record(state, {
     leader   = undefined :: node() | undefined,
+    %% Stato del taglio Chandy-Lamport: il worker e' un PARTECIPANTE, non
+    %% un osservatore. Ha un solo canale entrante (dal wheel), quindi il
+    %% suo taglio si chiude appena riceve il marker.
+    cl       = cl_recorder:new(),
     %% #{BetId => {DeliveryTag, BetMap, TimerRef}} — scommesse consumate dal
     %% broker e inoltrate al wheel, in attesa di esito. Non sono ancora ackate.
     inflight = #{} :: #{binary() => {term(), map(), reference()}}
@@ -69,6 +73,39 @@ handle_cast({set_leader, Node}, State) ->
         false -> io:format("[WORKER] Leader corrente: ~p~n", [Node])
     end,
     {noreply, State#state{leader = Node}};
+
+%% --- MARKER dal wheel: apre e chiude subito il taglio locale ---
+%%
+%% Il marker uscente parte da QUI, non dal collector: deve viaggiare sullo
+%% stesso canale applicativo dei {bet, ...} per condividerne l'ordine FIFO.
+%% Tutto cio' che il worker ha spedito prima appartiene al taglio, tutto
+%% cio' che spedisce dopo no.
+handle_cast({cl_marker, SnapId, {wheel, WheelNode} = From}, State) ->
+    InCh = [From],
+    %% Stato locale: le scommesse consumate dal broker e non ancora ackate.
+    %% E' l'informazione che al crash del leader distingue le bet perse da
+    %% quelle che il broker riconsegnera'.
+    Local = #{unacked => [{Id, B} || {Id, {_Tag, B, _T}} <- maps:to_list(State#state.inflight)]},
+    {CL, Kind} = cl_recorder:on_marker(SnapId, From, InCh, Local, State#state.cl),
+    case Kind of
+        first_marker ->
+            gen_server:cast({wheel_process, WheelNode},
+                            {cl_marker, SnapId, {worker, node()}});
+        subsequent ->
+            ok
+    end,
+    %% Un solo canale entrante: il taglio e' gia' completo, si riporta subito.
+    case cl_recorder:is_complete(CL) of
+        true ->
+            gen_server:cast({snapshot, WheelNode},
+                            {cl_part, SnapId, {worker, node()},
+                             cl_recorder:local(CL), cl_recorder:channels(CL)}),
+            io:format("[WORKER] Taglio ~p: riportate ~p bet non ackate~n",
+                      [SnapId, length(maps:get(unacked, Local))]),
+            {noreply, State#state{cl = cl_recorder:new()}};
+        false ->
+            {noreply, State#state{cl = CL}}
+    end;
 
 %% Esito di una scommessa dal wheel del leader: e' l'UNICO punto in cui si acka.
 handle_cast({bet_result, BetId, Verdict}, State) ->
@@ -220,6 +257,15 @@ cast_to_wheel(Leader, Msg) ->
 %% rispondere: i worker sono N e solo chi ha consumato quel messaggio dal
 %% broker possiede il delivery tag da ackare.
 forward_bet(BetMap, Tag, State = #state{leader = Leader}) ->
+    %% Ritardo artificiale, SOLO per i test: rende deterministico il caso
+    %% "bet in transito al momento del taglio", che altrimenti dipende da una
+    %% finestra di pochi millisecondi. Con un ritardo maggiore del tempo che
+    %% il wheel impiega a emettere i marker, la scommessa arriva a taglio gia'
+    %% aperto e finisce nello stato del canale. Default 0 = disattivato.
+    case application:get_env(game_engine, bet_forward_delay, 0) of
+        0 -> ok;
+        Delay -> timer:sleep(Delay)
+    end,
     gen_server:cast({wheel_process, Leader}, {bet, BetMap, node()}),
     case maps:get(<<"bet_id">>, BetMap, undefined) of
         undefined ->

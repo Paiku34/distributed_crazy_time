@@ -13,7 +13,6 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 
@@ -38,74 +37,88 @@ public class PayoutListener {
     @Transactional
     public void processPayouts(String message) {
         log.info("Processando payout dal risultato: {}", message);
+        JsonNode root;
         try {
-            JsonNode root = objectMapper.readTree(message);
-            String winner = root.has("winner") ? root.get("winner").asText() : null;
-            
-            if (winner == null) {
-                log.warn("Risultato senza winner: {}", message);
-                return;
-            }
-
-            JsonNode payoutsNode = root.get("payouts");
-            
-            // Trova tutte le bet PENDING e aggiorna il loro status
-            List<Bet> pendingBets = betRepository.findByStatus("PENDING");
-            for (Bet bet : pendingBets) {
-                if (bet.getSegment().equals(winner)) {
-                    // Rimuove la entry trovata dall'array così una seconda bet dello stesso utente
-                    // sullo stesso segmento non può riutilizzare lo stesso payout aggregato
-                    BigDecimal finalPayout = null;
-                    
-                    if (payoutsNode != null && payoutsNode.isArray()) {
-                        Iterator<JsonNode> it = payoutsNode.iterator();
-                        while (it.hasNext()) {
-                            JsonNode p = it.next();
-                            if (p.has("username") && p.get("username").asText().equals(bet.getUsername())) {
-                                if (p.has("payout")) {
-                                    finalPayout = new BigDecimal(p.get("payout").asText());
-                                }
-                                it.remove();  // Prevent this entry from being matched again
-                                break;
-                            }
-                        }
-                    }
-                    
-                    if (finalPayout == null) {
-                        // Fallback al calcolo base se payouts non è presente
-                        String multStr = root.has("multiplier") ? root.get("multiplier").asText() : "1";
-                        BigDecimal multiplier = new BigDecimal(multStr);
-                        // Don't use fallback if multiplier is 0 or negative (async minigame marker)
-                        if (multiplier.compareTo(BigDecimal.ZERO) <= 0) {
-                            log.warn("Payout non trovato per {} e multiplier non valido ({}), skip",
-                                    bet.getUsername(), multStr);
-                            continue;
-                        }
-                        BigDecimal winnings = bet.getAmount().multiply(multiplier);
-                        finalPayout = bet.getAmount().add(winnings);
-                    }
-                    
-                    bet.setStatus("WON");
-                    bet.setPayout(finalPayout);
-                    betRepository.save(bet);
-
-                    Optional<Player> optPlayer = playerRepository.findByUsernameForUpdate(bet.getUsername());
-                    if (optPlayer.isPresent()) {
-                        Player player = optPlayer.get();
-                        player.setBalance(player.getBalance().add(finalPayout));
-                        playerRepository.save(player);
-                        log.info("Payout di ${} accreditato a {} (bet su {})",
-                                finalPayout, bet.getUsername(), bet.getSegment());
-                    }
-                } else {
-                    // PERDITA
-                    bet.setStatus("LOST");
-                    bet.setPayout(BigDecimal.ZERO);
-                    betRepository.save(bet);
-                }
-            }
+            root = objectMapper.readTree(message);
         } catch (Exception e) {
-            log.error("Errore processando payout: {}", e.getMessage(), e);
+            // Solo il parsing e' fuori dalla transazione: un JSON malformato non
+            // e' un errore di dominio. Tutto cio' che segue deve poter fallire
+            // facendo ROLLBACK, quindi non va avvolto in un catch.
+            log.error("Risultato non parsabile: {}", e.getMessage(), e);
+            return;
         }
+
+        String winner = root.path("winner").asText(null);
+        if (winner == null) {
+            log.warn("Risultato senza winner: {}", message);
+            return;
+        }
+
+        int round = root.path("round").asInt(-1);
+        JsonNode payoutsNode = root.get("payouts");
+
+        // Query per ROUND, non scansione globale delle PENDING: quella pagava
+        // anche bet di round estranei. Il round e' quello autoritativo di
+        // Erlang, che LedgerListener ha gia' scritto sulle bet del ledger.
+        List<Bet> pendingBets = (round >= 0)
+                ? betRepository.findByRoundAndStatus(round, "PENDING")
+                : betRepository.findByStatus("PENDING");
+
+        for (Bet bet : pendingBets) {
+            if (!bet.getSegment().equals(winner)) {
+                bet.setStatus("LOST");
+                bet.setPayout(BigDecimal.ZERO);
+                betRepository.save(bet);
+                continue;
+            }
+
+            BigDecimal finalPayout = findPayout(payoutsNode, bet);
+
+            if (finalPayout == null) {
+                // Fallback al calcolo base se payouts non e' utilizzabile.
+                BigDecimal multiplier = new BigDecimal(root.path("multiplier").asText("1"));
+                // multiplier <= 0 e' il marcatore dei minigiochi asincroni:
+                // li' l'importo sta solo nell'array payouts.
+                if (multiplier.compareTo(BigDecimal.ZERO) <= 0) {
+                    log.warn("Payout non trovato per la bet {} e multiplier non valido ({}), skip",
+                            bet.getBetId(), multiplier);
+                    continue;
+                }
+                finalPayout = bet.getAmount().add(bet.getAmount().multiply(multiplier));
+            }
+
+            bet.setStatus("WON");
+            bet.setPayout(finalPayout);
+            betRepository.save(bet);
+
+            Optional<Player> optPlayer = playerRepository.findByUsernameForUpdate(bet.getUsername());
+            if (optPlayer.isPresent()) {
+                Player player = optPlayer.get();
+                player.setBalance(player.getBalance().add(finalPayout));
+                playerRepository.save(player);
+                log.info("Payout di ${} accreditato a {} (bet {} su {})",
+                        finalPayout, bet.getUsername(), bet.getBetId(), bet.getSegment());
+            }
+        }
+    }
+
+    /**
+     * Cerca il payout della singola scommessa per bet_id.
+     *
+     * Il match per username era ambiguo: due puntate dello stesso giocatore
+     * sullo stesso segmento trovavano la stessa entry, e per evitare di
+     * pagarla due volte la si rimuoveva dall'array. Con l'identificativo la
+     * corrispondenza e' esatta e non serve consumare la lista.
+     */
+    private BigDecimal findPayout(JsonNode payoutsNode, Bet bet) {
+        if (payoutsNode == null || !payoutsNode.isArray() || bet.getBetId() == null) {
+            return null;
+        }
+        for (JsonNode p : payoutsNode) {
+            if (bet.getBetId().equals(p.path("bet_id").asText(null)) && p.has("payout")) {
+                return new BigDecimal(p.get("payout").asText());
+            }
+        }
+        return null;
     }
 }

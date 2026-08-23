@@ -197,14 +197,16 @@ Qui il rimborso **cambia formato**: i due percorsi che dallo Step 2 pubblicavano
 
 ## Blocco D — Lo snapshot
 
-### - [ ] Step 9 — `cl_recorder` · S
+### - [x] Step 9 — `cl_recorder` · S — ✅ FATTO
 **File**: `erlang-engine/game_engine/src/cl_recorder.erl` (nuovo) + test eunit
 
 Modulo di funzioni pure con la logica Chandy-Lamport lato partecipante. Essendo puro, è l'unica parte banalmente testabile in isolamento: primo marker apre i canali giusti, marker successivo chiude solo il proprio, `on_app_msg` accoda solo sui canali aperti, `is_complete` scatta quando tutti sono chiusi.
 
 **Verifica**: `rebar3 eunit`.
 
-### - [ ] Step 10 — Il taglio · L
+> ✅ **8 test, 0 fallimenti.** Coprono: `new` non registra; l'iniziatore apre tutti i canali e si chiude uno per uno; il primo marker apre gli **altri** canali e non il proprio; un marker successivo chiude solo il suo; `on_app_msg` accoda solo sui canali aperti e nell'ordine d'arrivo, e ignora tutto se non si sta registrando; `close_all`; un taglio nuovo che sostituisce uno rimasto aperto.
+
+### - [x] Step 10 — Il taglio · L — ✅ FATTO
 **File**: [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl), [worker.erl](erlang-engine/game_engine/src/worker.erl), `snapshot.erl` (nuovo), [game_engine_sup.erl](erlang-engine/game_engine/src/game_engine_sup.erl), [game_engine.app.src](erlang-engine/game_engine/src/game_engine.app.src)
 
 - Trigger al gong **dopo** l'estrazione del vincitore, con la lista dei partecipanti congelata una volta sola.
@@ -216,21 +218,38 @@ Modulo di funzioni pure con la logica Chandy-Lamport lato partecipante. Essendo 
 
 **Verifica decisiva**: piazza bet negli ultimi 200 ms della fase betting → il log dello snapshot deve mostrare **`in_flight_bets > 0`**. Se resta ostinatamente 0, i canali non sono reali e il lavoro non ha raggiunto il suo scopo. Da un nodo standby, `mnesia:dirty_last(snapshot_record)` mostra lo stesso record scritto dal leader.
 
-### - [ ] Step 11 — Regola R3 · S
+> ✅ **Superata**: `[SNAPSHOT {2,game3@localhost}] COMPLETO. local_bets=3 in_flight_bets=3 degraded=false`, con `[WHEEL] Taglio {2,…} chiuso: 3 bet in transito entrano nel round`. Il ledger pubblicato contiene **tutti e 6** i `bet_id`, comprese le tre catturate sui canali — che è esattamente l'informazione non ottenibile in altro modo.
+>
+> Il checkpoint è replicato: `mnesia:dirty_last` su uno **standby** restituisce la chiave `{2, game3@localhost}` e il record con `winner`, `degraded=false` e il ledger completo.
+>
+> ⚠️ La finestra "in transito" dura pochi millisecondi, quindi a raffica libera i canali restano quasi sempre vuoti (primo tentativo: `in_flight_bets=0` su 40 bet). Per renderla deterministica ho aggiunto il flag di debug che il piano stesso prevedeva: `-game_engine bet_forward_delay 600` fa attendere il worker prima di inoltrare, così la scommessa arriva al wheel a taglio già aperto. **Default 0, cioè disattivato**: è scaffolding di test, non un comportamento di esercizio.
+
+### - [x] Step 11 — Regola R3 · S — ✅ FATTO
 **File**: [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl), [leader_election.erl](erlang-engine/game_engine/src/leader_election.erl)
 
 `settled_bet_ids` ripopolato dai `snapshot_record` **all'avvio e a ogni elezione**: è subito dopo un crash che le riconsegne del broker arrivano.
 
 **Verifica**: uccidi il worker dopo che il wheel ha accettato la bet e pubblicato il ledger di R, ma prima dell'ack → la riconsegna nel round R+1 viene ackata **senza rigiocare la bet**, e il ledger di R+1 non la contiene.
 
-### - [ ] Step 12 — Il ledger viene consumato · M
+> ✅ **Eseguita in due varianti**, ripubblicando un `bet_id` già a ledger:
+> - **stesso leader, round successivo** → `[WHEEL] Bet trans-1 gia' liquidata: deduplicata`, `num_bets` invariato;
+> - **dopo il crash del leader** (il caso che conta) → il nuovo leader logga `[WHEEL] Deduplica: ricaricati 6 bet_id dai checkpoint`, deduplica `trans-2` e continua ad accettare normalmente una bet mai vista (`num_bets` +1). È la prova che l'insieme si ripopola da Mnesia e non dalla memoria del processo morto.
+
+### - [x] Step 12 — Il ledger viene consumato · M — ✅ FATTO
 **File**: `LedgerListener.java` (nuovo), `PayoutListener.java`
 
 Regole R1 e R2; payout per round e per `bet_id` al posto della scansione globale delle `PENDING` e del match per username. Via i `catch` che inghiottono le eccezioni nei metodi `@Transactional`.
 
 **Verifica**: a gioco fermo, `SELECT * FROM bets WHERE status='PENDING'` deve tornare **vuota**.
 
-> ✅ **Fine Step 12: obiettivo raggiunto.** Phase 3 corretta, Phase 4 implementata, snapshot *load-bearing* — il ledger che produce non è ottenibile in altro modo ed è consumato da Java.
+> ✅ **Eseguita end-to-end col gateway acceso**:
+> - **percorso normale**: bet da 20 dall'API → `Ledger del round 4 (1 bet)` → `Payout di $40 accreditato … (bet 2b58c59b-… su 1)`. Il payout è trovato **per `bet_id`** e la query è **per round**;
+> - **R1**: bet pendente del round 7 assente dal ledger → `assente dal ledger del round 7: rimborsati $15.00`, saldo 105 → 120;
+> - **R2**: quando poi arriva il ledger vero di Erlang, che quella bet ce l'ha → `replay_after_refund: … Non verra' pagata`, saldo invariato. Nessuna duplicazione di denaro, solo l'anomalia visiva che il piano prevede di documentare.
+
+> ✅ **Blocco D COMPLETATO — obiettivo raggiunto.** Phase 3 corretta, Phase 4 implementata, snapshot **load-bearing**: il ledger che produce non è ottenibile in altro modo ed è consumato da Java, che su di esso conferma i round, paga per `bet_id` e rimborsa le pendenti rimaste fuori dal taglio.
+>
+> Un bug trovato dai test e corretto: `disc_copies_of_table/0` restituiva l'atomo `unavailable` quando la tabella non esiste ancora, e `lists:member/2` andava in `badarg` facendo ripartire in loop il supervisore a ogni avvio pulito. Era una regressione introdotta dalla patch sul riavvio isolato del Blocco C, invisibile finché la tabella esisteva già.
 
 ---
 

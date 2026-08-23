@@ -16,17 +16,17 @@ Questo piano definisce le modifiche al codice e a `implementation_plan.md` per r
 ## Stato del codice — baseline di questo piano
 
 > [!IMPORTANT]
-> **Questo documento è stato riscritto sul codice reale al commit `6ef3b73`, e poi aggiornato dopo il retrofit.** Gli Step 1-8 di [ordine_implementazione.md](ordine_implementazione.md) — Blocchi **A, B e C** — sono stati **implementati e verificati** su cluster a 3 nodi con broker e gateway attivi: i punti relativi sono marcati ✅ qui sotto. La prima stesura era ancorata al codice della sola **Fase 1** (AMQP nativo). Nel frattempo sono state implementate anche la **Fase 2** (`cluster_manager.erl`) e la **Fase 3** (`leader_election.erl`) **seguendo la stesura originale** di `implementation_plan.md`, cioè senza applicare prima le correzioni strutturali che questo piano richiedeva. Parte del lavoro delle Fasi 2-3 va quindi **corretta**, non aggiunta: i punti interessati sono marcati inline con 🔧.
+> **Questo documento è stato riscritto sul codice reale al commit `6ef3b73`, e poi aggiornato dopo il retrofit.** Gli Step 1-12 di [ordine_implementazione.md](ordine_implementazione.md) — Blocchi **A, B, C e D** — sono stati **implementati e verificati** su cluster a 3 nodi con broker e gateway attivi: i punti relativi sono marcati ✅ qui sotto. La prima stesura era ancorata al codice della sola **Fase 1** (AMQP nativo). Nel frattempo sono state implementate anche la **Fase 2** (`cluster_manager.erl`) e la **Fase 3** (`leader_election.erl`) **seguendo la stesura originale** di `implementation_plan.md`, cioè senza applicare prima le correzioni strutturali che questo piano richiedeva. Parte del lavoro delle Fasi 2-3 va quindi **corretta**, non aggiunta: i punti interessati sono marcati inline con 🔧.
 
 | Componente | Stato |
 | :--- | :--- |
 | [rabbitmq_manager.erl](erlang-engine/game_engine/src/rabbitmq_manager.erl) | ✅ Fase 1 + `refunds_queue` rimossa da `?QUEUES`. `publish/2` lock-free via ETS, `subscribe/2` col PID del consumer, `ack/1`, `reject/2` ([:91-95](erlang-engine/game_engine/src/rabbitmq_manager.erl#L91-L95)), riconnessione automatica |
 | [cluster_manager.erl](erlang-engine/game_engine/src/cluster_manager.erl) | ✅ Completo. Discovery, `monitor_nodes(true, [{node_type, all}])`, reconnect, **`configured_nodes/0` e `get_participants/0`**, delega a `leader_election:node_down/1`, **bootstrap Mnesia** a due rami, `subscribe(system)`, `force_load_snapshots/0` |
 | [leader_election.erl](erlang-engine/game_engine/src/leader_election.erl) | ✅ Fase 3 + retrofit. Bully completo, `apply_role/1` che tocca **solo** il wheel, `broadcast_leader/1` con `{set_leader, N}`, **guardia di quorum** in `declare_victory/1` e `node_down/1`, guardia su `election_in_progress` |
-| [worker.erl](erlang-engine/game_engine/src/worker.erl) | ✅ consumer AMQP su **ogni** nodo, campo `leader`, instradamento al leader di **tutti** i percorsi, **ack differito** con `inflight` + timeout a 15 s, `bet_id` estratto dal JSON. ❌ restano gli handler dei marker |
-| [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl) | ✅ flag `active`, `{bet, _, FromNode}` asincrona con **deduplica intra-round**, `bet_rejected` per `bet_id`, **stato del round nel record** (`winner_segment`, `winner_index`, `timer_ref`, …). ❌ `settled_bet_ids`, marker e taglio |
+| [worker.erl](erlang-engine/game_engine/src/worker.erl) | ✅ Completo: consumer su **ogni** nodo, instradamento al leader, **ack differito** con `inflight` + timeout, **partecipante al taglio** (marker e riporto al collector) |
+| [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl) | ✅ Iniziatore del taglio: trigger al gong dopo l'estrazione, marker verso i worker, chiusura con merge delle bet in transito, abort locale, `settled_bet_ids` (R3), `payouts` con `bet_id`. ❌ resta `complete_round` (recovery) |
 | [game_engine.app.src](erlang-engine/game_engine/src/game_engine.app.src) | ✅ `amqp_client` e **`mnesia`** fra le `applications`, `snapshot` fra i `registered`, config broker, `peer_nodes` con tutti e 3 i nodi |
-| Java gateway | ✅ `bet_id` UUID sull'entity e nel messaggio (Jackson), `findByBetId`/`findByRoundAndStatus`, **dispatch sul campo `type`**, `BetRejectionHandler` idempotente, `RefundListener` e `refundsQueue` rimossi. ❌ restano `LedgerListener`, `PayoutListener` per round, `round_cancelled` |
+| Java gateway | ✅ `bet_id` UUID, dispatch sul campo `type`, `BetRejectionHandler` idempotente, **`LedgerListener` con R1/R2**, `PayoutListener` per round e per `bet_id`, `RefundListener` rimosso. ❌ resta il ramo `round_cancelled` |
 
 ### Divergenze fra questo piano e il codice attuale
 
@@ -178,7 +178,7 @@ R3 è la regola che il resto della §Parte 2 dà per scontata senza enunciarla, 
 
 R2 non copre questo caso: parla di una bet `REFUNDED` che ricompare, non di una `PENDING` già a ledger che ricompare.
 
-**Implementazione.** ✅ La deduplica **intra-round** (su `bets`) è in funzione e verificata. ❌ Manca ancora la parte cross-round: il wheel deve mantenere in `#state{}` un set `settled_bet_ids` con i `bet_id` degli ultimi 3 round, ripopolato dai `snapshot_record` all'avvio e a ogni elezione (il nuovo leader ne ha bisogno subito: è proprio dopo un crash che le riconsegne arrivano). Il fallback, se il set è vuoto o incerto, è una scansione all'indietro di `snapshot_record`, banale con `ordered_set` e chiave `{Round, Initiator}`.
+**Implementazione.** ✅ **Completa e verificata**, in entrambi i termini. Il wheel mantiene in `#state{}` un set `settled_bet_ids` con i `bet_id` degli ultimi 3 round, ripopolato dai `snapshot_record` all'avvio e a ogni elezione (il nuovo leader ne ha bisogno subito: è proprio dopo un crash che le riconsegne arrivano). Il fallback, se il set è vuoto o incerto, è una scansione all'indietro di `snapshot_record`, banale con `ordered_set` e chiave `{Round, Initiator}`.
 
 Le tre regole rendono ogni percorso deterministico e sono ciò che i test «Kill del leader in fase `betting`», «Replay dopo rimborso» e «Riconsegna cross-round» della §Parte 7 verificano.
 
@@ -270,7 +270,7 @@ Le tre regole rendono ogni percorso deterministico e sono ciò che i test «Kill
 
 ## Parte 5 — Modifiche al codice
 
-### [NEW] `erlang-engine/game_engine/src/cl_recorder.erl`
+### [NEW] `erlang-engine/game_engine/src/cl_recorder.erl` — ✅ FATTO (8 test eunit)
 Modulo di **funzioni pure** (nessun processo) con la logica Chandy-Lamport lato partecipante, condivisa da `wheel_process` e `worker` per non duplicarla.
 
 ```erlang
@@ -310,7 +310,7 @@ L'unica modifica prevista su questo file arriva al passo 5 della §Parte 8: togl
    Appena il worker resta attivo su tutti i nodi, un `minigame_choice` consumato da uno standby chiama il `wheel_process` **dormiente di quel nodo** e la scelta del giocatore sparisce in silenzio; con 3 nodi succede circa 2 volte su 3, perché i worker sono competing consumer. Idem per il pannello dev dell'admin e per l'UNDO. Tutti e quattro vanno a `{wheel_process, Leader}`.
 
    ✅ Tutti e quattro i percorsi sono già instradati al leader e `undo_bets/1` è già stata convertita a `cast`, con il rimborso ora pubblicato dal wheel. Per memoria del perché: `force_segment/1` e `submit_choice/2` erano **già** `cast` ([wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl), [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)) e basta indirizzarli al nodo giusto. `undo_bets/1` no: è una `gen_server:call` ([wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)) e va **convertita a `cast`**, perché come call cross-nodo ricadrebbe nel limite noto del punto 8 di §`wheel_process.erl` — il wheel è bloccato fino a 10 s dentro la `gen_server:call` del minigioco ([wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)) — e un UNDO che capita in fase `minigame` andrebbe in timeout facendo crollare il worker. Con l'UNDO diventato `cast`, il rimborso non torna più come valore di ritorno: è il wheel a pubblicarlo, vedi il punto 8.
-5. **Nuovo handler marker** — sul canale entrante `wheel → worker`:
+5. ✅ **FATTO** — **Nuovo handler marker** — sul canale entrante `wheel → worker`:
    ```erlang
    handle_info({cl_marker, SnapId, From}, S) ->
        InCh = [{wheel, S#state.leader}],
@@ -327,7 +327,7 @@ L'unica modifica prevista su questo file arriva al passo 5 della §Parte 8: togl
        maybe_report(SnapId, CL, S)
    ```
    Il worker ha un solo canale entrante, quindi termina immediatamente e riporta al collector: `gen_server:cast({snapshot, InitiatorNode}, {cl_part, SnapId, {worker, node()}, Local, ChanStates})`.
-6. 🔧 **PARZIALE** — `handle_cast({bet_result, BetId, Verdict})` acka già ed è l'unico punto in cui si acka; manca solo il passaggio da `cl_recorder:on_app_msg/3` se in registrazione, poi `rabbitmq_manager:ack(Tag)` e rimuove da `inflight`. È l'unico punto in cui si acka.
+6. ✅ **FATTO** — `handle_cast({bet_result, BetId, Verdict})` è l'unico punto in cui si acka, poi `rabbitmq_manager:ack(Tag)` e rimuove da `inflight`. È l'unico punto in cui si acka.
 7. ✅ **FATTO** — **Timeout dell'inflight**: `{inflight_timeout, BetId}` armato a 15 s al momento del cast. Se scade (leader morto prima di rispondere) → `rabbitmq_manager:reject(Tag, true)`: la bet torna nel broker e sarà riconsegnata a un worker vivo. La perdita silenziosa sparisce.
 8. ✅ **FATTO** — **`publish_refund/1` riscritto, non rimosso** ([worker.erl](erlang-engine/game_engine/src/worker.erl)).
    Attenzione: ha **due** chiamanti, non uno. Oltre al caso `betting_closed` ([worker.erl](erlang-engine/game_engine/src/worker.erl)) c'è l'**UNDO** ([worker.erl](erlang-engine/game_engine/src/worker.erl)), che pubblica un totale **aggregato su più bet** con `segment = <<"REFUND">>`. Eliminando `refunds_queue` senza sostituire quel percorso, l'UNDO smette di accreditare il saldo: il giocatore annulla, le bet spariscono dal wheel, i soldi non tornano. È una regressione funzionale silenziosa, non un dettaglio.
@@ -356,7 +356,7 @@ L'unica modifica prevista su questo file arriva al passo 5 della §Parte 8: togl
    ```
    Ogni `erlang:send_after` di fase salva la ref in `timer_ref`. Senza questo, nessun recovery è possibile: oggi il segmento vincente esiste solo dentro un messaggio in volo.
    `settled_bet_ids` va ripopolato dai `snapshot_record` all'avvio **e a ogni elezione**: è subito dopo un crash che le riconsegne arrivano, quindi un nuovo leader con il set vuoto è esattamente il caso in cui R3 serve di più.
-2. ✅ **FATTO** (deduplica intra-round; manca `settled_bet_ids`) — `handle_cast({bet, BetMap, FromNode}, S)` sostituisce `handle_call({place_bet, ...})` ([wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)).
+2. ✅ **FATTO** — `handle_cast({bet, BetMap, FromNode}, S)` sostituisce `handle_call({place_bet, ...})` ([wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)).
    **Deduplicare per `bet_id` prima di tutto** (regola R3, §Parte 3): con l'ack differito una riconsegna del broker può ripresentare una bet già accettata (ack perso). Se `BetId` è già in `bets` **oppure in `settled_bet_ids`** → rispondere `{bet_result, BetId, accepted}` senza inserirla di nuovo. È il `bet_id` UUID a rendere l'operazione idempotente: senza di esso l'ack differito introdurrebbe duplicati.
    Il secondo termine del test non è pleonastico: `bets` è azzerato a ogni round ([wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)), quindi da solo copre la riconsegna intra-round ma **non** quella che arriva nel round successivo, che è il caso frequente perché nasce da un crash. Vedi R3 per il percorso completo.
    Altrimenti:
@@ -365,7 +365,7 @@ L'unica modifica prevista su questo file arriva al passo 5 della §Parte 8: togl
    - `active = false` (non sono il leader) → `{bet_result, BetId, rejected}`. La clausola `not_leader` esistente ([wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)) resta come rete di sicurezza, ma con l'instradamento del §`worker.erl` punto 4 non dovrebbe più scattare;
    - altrimenti (fase chiusa) → `{bet_result, BetId, rejected}`.
    Mantenere `handle_call({place_bet,...})` come alias deprecato non serve: nessun altro chiamante.
-3. **Trigger del taglio** in `handle_info(tick, #state{phase = betting, time_left = 1})` ([wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)) — **prima** estrarre il vincitore ([wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)), **poi** iniziare:
+3. ✅ **FATTO** — **Trigger del taglio** in `handle_info(tick, #state{phase = betting, time_left = 1})` ([wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)) — **prima** estrarre il vincitore ([wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)), **poi** iniziare:
    ```erlang
    %% ... estrazione WinnerIndex / WinnerSeg come oggi ...
    Participants = cluster_manager:get_participants(),          %% CONGELATA qui, una volta sola
@@ -380,17 +380,17 @@ L'unica modifica prevista su questo file arriva al passo 5 della §Parte 8: togl
    [gen_server:cast({worker, N}, {cl_marker, SnapId, {wheel, node()}}) || N <- Participants],
    erlang:send_after(10000, self(), {cl_abort, SnapId}),       %% abort locale se il collector muore
    ```
-4. `handle_info({cl_marker, SnapId, {worker, N}}, S)` — chiude il canale `{worker,N}`; se `cl_recorder:is_complete/1`:
+4. ✅ **FATTO** — `handle_cast({cl_marker, SnapId, {worker, N}}, S)` — chiude il canale `{worker,N}`; se `cl_recorder:is_complete/1`:
    - `Bets' = Bets ++ lists:append(maps:values(Chan))` — **le bet in transito entrano nel round** (sono state spedite prima che il worker apprendesse del taglio: per il taglio causale appartengono al round R);
    - `[gen_server:cast({worker,N}, {bet_result, BetId, accepted}) || ...]` per ciascuna;
    - report al collector: `gen_server:cast({snapshot, node()}, {cl_part, SnapId, {wheel, node()}, Local, Chan})`.
-5. `handle_info({cl_abort, SnapId}, S)` — chiude forzatamente la registrazione, riporta ciò che ha, logga `degraded`.
+5. ✅ **FATTO** — `handle_info({cl_abort, SnapId}, S)` — chiude forzatamente la registrazione, riporta ciò che ha, logga `degraded`.
 6. `build_result_json/7` ([wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)) — aggiungere `bet_id` a ogni entry dell'array `payouts`; la sorgente è `compute_payouts/3` ([wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)), che oggi propaga solo `username`/`bet`/`payout`.
 7. ✅ **FATTO** — Ogni `{bet_result, BetId, rejected}` è accompagnato da un `bet_rejected` su `results_queue` (formato in §`worker.erl` punto 8). È il solo percorso che chiude le bet arrivate dopo la pubblicazione del ledger; senza, restano `PENDING` a saldo scalato. `publish_to_queue/2` ([wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)) è lock-free (ETS + `amqp_channel:cast`), quindi non blocca il wheel.
 8. **Non toccare** la `gen_server:call(Module, {play, BonusBets}, 10000)` verso i mini-game ([wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)): fuori scope per la scelta fatta. Va però **documentato come limite noto**: durante il minigioco il wheel è bloccato fino a 10 s e non risponde ad alcuna `call`. Le conseguenze sono tre, e vanno scritte tutte: (a) il wheel non può partecipare a uno snapshot in quella finestra — innocuo oggi, perché l'unico trigger è al gong in fase `betting`, ma è ciò che impedirebbe di aggiungere in futuro il trigger «transizione di fase» di UC1; (b) è la ragione per cui `undo_bets/1` va convertita da `call` a `cast` (§`worker.erl` punto 4); (c) è la ragione per cui l'`inflight_timeout` del worker non può scendere sotto i ~12 s.
 9. ✅ **FATTO** — Spostare `escape_json_string/1` qui da [worker.erl](erlang-engine/game_engine/src/worker.erl)**, dove resterebbe senza chiamanti dopo la riscrittura di `publish_refund/1`. Non è solo igiene: [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl) costruisce oggi le entry di `payouts` con `~s` sull'username **senza escaping** — lo stesso difetto che il punto 2 di §Java corregge lato gateway. Poiché `build_result_json/7` va comunque toccata per aggiungere `bet_id`, costa una riga infilarcelo.
 
-### [NEW] `erlang-engine/game_engine/src/snapshot.erl` — collector
+### [NEW] `erlang-engine/game_engine/src/snapshot.erl` — collector — ✅ FATTO
 ```erlang
 -record(state, {
     running = #{}   %% #{SnapId => #run{round, participants, expected, parts, timer, degraded}}
@@ -424,7 +424,7 @@ L'unica modifica prevista su questo file arriva al passo 5 della §Parte 8: togl
 ```
 Tabella di tipo `ordered_set`, così `mnesia:dirty_last/1` restituisce l'ultimo round e `mnesia:dirty_read({Round, Node})` il record di un round specifico. `local_states` + `channel_states` sono conservati integralmente: senza di essi il post-mortem non può dire cosa fosse in volo (UC3).
 
-### [MODIFY] `game_engine_sup.erl`
+### [MODIFY] `game_engine_sup.erl` — ✅ FATTO
 Albero attuale ([:34-65](erlang-engine/game_engine/src/game_engine_sup.erl#L34-L65)), con l'unica aggiunta di `snapshot` **in coda**:
 ```
 rabbitmq_manager → cluster_manager → leader_election → wheel_process
@@ -439,17 +439,17 @@ rabbitmq_manager → cluster_manager → leader_election → wheel_process
 2. ✅ **FATTO** — **`WalletController`** — generare `UUID.randomUUID().toString()`, persisterlo sulla `Bet` e includerlo nel JSON. Sostituire la concatenazione di stringhe con Jackson (l'username oggi non è escapato).
 3. ✅ **FATTO** — **`BetRepository.java`** — aggiungere `findByBetId(String)`, `findByRoundAndStatus(Integer, String)`.
 4. ✅ **FATTO** — **`GameResultListener`** — **dispatch sul campo `type`** (restano i rami `round_ledger` e `round_cancelled`), oggi completamente ignorato: qualunque messaggio su `results_queue` viene trattato come risultato di round. Instradare `result` → `PayoutListener`, `round_ledger` → nuovo `LedgerListener`, `round_cancelled` → cancellazione per-round, `bet_rejected` → rimborso puntuale per `bet_id`.
-5. **[NEW] `rabbitmq/LedgerListener.java`** — `@Transactional`, implementa R1 e R2 della §Parte 3:
+5. ✅ **FATTO** — **[NEW] `rabbitmq/LedgerListener.java`** — `@Transactional`, implementa R1 e R2 della §Parte 3:
    - per ogni `bet_id` nel ledger con `Bet` `PENDING`: setta `Bet.round = R`, lascia `PENDING`;
    - per ogni `bet_id` nel ledger con `Bet` già `REFUNDED` (caso R2): **non** riaprire, **non** pagare; loggare `replay_after_refund` e chiudere in stato terminale;
    - per ogni `Bet` `PENDING` con `round = R` **assente** dal ledger: `REFUNDED` + accredito saldo, idempotente sul `betId`.
 6. ✅ **FATTO** (`BetRejectionHandler.java`) — **handler `bet_rejected`** — `@Transactional`: `findByBetId(id)`, e **solo se** `PENDING` → `REFUNDED` + accredito. L'idempotenza è la guardia sullo stato, non serve altro: una riconsegna del messaggio trova la bet già `REFUNDED` e non fa nulla. È la sostituzione deterministica del match per importo di `RefundListener`.
 7. **handler `round_cancelled`** — rimborsa `findByRoundAndStatus(R,"PENDING")` **meno** `exclude_bet_ids` (regola R1).
-8. **`PayoutListener.java:53`** — `findByRoundAndStatus(round, "PENDING")` al posto del `findByStatus("PENDING")` globale; match per `bet_id` invece che per `username` ([PayoutListener.java:64](java-gateway/src/main/java/com/crazytime/rabbitmq/PayoutListener.java#L64)); rimuovere `it.remove()`.
+8. ✅ **FATTO** — **`PayoutListener`** — `findByRoundAndStatus(round, "PENDING")` al posto del `findByStatus("PENDING")` globale; match per `bet_id` invece che per `username` ([PayoutListener.java:64](java-gateway/src/main/java/com/crazytime/rabbitmq/PayoutListener.java#L64)); rimuovere `it.remove()`.
 9. ✅ **FATTO** — **`RefundListener.java`** — classe e coda **rimosse**: la sua funzione è assorbita dall'handler `bet_rejected`, che identifica la bet per `bet_id` invece che per importo (`RefundListener`).
    Prerequisito: il percorso UNDO deve già passare da `bet_rejected` (§`worker.erl` punto 8), altrimenti la rimozione della coda rompe l'annullamento delle puntate.
    Togliere `refunds_queue` da `?QUEUES` ([rabbitmq_manager.erl:30](erlang-engine/game_engine/src/rabbitmq_manager.erl#L30)) e il bean `refundsQueue` da [GatewayApplication.java:26-29](java-gateway/src/main/java/com/crazytime/GatewayApplication.java#L26-L29).
-10. **Rimuovere** il `catch` che inghiotte le eccezioni in `PayoutListener:107-109` e `RefundListener:77-79`: essendo i metodi `@Transactional`, l'eccezione catturata non provoca rollback e i `save` parziali vengono committati.
+10. ✅ **FATTO in `PayoutListener`** — rimuovere il `catch` che inghiotte le eccezioni in `PayoutListener:107-109` e `RefundListener:77-79`: essendo i metodi `@Transactional`, l'eccezione catturata non provoca rollback e i `save` parziali vengono committati.
 
 ### [MODIFY] `app.js`
 Gestire `type === 'round_cancelled'` sul WebSocket (notifica + `fetchBalance()`), come già previsto dalla Fase 5.
@@ -480,7 +480,7 @@ cd java-gateway && mvn test
 
 **Bootstrap Mnesia** — avviare i nodi **uno alla volta** e verificare che il secondo e il terzo passino dal ramo `add_table_copy`; poi riavviare un nodo secondario e controllare che conservi la propria copia su disco (`mnesia:table_info(snapshot_record, disc_copies)` deve elencarlo). Se non lo elenca, manca la `change_table_copy_type(schema, ...)`.
 
-**Test unitari nuovi su `cl_recorder`** (funzioni pure, banali da testare): primo marker apre i canali giusti; marker successivo chiude solo il proprio; `on_app_msg` accoda solo sui canali aperti; `is_complete` scatta esattamente quando tutti i canali sono chiusi.
+**Test unitari su `cl_recorder`** — ✅ **8 test, 0 fallimenti** (`rebar3 eunit`): primo marker apre i canali giusti; marker successivo chiude solo il proprio; `on_app_msg` accoda solo sui canali aperti e nell'ordine d'arrivo; `is_complete` scatta esattamente quando tutti i canali sono chiusi; un taglio nuovo sostituisce uno rimasto aperto.
 
 **Precondizione già soddisfatta — `basic_qos`.** Il test «Canali non vuoti» richiede che le bet si distribuiscano davvero fra i worker. Il `prefetch_count` **è già impostato** dalla Fase 1: `amqp_channel:call(ConsCh, #'basic.qos'{prefetch_count = maps:get(prefetch, Cfg)})` ([rabbitmq_manager.erl:225-226](erlang-engine/game_engine/src/rabbitmq_manager.erl#L225-L226)), valore 10, configurabile per nodo da [game_engine.app.src:22](erlang-engine/game_engine/src/game_engine.app.src#L22). Non serve aggiungerlo. Va però **abbassato a 1 durante il test di distribuzione**: con 10 un burst breve può finire quasi tutto sul primo consumer con credito disponibile e far sembrare rotto un refactoring corretto. In esercizio si torna a 10.
 
@@ -524,8 +524,8 @@ cd java-gateway && mvn test
 1. ✅ **FATTO — Prerequisiti** (indipendenti dallo snapshot): stato del round nel record di `wheel_process`; `bet_id` UUID lato Java; `worker → wheel` da `call` a `cast` con `{bet_result, ...}` di ritorno, **ack differito** + dedup per `bet_id` (§Parte 2 e R3 di §Parte 3), ed evento `bet_rejected` con il relativo handler Java, **incluso il percorso UNDO** (`undo_bets/1` restituisce i `bet_id`, `reason:"undo"`). L'ordine interno conta: `bet_id` prima dell'ack differito (altrimenti si introducono duplicati); il percorso UNDO su `bet_rejected` prima della rimozione di `refunds_queue` al passo 5 (altrimenti l'annullamento smette di rimborsare). `rabbitmq_manager:reject/2` non è più un prerequisito: ✅ esiste già.
 2. **Fase 2 estesa**: bootstrap Mnesia + `mnesia` in `applications` + `mnesia:subscribe(system)`.
 3. ✅ **FATTO — Guardia di quorum** su `declare_victory/1` e `node_down/1`. Va prima della Fase 4: senza, gli `snapshot_record` concorrenti di due leader corrompono Mnesia al primo test di partizione.
-4. **Fase 4 riscritta**: `cl_recorder` → partecipanti → collector `snapshot.erl` → persistenza Mnesia → pubblicazione ledger. Con Mnesia in piedi si chiude anche **R3**: `settled_bet_ids` ripopolato dai `snapshot_record` all'avvio e a ogni elezione. Fino a qui la dedup copre solo l'intra-round; è l'unico punto del percorso in cui il sistema è temporaneamente esposto alla doppia giocata, ed è per questo che R3 non può slittare oltre.
-5. 🔧 **PARZIALE — UC2 lato Java**: ✅ dispatch su `type`, handler `bet_rejected`, rimozione di `RefundListener` e `refunds_queue`. ❌ Restano `LedgerListener` con le regole R1/R2, `PayoutListener` per-round, rimozione di `RefundListener` e di `refunds_queue` (solo dopo il passo 1).
+4. ✅ **FATTO — Fase 4 riscritta**: `cl_recorder` → partecipanti → collector `snapshot.erl` → persistenza Mnesia → pubblicazione ledger. Con Mnesia in piedi si chiude anche **R3**: `settled_bet_ids` ripopolato dai `snapshot_record` all'avvio e a ogni elezione. Fino a qui la dedup copre solo l'intra-round; è l'unico punto del percorso in cui il sistema è temporaneamente esposto alla doppia giocata, ed è per questo che R3 non può slittare oltre.
+5. ✅ **FATTO — UC2 lato Java**: dispatch su `type`, handler `bet_rejected`, `LedgerListener` con le regole R1/R2, `PayoutListener` per-round, rimozione di `RefundListener` e di `refunds_queue` (solo dopo il passo 1).
 6. **Fase 5 corretta**: recovery dal checkpoint; fallback `round_cancelled` con `exclude_bet_ids`, che dipende dal `{collect_inflight, R}` introdotto ai passi 0-1.
 7. **Fase 6**: test della Parte 7.
 

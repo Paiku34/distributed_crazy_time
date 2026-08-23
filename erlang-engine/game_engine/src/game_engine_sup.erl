@@ -8,7 +8,8 @@
 %%          ├── cluster_manager  (discovery nodi e monitoraggio cluster)
 %%          ├── wheel_process    (the main wheel gen_server)
 %%          ├── minigames_sup    (child supervisor for 4 mini-games)
-%%          └── worker           (consumer AMQP di bets_queue)
+%%          ├── worker           (consumer AMQP di bets_queue, su ogni nodo)
+%%          └── snapshot         (collector Chandy-Lamport — ULTIMO)
 %% @end
 %%%-------------------------------------------------------------------
 -module(game_engine_sup).
@@ -60,6 +61,13 @@ init([]) ->
         %% 4. Il worker che ascolta RabbitMQ
         #{id => worker,
           start => {worker, start_link, []},
+          restart => permanent,
+          type => worker},
+        %% 5. Il collector dello snapshot: ULTIMO figlio di proposito.
+        %% Con rest_for_one un crash riavvia tutti i figli sotto di se':
+        %% mettendolo in coda, un suo crash non azzera il round in corso.
+        #{id => snapshot,
+          start => {snapshot, start_link, []},
           restart => permanent,
           type => worker}
     ],
