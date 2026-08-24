@@ -21,11 +21,14 @@ The Distributed Crazy Time project is a real-time betting web app with a hybrid 
 > Le Fasi 2 e 3 erano state implementate **prima** che quella riscrittura esistesse, quindi parte del codice andava **corretta**, non solo estesa. ✅ **Il retrofit è stato eseguito**: il `worker` è ora attivo su **tutti** i nodi e instrada al leader, e la guardia di quorum è in funzione. Il percorso operativo completo, step per step, è in [ordine_implementazione.md](ordine_implementazione.md).
 
 > [!NOTE]
+> I limiti noti del sistema — quorum, comportamenti di Mnesia, blocco del wheel nel minigioco, test non eseguiti — sono raccolti in un unico posto: [limiti_noti.md](limiti_noti.md).
+
+> [!NOTE]
 > Ogni fase si appoggia sulla precedente. Ognuna elenca i file esatti da creare/modificare, la struttura del codice Erlang e i punti di integrazione. **Si parte dalla Fase 0 (Bug Fixes)** per stabilizzare la base prima di aggiungere le funzionalità distribuite.
 
 ---
 
-## Phase 0: Bug Fixes (Existing Codebase) — ✅ VERIFICATA NEL CODICE, con un punto aperto
+## Phase 0: Bug Fixes (Existing Codebase) — ✅ COMPLETATA E VERIFICATA
 
 > [!NOTE]
 > Le fix da 0.1.1 a 0.3.4 sono state **ricontrollate una per una nel codice** e risultano tutte applicate (lock pessimistico e `@Transactional`, `it.remove()` sui payout, marcatura `REFUNDED`, controllo di fase, force-result admin-only, `GameStateCache` immutabile, Jackson nei listener, directory `repository` minuscola, UTF-8, logout server-side; lato Erlang catch-all su `segment_type`, `maps:get/3`, multiplier `-1`, `time_left` parametrico, flapper a 120°, `parse_cell_index`, charlist, `MAX_DROPS`, zero residui HTTP, `find_segment_index`, lowercase, escaping, timeout sui minigiochi; lato frontend default CashHunt, `choiceSent`, niente cache-busting, divisione protetta). La **FIX 0.1.14** (`bet_id`) è stata aggiunta e implementata in seguito.

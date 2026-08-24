@@ -5,6 +5,7 @@ idea_distributed.md
 copie_di_processi_per_fault_tolerance.md
 test_distributed.md
 tasks_fault_tolerance.md
+ordine_implementazione.md
 
 # Log e file temporanei
 log.txt

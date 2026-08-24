@@ -202,4 +202,6 @@ Viene inoltre eliminato il rimborso globale su tutte le bet pendenti, che colpiv
 
 ## Limite noto da documentare
 
+> L'elenco completo dei limiti noti è in [limiti_noti.md](limiti_noti.md); qui resta quello che riguarda direttamente lo snapshot.
+
 Durante il minigioco il wheel resta bloccato fino a 10 secondi in una chiamata sincrona e non risponde ad altre chiamate. Le conseguenze sono tre: non può partecipare a uno snapshot in quella finestra (innocuo oggi, perché l'unico trigger è al gong, ma è ciò che impedirebbe di aggiungere in futuro un trigger sulla transizione di fase); è la ragione per cui l'annullamento puntate va convertito in messaggio asincrono; ed è la ragione per cui il timeout delle bet in attesa di esito non può scendere sotto una certa soglia.
