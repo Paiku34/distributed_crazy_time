@@ -19,7 +19,9 @@ Cosa c'è oggi nel codice:
 - **Il ledger è consumato**: il gateway conferma i round, paga per identificativo e rimborsa le pendenti rimaste fuori dal taglio (R1), senza mai ripagare una bet già rimborsata (R2).
 - **Recovery a due rami**: crash dopo il gong → il round viene *completato* con l'esito catturato nel taglio; crash in fase di puntata → viene annullato il solo round interrotto, escludendo le puntate che il broker riconsegnerà.
 
-**Cosa resta**: un solo scenario di test, la **partizione di rete vera**. Tutta la fault tolerance è stata provata uccidendo processi, non separando la rete: la guardia di quorum è verificata nella forma «nodo isolato che non si autoelegge», ma il caso del leader in carica finito nella minoranza — e con esso il log di database inconsistente e l'assenza di ledger divergenti alla riconnessione — richiede di manipolare la rete fra i nodi.
+**Anche la partizione di rete è stata provata**, con una partizione logica stabile: il leader isolato nella minoranza si autoretrocede, la maggioranza ne elegge uno nuovo, la minoranza rimette le puntate nel broker e per ogni round esiste un solo ledger. Alla ricomposizione compare l'evento di database inconsistente, loggato come previsto.
+
+**Due limiti noti da dichiarare nella relazione**, entrambi caratteristiche di Mnesia e non difetti del codice: un nodo riavviato da solo carica la propria copia solo se era l'ultimo a spegnersi; e se un cluster partizionato viene riavviato per intero, Mnesia adotta una delle copie senza unirle — nel test ha vinto quella della minoranza, più vecchia, facendo perdere i checkpoint scritti dalla maggioranza. Il quorum garantisce un solo scrittore, quindi la divergenza non viene prodotta, ma la scelta di quale copia sopravvive a un riavvio resta di Mnesia.
 
 ---
 

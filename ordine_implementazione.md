@@ -88,7 +88,9 @@ Nessuna funzionalità nuova: rimette il codice sulla traiettoria dei due piani. 
 > - `UNDO_BETS` → la bet sparisce dal wheel del leader (6 → 5) **e** il rimborso arriva su `refunds_queue`: `{"username":"p1","amount":10.0,"reason":"undo"}`. È la regressione che questo step rischiava di introdurre, ed è coperta;
 > - **zero** messaggi rimessi in coda, nessun crash, nessun report d'errore.
 >
-> Non verificati in questa sessione, perché richiedono il gateway Java e tempi di gioco lunghi: UNDO consumato da uno standby (qui l'ha preso il leader — stesso percorso di codice) e UNDO durante la fase `minigame`.
+> ✅ **Completata in seguito** anche sui due punti che erano rimasti fuori:
+> - **UNDO consumato da uno standby**: ripetendo l'annullamento su utenti diversi, i worker lo hanno preso 3 volte su `game1` e 2 su `game2` — entrambi standby — e il wheel del leader lo ha eseguito ogni volta (`Scommesse annullate per u3…u6`), con 6 `bet_rejected` di rimborso emessi;
+> - **UNDO durante il minigioco**: forzato un Pachinko con `FORCE_Pachinko` e mandato l'annullamento mentre la fase era `minigame` — i tre worker sono rimasti vivi e il wheel ha continuato a rispondere. È la conferma che la conversione a `cast` ha eliminato il timeout che avrebbe fatto crollare il worker.
 
 ### - [x] Step 3 — Guardia di quorum · S/M — ✅ FATTO
 **File**: [leader_election.erl](erlang-engine/game_engine/src/leader_election.erl), [cluster_manager.erl](erlang-engine/game_engine/src/cluster_manager.erl)
@@ -97,13 +99,15 @@ Nessuna funzionalità nuova: rimette il codice sulla traiettoria dei due piani. 
 
 **Verifica**: partizione 2-1 isolando il **leader in carica** → si autoretrocede a standby; isolando uno standby → la minoranza non elegge nessuno e le sue bet vengono servite dalla maggioranza. Usa `-hidden` per la shell di osservazione.
 
-> ✅ **Eseguita** per crash (non ancora per partizione di rete vera):
+> ✅ **Eseguita**, sia per crash sia per **partizione di rete** (i dettagli della partizione sono nello Step 14):
 > - `game3` (nome più alto) eletto leader, riconosciuto da tutti e tre i nodi;
 > - ucciso `game3` → `game2` eletto in pochi secondi, quorum 2/3 ancora valido;
 > - ucciso `game2` → `game1` resta solo: `Quorum 1/3 non raggiunto`, `leader = undefined`, `is_leader = false`. **Non si autoelegge**, che è il comportamento voluto;
 > - il worker di `game1` riceve `{set_leader, undefined}` e da quel momento rimetterebbe in coda tutto ciò che consuma.
 >
 > Nota emersa dal test: un nodo `-hidden` che si disconnette **genera comunque** un `nodedown` (il monitoraggio è `{node_type, all}`), ma non entra né nel quorum né fra i partecipanti grazie all'intersezione dello Step 1. La protezione è quindi verificata sul campo.
+>
+> ✅ **Il ramo che conta** — leader in carica isolato nella minoranza — è stato poi verificato con una partizione 2-1 stabile: `game3` logga `*** QUORUM PERSO — retrocessione a standby ***` e resta con `leader = undefined`, mentre la maggioranza elegge `game2`. Un solo nodo si crede leader.
 
 > ✅ **Blocco A COMPLETATO.** La Phase 3 di `implementation_plan.md` è implementata con tutte e cinque le correzioni. `escript ../rebar3 compile` pulito, zero warning.
 >
@@ -271,12 +275,23 @@ Il discriminante fra i due rami è un campo nuovo del checkpoint, `result_publis
 >
 > Una conferma inattesa: un tentativo di test è fallito perché, dopo due kill, restava **un solo nodo su tre** e nessuno si autoeleggeva. Non era un difetto — era la guardia di quorum del Blocco A che faceva il suo lavoro.
 
-### - [x] Step 14 — Test finali — 🔧 QUASI COMPLETI
+### - [x] Step 14 — Test finali — ✅ FATTI
 La checklist completa della Fase 6, con `prefetch = 1` durante i test di distribuzione (con 10 un burst breve può finire quasi tutto sul primo consumer e far sembrare rotto un refactoring corretto).
 
 > ✅ **Eseguiti** lungo i quattro blocchi: formazione del cluster ed elezione, quorum e retrocessione, distribuzione delle bet fra i worker, instradamento dei comandi al leader, ack differito con riconsegna, deduplica intra e cross-round, bootstrap e replica Mnesia con persistenza al riavvio, canali non vuoti al taglio, ledger pubblicato e consumato, R1/R2, rimborsi puntuali idempotenti, recovery nei due rami.
 >
-> ❌ **Non eseguito: la partizione di rete vera.** Tutti i test di fault tolerance sono stati fatti uccidendo processi, non separando la rete. La guardia di quorum è stata verificata nella forma «nodo isolato che non si autoelegge», ma lo scenario che conta davvero — partizione 2-1 con il **leader in carica** nella minoranza, che deve autoretrocedersi — richiede di manipolare la rete fra i nodi (regole firewall o namespace) e resta da provare. Con esso restano non verificati il log di `inconsistent_database` e l'assenza di ledger divergenti alla riconnessione.
+> ✅ **Partizione di rete eseguita.** Non con regole firewall (servirebbero privilegi di amministratore) ma con una partizione **logica stabile**: `net_kernel:allow/1` su ciascun lato per rendere impossibile la riconnessione, più una disconnessione forzata iniziale. Isolando `game3`, che era il **leader in carica**:
+> - `game3` logga `*** QUORUM PERSO — retrocessione a standby ***`, resta con `leader = undefined` e non vede più nessuno;
+> - la maggioranza `{game1, game2}` elegge `game2`; **un solo nodo in tutto il cluster si crede leader**;
+> - il worker della minoranza logga `Nessun leader eletto: messaggio rimesso in coda`: le puntate restano nel broker invece di essere servite da un leader illegittimo;
+> - **nessun ledger divergente**: durante la partizione i ledger pubblicati sono round 2 → 1 e round 3 → 1, tutti dalla maggioranza. `game3` non ne pubblica nessuno (il suo unico ledger, del round 1, è precedente alla partizione);
+> - alla ricomposizione il mio handler stampa `!!! [MNESIA] DATABASE INCONSISTENTE: running_partitioned_network`, che è esattamente ciò che il piano prevede di loggare in modo rumoroso.
+>
+> Un primo tentativo, con una raffica di `disconnect_node` ogni 300 ms, ha invece prodotto una partizione **1-1-1** anziché 2-1: tutti e tre i nodi isolati, nessun leader, nessun ledger. Anche quel caso degenere ha però mostrato la proprietà di sicurezza (mai due leader), ed è servito a capire che per un test pulito serve una partizione **stabile**, non una raffica.
+
+> ⚠️ **Un limite di Mnesia emerso qui, da citare nella relazione.** Dopo la partizione ho riavviato tutti e tre i nodi (necessario per azzerare le whitelist di `net_kernel`): al riavvio **i checkpoint scritti dalla maggioranza durante la partizione sono andati persi**, e ha vinto la copia della minoranza, più vecchia. Il quorum ha fatto il suo lavoro — un solo scrittore, nessuna divergenza *prodotta* — ma Mnesia non unisce copie che hanno vissuto separate: al caricamento ne adotta una. Le mitigazioni sono l'opzione `{majority, true}` sulla tabella e `mnesia:set_master_nodes/2` per dichiarare quale copia è autoritativa prima di far ripartire il cluster. È lo scenario «partizione + riavvio completo», non la semplice riconnessione, e conferma la nota già presente nel piano: il quorum rende la riparazione manuale improbabile, non impossibile.
+
+> ✅ **DOCUMENTO CONCLUSO.** Tutti e 14 gli step sono implementati e verificati. Il codice descritto da [snapshot_implementation_plan.md](snapshot_implementation_plan.md) è completo: retrofit, `bet_id`, ack differito, quorum, Mnesia replicata, taglio Chandy-Lamport con canali non vuoti, ledger consumato dal gateway, recovery a due rami. Restano annotati due limiti noti — il comportamento di Mnesia al riavvio di un cluster partizionato (Step 14) e quello del nodo riavviato da solo (Step 8) — che sono caratteristiche di Mnesia da dichiarare, non difetti da correggere.
 
 ---
 

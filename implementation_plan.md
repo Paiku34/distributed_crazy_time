@@ -1264,6 +1264,9 @@ ok = mnesia:wait_for_tables([snapshot_record], 5000).
 > [!IMPORTANT]
 > **Chi crea lo schema quando nessuno ce l'ha.** Se tre nodi partono insieme e nessuno possiede la tabella, tutti e tre prenderebbero il ramo «primo nodo» e si creerebbero **tre database indipendenti**, che Mnesia non unisce da sola. Nel codice crea solo il nodo con il **nome più basso** fra quelli connessi; gli altri riprovano ogni 2 s e, dopo 5 tentativi, procedono comunque — così un cluster in cui quel nodo non parte mai non resta bloccato. È ciò che rende superfluo l'avvio «uno alla volta».
 
+> [!CAUTION]
+> **Mnesia non unisce copie che hanno vissuto separate.** Verificato sul campo: dopo una partizione 2-1, riavviando tutti i nodi, i checkpoint scritti dalla **maggioranza** durante la partizione sono andati persi perché al caricamento ha vinto la copia (più vecchia) della minoranza. Il quorum garantisce che ci sia **un solo scrittore**, quindi la divergenza non viene *prodotta*; ma se il cluster viene riavviato dopo essere stato partizionato, la scelta di quale copia sopravvive è di Mnesia. Mitigazioni: l'opzione `{majority, true}` sulla tabella e `mnesia:set_master_nodes/2` per dichiarare la copia autoritativa prima del riavvio. Da citare nella relazione come limite noto.
+
 > [!NOTE]
 > **Un nodo riavviato da solo non sempre carica la propria copia.** Mnesia la carica subito solo se quel nodo era l'**ultimo a spegnersi**; altrimenti attende i nodi che hanno le altre repliche, perché la copia locale potrebbe non essere la più recente. Non è un errore: il bootstrap lo logga nominando i nodi attesi e il gioco continua a funzionare. Per ripartire da soli dopo un guasto definitivo c'è `cluster_manager:force_load_snapshots()`, che carica la copia locale **accettando di perdere** i checkpoint scritti dagli altri nel frattempo — da usare consapevolmente, non come prassi.
 
@@ -2075,7 +2078,7 @@ graph TD
     Q --> D["✅ Phase 4: Chandy-Lamport"]
     D --> J["✅ UC2 Java<br/>dispatch + LedgerListener"]
     J --> E["✅ Phase 5: Fault Tolerance"]
-    E --> F["Phase 6: Integration Testing 🔧"]
+    E --> F["✅ Phase 6: Integration Testing"]
 ```
 
 > [!CAUTION]
@@ -2101,4 +2104,4 @@ graph TD
 4. **Phase 3** ✅: verificata su cluster a 3 nodi — elezione, rielezione alla caduta del leader, retrocessione a standby con quorum 1/3, bet distribuite fra i tre worker e tutte inoltrate al wheel del leader, UNDO con rimborso. 🔧 Restano da verificare: partizione di rete vera (finora solo crash) e comandi non-bet consumati da uno standby durante il minigioco.
 5. **Phase 4** ✅: verificata. Il test che conta — **«canali non vuoti»** — dà `in_flight_bets=3` con le tre puntate in volo che entrano nel round e finiscono nel ledger; checkpoint replicato e leggibile dagli standby; deduplica cross-round funzionante anche dopo un cambio di leader; ledger consumato da Java con payout per `bet_id`, rimborso R1 e `replay_after_refund` R2.
 6. **Phase 5** ✅: verificata. Kill del leader in `spinning` → il ramo A **completa** il round dal checkpoint (bet chiusa sull'esito catturato, nessun rimborso); kill in fase di puntata → il ramo B annulla il solo round interrotto e rimborsa (`Σ wallet` invariato).
-7. **Phase 6** 🔧: la checklist è stata percorsa quasi tutta durante l'implementazione. **Resta la partizione di rete vera** (2-1 con il leader nella minoranza): finora la fault tolerance è stata provata uccidendo processi, non separando la rete, quindi il log di `inconsistent_database` e l'assenza di ledger divergenti alla riconnessione non sono ancora stati osservati.
+7. **Phase 6** ✅: checklist completata, **partizione di rete inclusa**. Isolando il leader in carica con una partizione 2-1 stabile (`net_kernel:allow/1` su entrambi i lati), il leader si autoretrocede, la maggioranza ne elegge uno nuovo, la minoranza rimette le puntate nel broker, e per ogni round esiste **un solo** `round_ledger`. Alla ricomposizione compare `inconsistent_database, running_partitioned_network`, loggato in modo rumoroso come previsto.
