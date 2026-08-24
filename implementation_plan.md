@@ -12,7 +12,7 @@ The Distributed Crazy Time project is a real-time betting web app with a hybrid 
 | 2 | **Multi-node Erlang cluster** — engine su 2+ nodi che si scoprono a vicenda | ✅ **Fase 2 completa**: discovery, liste partecipanti/quorum e **Mnesia replicata** |
 | 3 | **Leader Election** — Bully Algorithm per eleggere un solo "Dealer" | ✅ **Fase 3 implementata e CORRETTA** (retrofit + quorum applicati) |
 | 4 | **Chandy-Lamport Snapshot** — stato globale consistente al "No more bets" | ✅ **IMPLEMENTATA e consumata**: marker sui canali applicativi, ledger su `results_queue`, checkpoint su Mnesia |
-| 5 | **Fault tolerance & recovery** — crash del dealer, nuovo leader, nessuna puntata persa | 🔧 regole R1/R2/R3 e rimborsi puntuali ✅ **fatti**; resta il **recovery a due rami** dal checkpoint |
+| 5 | **Fault tolerance & recovery** — crash del dealer, nuovo leader, nessuna puntata persa | ✅ **IMPLEMENTATA**: regole R1/R2/R3, rimborsi puntuali e **recovery a due rami** dal checkpoint |
 
 > [!IMPORTANT]
 > **Le Fasi 4 e 5 sono state riscritte.** L'analisi in `snapshot_analisi.md` ha mostrato che lo snapshot come era progettato era **ridondante**: catturava uno stato già disponibile in locale sul leader, su canali vuoti per costruzione, e nessuno ne consumava il risultato. Il progetto definitivo — con le motivazioni, la verifica contro il codice e l'ordine di esecuzione dettagliato — è in [snapshot_implementation_plan.md](snapshot_implementation_plan.md), di cui esiste anche un [riassunto](riassunto_snapshot_implementation.md). Questo documento ne recepisce le conclusioni.
@@ -1758,13 +1758,18 @@ game_engine_sup (rest_for_one)
 
 ---
 
-## Phase 5: Fault Tolerance & Crash Recovery — 🔧 RISCRITTA
+## Phase 5: Fault Tolerance & Crash Recovery — ✅ RISCRITTA E IMPLEMENTATA
 
 **Goal**: quando il nodo dealer crasha a metà round, il sistema deve:
 1. rilevare il crash (`nodedown` in `cluster_manager`);
 2. eleggere un nuovo leader (Bully + quorum, Fase 3);
 3. **completare** il round se esiste un checkpoint, oppure annullarlo rimborsando **solo** le bet realmente perse;
 4. riprendere il gioco.
+
+> [!NOTE]
+> ✅ **Implementata e verificata** su cluster a 3 nodi con gateway: uccidendo il leader in fase `spinning` il round viene **completato** con l'esito catturato nel taglio (nessun rimborso, nessun round perso); uccidendolo in fase di puntata il round viene annullato e la puntata rimborsata.
+>
+> Il discriminante è il campo `result_published` del checkpoint, scritto dal wheel subito dopo aver pubblicato l'esito. Il bootstrap Mnesia migra con `transform_table` le tabelle create prima che quel campo esistesse.
 
 > [!CAUTION]
 > **Il punto 3 sostituisce l'approccio originale «annulla il round e rimborsa tutte le PENDING».** Quel rimborso globale colpiva anche round estranei, e soprattutto **si contraddiceva con l'ack differito**: una bet non ackata viene rigiocata dal broker, quindi rimborsarla significa restituire i soldi *e* farla girare lo stesso.
@@ -1789,7 +1794,7 @@ Al crash del leader in fase `betting`, ogni bet del round R sta in **uno solo** 
 
 ---
 
-### [MODIFY] [leader_election.erl](erlang-engine/game_engine/src/leader_election.erl) — recovery a due rami
+### [MODIFY] [leader_election.erl](erlang-engine/game_engine/src/leader_election.erl) — recovery a due rami — ✅ FATTO
 
 ```erlang
 apply_role(leader) ->
@@ -1818,7 +1823,12 @@ recover_from_checkpoint() ->
 ```
 
 > [!IMPORTANT]
-> Il flag `previous_leader_crashed` nel **process dictionary** previsto dalla stesura originale va **sostituito**, non affiancato: non sopravvive al riavvio di `leader_election` e soprattutto non dice *quale* round è stato interrotto — informazione indispensabile per annullare un round solo anziché tutti.
+> **Il recovery parte solo alla transizione standby → leader.** Le elezioni si ripetono a ogni nodo che entra o esce dal cluster: eseguendolo a ogni `apply_role(leader)`, un leader già in carica annullerebbe il round che sta giocando, rimborsando puntate ancora sulla ruota. È un bug che si manifesta solo con più rielezioni di fila, quindi facile da non vedere.
+>
+> Per la stessa ragione il wheel, quando si attiva, allinea il numero di round all'ultimo checkpoint conosciuto: il contatore di un nodo standby è fermo da quando ha smesso di giocare, e ripartire da lì rinumererebbe round già esistenti.
+
+> [!NOTE]
+> Il flag `previous_leader_crashed` nel **process dictionary** previsto dalla stesura originale è stato **sostituito**, non affiancato: non sopravvive al riavvio di `leader_election` e soprattutto non dice *quale* round è stato interrotto — informazione indispensabile per annullare un round solo anziché tutti.
 
 **Ramo A — checkpoint presente, risultato non ancora pubblicato**: il nuovo leader ricarica `bets` dal ledger, riusa `winner_segment`/`winner_index` catturati nel taglio, calcola i payout e pubblica su `results_queue`. **Nessun rimborso, nessun round perso.** È ciò che rende lo snapshot *load-bearing*: il risultato non era ottenibile in altro modo.
 
@@ -1835,9 +1845,9 @@ recover_from_checkpoint() ->
 
 ---
 
-### [MODIFY] [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)
+### [MODIFY] [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl) — ✅ FATTO
 
-Alla riattivazione, il wheel **non** deve azzerare incondizionatamente le bet: prima consulta il checkpoint.
+Alla riattivazione il wheel **non** azzera incondizionatamente le bet: consulta prima il checkpoint.
 
 ```erlang
 handle_cast({complete_round, R, Ledger, Seg, Idx}, State) ->
@@ -1886,7 +1896,7 @@ public void receiveGameResult(String message) {
 
 `@Transactional`: `findByBetId(id)`, e **solo se** `PENDING` → `REFUNDED` + accredito. L'idempotenza è la guardia sullo stato stesso: una riconsegna del messaggio trova la bet già `REFUNDED` e non fa nulla. È la sostituzione **deterministica** del match per importo di `RefundListener`, fragile per costruzione perché due puntate di pari importo su segmenti diversi sono indistinguibili.
 
-#### 4. handler `round_cancelled`
+#### 4. handler `round_cancelled` — ✅ FATTO
 
 Rimborsa `findByRoundAndStatus(R, "PENDING")` **meno** `exclude_bet_ids` (regola R1).
 
@@ -1910,7 +1920,7 @@ In `PayoutListener` e `RefundListener`: essendo i metodi `@Transactional`, l'ecc
 
 ---
 
-### [MODIFY] Frontend — `app.js`
+### [MODIFY] Frontend — `app.js` — ✅ FATTO
 
 ```javascript
 // Dentro la subscription a /topic/game-results
@@ -2038,15 +2048,15 @@ mnesia:dirty_last(snapshot_record).     %% ultimo checkpoint replicato
 | `game_engine.app.src` | ✅ **FATTO** — `amqp_client` e `mnesia` fra le `applications`, `snapshot` fra i `registered`, config broker + `peer_nodes` |
 | `game_engine_sup.erl` | ✅ Fasi 1-3 **FATTE** — `rest_for_one` con `rabbitmq_manager`, `cluster_manager`, `leader_election` come primi tre figli. 🔧 Resta `snapshot` come **ultimo** figlio |
 | `cluster_manager.erl` | ✅ **FATTO** — due liste, delega a `node_down/1`, bootstrap Mnesia, `mnesia:subscribe(system)`, `force_load_snapshots/0` |
-| `leader_election.erl` | ✅ Fase 3 **FATTA** — quorum nei due punti, `{set_leader, N}`, `apply_role/1` non tocca più il worker. 🔧 Resta il recovery dal checkpoint (Fase 5) |
-| `wheel_process.erl` | ✅ AMQP, flag `active`, `{bet, _}` asincrona con deduplica **intra e cross-round**, `bet_rejected`, stato del round, **trigger e chiusura del taglio**, `payouts` con `bet_id`. 🔧 Resta `complete_round` (Fase 5) |
+| `leader_election.erl` | ✅ **Completo** — quorum nei due punti, `{set_leader, N}`, **recovery a due rami** alla sola transizione a leader, `collect_inflight`, `cancel_round/1` |
+| `wheel_process.erl` | ✅ **Completo** — AMQP, `{bet, _}` asincrona con deduplica intra e cross-round, `bet_rejected`, stato del round, trigger e chiusura del taglio, `complete_round`, `mark_result_published` |
 | `worker.erl` | ✅ Completo per le Fasi 1-4 — AMQP, attivo su ogni nodo, instradamento al leader, ack differito con `inflight`, **handler dei marker** e riporto al collector |
-| `GameResultListener.java` | ✅ **FATTO** — dispatch sul campo `type` (`result`, `round_ledger`, `bet_rejected`); resta il ramo `round_cancelled` |
+| `GameResultListener.java` | ✅ **FATTO** — dispatch completo sul campo `type`: `result`, `round_ledger`, `round_cancelled`, `bet_rejected` |
 | `BetRejectionHandler.java` | ✅ **NUOVO, FATTO** — rimborso puntuale e idempotente per `bet_id` |
-| `LedgerListener.java` | ✅ **NUOVO, FATTO** — regole R1/R2, riconciliazione per round e per `bet_id`, prudente sui ledger `degraded` |
+| `LedgerListener.java` | ✅ **NUOVO, FATTO** — regole R1/R2, riconciliazione per round e per `bet_id`, prudente sui ledger `degraded`, handler di `round_cancelled` con `exclude_bet_ids` |
 | `PayoutListener.java` | ✅ **FATTO** — query per round, match per `bet_id`, niente più `catch` che inghiotte le eccezioni |
 | `RefundListener.java` | ✅ **RIMOSSO** insieme a `refunds_queue` (bean, coda e `?QUEUES`) |
-| `app.js` | Gestione di `round_cancelled` |
+| `app.js` | ✅ **FATTO** — banner di round annullato e ricarica del saldo |
 | `istruzioni.txt` | ✅ **FATTO** — istruzioni per il cluster a 3 nodi |
 
 ---
@@ -2064,8 +2074,8 @@ graph TD
     M --> Q["Quorum<br/>anti split-brain"]
     Q --> D["✅ Phase 4: Chandy-Lamport"]
     D --> J["✅ UC2 Java<br/>dispatch + LedgerListener"]
-    J --> E["Phase 5: Fault Tolerance 🔧"]
-    E --> F["Phase 6: Integration Testing"]
+    J --> E["✅ Phase 5: Fault Tolerance"]
+    E --> F["Phase 6: Integration Testing 🔧"]
 ```
 
 > [!CAUTION]
@@ -2090,5 +2100,5 @@ graph TD
 3. **Phase 2** ✅: verificata — 3 nodi che si trovano in qualsiasi ordine di avvio, reconnect periodico, bootstrap Mnesia nei due rami, replica del checkpoint su tutti i nodi e persistenza su disco dopo il riavvio.
 4. **Phase 3** ✅: verificata su cluster a 3 nodi — elezione, rielezione alla caduta del leader, retrocessione a standby con quorum 1/3, bet distribuite fra i tre worker e tutte inoltrate al wheel del leader, UNDO con rimborso. 🔧 Restano da verificare: partizione di rete vera (finora solo crash) e comandi non-bet consumati da uno standby durante il minigioco.
 5. **Phase 4** ✅: verificata. Il test che conta — **«canali non vuoti»** — dà `in_flight_bets=3` con le tre puntate in volo che entrano nel round e finiscono nel ledger; checkpoint replicato e leggibile dagli standby; deduplica cross-round funzionante anche dopo un cambio di leader; ledger consumato da Java con payout per `bet_id`, rimborso R1 e `replay_after_refund` R2.
-6. **Phase 5**: regole R1/R2/R3 ✅ verificate. Resta da provare il recovery a due rami: kill del leader nelle diverse fasi, verificando che il ramo A **completi** il round dal checkpoint e il ramo B rimborsi **solo** le bet realmente perse (`Σ wallet` invariato).
-7. **Phase 6**: sessione completa a 3 nodi con più giocatori concorrenti.
+6. **Phase 5** ✅: verificata. Kill del leader in `spinning` → il ramo A **completa** il round dal checkpoint (bet chiusa sull'esito catturato, nessun rimborso); kill in fase di puntata → il ramo B annulla il solo round interrotto e rimborsa (`Σ wallet` invariato).
+7. **Phase 6** 🔧: la checklist è stata percorsa quasi tutta durante l'implementazione. **Resta la partizione di rete vera** (2-1 con il leader nella minoranza): finora la fault tolerance è stata provata uccidendo processi, non separando la rete, quindi il log di `inconsistent_database` e l'assenza di ledger divergenti alla riconnessione non sono ancora stati osservati.

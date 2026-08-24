@@ -4,19 +4,22 @@ Sintesi ad alto livello delle modifiche descritte in [snapshot_implementation_pl
 
 ---
 
-## Stato del codice — da dove si parte
+## Stato dell'implementazione — ✅ completata
 
-> **Aggiornato al commit `6ef3b73`.** La prima stesura di questo riassunto era scritta sul codice della sola **Fase 1** (AMQP nativo). Nel frattempo sono state implementate anche la **Fase 2** (cluster manager) e la **Fase 3** (elezione del leader con algoritmo Bully), ma **seguendo il piano originale**, cioè senza applicare prima le correzioni strutturali che questo piano richiedeva. Parte di quel lavoro va quindi corretta, non aggiunta.
+> **Tutte le fasi di questo piano sono state implementate e verificate** su un cluster a 3 nodi con RabbitMQ e gateway Java attivi. Il percorso operativo seguito, step per step e con gli esiti di ogni verifica, è in [ordine_implementazione.md](ordine_implementazione.md); `implementation_plan.md` recepisce le stesse conclusioni nelle sue Fasi 2-5.
 
-Tre categorie:
+Cosa c'è oggi nel codice:
 
-- **Già fatto e utilizzabile così com'è**: la connessione AMQP con pubblicazione lock-free, l'ack manuale e — prerequisito importante — la **possibilità di rifiutare un messaggio** rimettendolo in coda, che nella prima stesura figurava fra le cose da aggiungere. Inoltre **ogni nodo è già sottoscritto alla coda delle scommesse**: la topologia a *competing consumers* esiste già a livello di broker, quindi il lavoro da fare è più piccolo del previsto.
-- ✅ **Corretto** (era la Fase 0 qui sotto, ora eseguita): l'elezione non tocca più il worker, che resta attivo su tutti i nodi e instrada al leader; il rifiuto con rimessa in coda avviene solo quando nessun leader è noto; ed è entrata in funzione la guardia di quorum. Verificato su un cluster a 3 nodi.
-- **Ancora da scrivere**: tutto il resto — identificativo univoco di bet, ack differito, persistenza su Mnesia, quorum, snapshot vero e proprio, riconciliazione lato Java.
+- **Ingestione distribuita**: i worker girano su tutti i nodi come *competing consumers* e instradano al leader; solo il processo della ruota è esclusivo del leader. Verificato: 6 scommesse si distribuiscono 2/2/2 fra i tre worker e arrivano tutte al wheel del solo leader.
+- **Identificativo univoco di bet** generato dal gateway, che attraversa AMQP, Erlang e il database, ed è la chiave di deduplica, rimborsi e ledger.
+- **Ack differito**: la conferma al broker parte solo quando il wheel ha deciso; allo scadere di 15 secondi la puntata torna in coda invece di sparire.
+- **Quorum** applicato sia a chi sta per diventare leader sia al leader già in carica: un nodo rimasto solo su tre si rifiuta di autoeleggersi.
+- **Mnesia replicata** con bootstrap a due rami, migrazione dello schema e persistenza verificata al riavvio dei nodi.
+- **Lo snapshot Chandy-Lamport** con i marker sui canali applicativi reali. Il test che conta dà `local_bets=3 in_flight_bets=3`: i canali contengono davvero le puntate in volo, e il ledger pubblicato le include.
+- **Il ledger è consumato**: il gateway conferma i round, paga per identificativo e rimborsa le pendenti rimaste fuori dal taglio (R1), senza mai ripagare una bet già rimborsata (R2).
+- **Recovery a due rami**: crash dopo il gong → il round viene *completato* con l'esito catturato nel taglio; crash in fase di puntata → viene annullato il solo round interrotto, escludendo le puntate che il broker riconsegnerà.
 
-Le conclusioni di questo piano sono state **riportate in `implementation_plan.md`**, e il lavoro sul codice è iniziato: sono completate le Fasi **0** (retrofit), **1** (prerequisiti), **2** (cluster e persistenza), **3** (quorum), **4** (lo snapshot) e quasi tutta la **6** (gateway Java). Della **Fase 5** valgono già le tre regole di riconciliazione; resta il **recovery a due rami** dal checkpoint.
-
-Un chiarimento che cambia un'argomentazione della prima stesura: oggi il worker inoltra la scommessa al processo della ruota con una **chiamata sincrona locale** e conferma al broker solo dopo la risposta. La finestra di perdita descritta più avanti quindi **non esiste ancora**: verrebbe *introdotta* dal passaggio a comunicazione asincrona, ed è l'ack differito a chiuderla prima che si apra.
+**Cosa resta**: un solo scenario di test, la **partizione di rete vera**. Tutta la fault tolerance è stata provata uccidendo processi, non separando la rete: la guardia di quorum è verificata nella forma «nodo isolato che non si autoelegge», ma il caso del leader in carica finito nella minoranza — e con esso il log di database inconsistente e l'assenza di ledger divergenti alla riconnessione — richiede di manipolare la rete fra i nodi.
 
 ---
 
@@ -136,7 +139,7 @@ Ha **sostituito integralmente** la Fase 4 di `implementation_plan.md`, che è st
 
 ---
 
-## Fase 5 — Riconciliazione e regole di correttezza — 🔧 REGOLE FATTE, RECOVERY DA FARE
+## Fase 5 — Riconciliazione e regole di correttezza — ✅ FATTA
 
 L'ack differito e l'annullamento del round si contraddicono se lasciati impliciti: il primo dice che le bet non ackate vengono **rigiocate**, il secondo che le bet pendenti del round caduto vengono **rimborsate**. Una bet che cade in entrambe le descrizioni verrebbe rimborsata *e* giocata.
 
@@ -154,7 +157,7 @@ Il nuovo leader raccoglie dai worker superstiti le bet non ackate proprio per se
 - **R2 — Chi è autoritativo.** Lo stato lato Java è autoritativo sui **movimenti di denaro**, il ledger Erlang sull'**esito di gioco**. Una bet già rimborsata che ricompare in un ledger successivo non viene mai pagata; va però loggata e chiusa in stato terminale, perché è l'unico caso in cui l'utente vede sulla ruota una puntata che gli è stata restituita — un'anomalia visiva da documentare, non una duplicazione di denaro.
 - **R3 — L'insieme di deduplica è l'unione dei ledger persistiti**, non la lista delle bet in memoria. Quest'ultima viene azzerata a ogni round, quindi da sola garantisce l'idempotenza soltanto *dentro la finestra del round*: una riconsegna che arriva nel round successivo verrebbe accettata di nuovo, giocata due volte e pagata due volte. È la regola che rende davvero sicuro l'ack differito. Il wheel mantiene perciò un insieme delle bet già liquidate negli ultimi round, ripopolato dai record persistiti **all'avvio e a ogni elezione** — è proprio dopo un crash che le riconsegne arrivano.
 
-### Recovery a due rami — ❌ ancora da fare
+### Recovery a due rami — ✅ fatto
 
 L'approccio «annulla il round e rimborsa tutto» viene sostituito da un percorso a due rami, deciso leggendo l'ultimo checkpoint su Mnesia:
 
@@ -167,10 +170,10 @@ Viene inoltre eliminato il rimborso globale su tutte le bet pendenti, che colpiv
 
 ---
 
-## Fase 6 — Allineamento del gateway Java e del frontend — 🔧 QUASI COMPLETA
+## Fase 6 — Allineamento del gateway Java e del frontend — ✅ FATTA
 
 ✅ Già fatti: identificativo univoco sulla bet con serializzazione vera, ricerche per identificativo e per round, dispatch sul tipo di messaggio, handler del rifiuto puntuale idempotente, **handler del ledger con le regole R1/R2**, **payout per round e per identificativo**, rimozione del blocco che inghiottiva le eccezioni nel payout e della vecchia coda dei rimborsi.
-❌ Restano: il ramo di annullamento round (dipende dal recovery della Fase 5) e la notifica di round annullato sul frontend.
+✅ Completata anche la parte finale: il ramo di annullamento round con l'elenco delle bet da escludere, e la notifica sul frontend con ricarica del saldo.
 
 - **Entità e API**: nuovo campo identificativo univoco sulla bet, generato all'accettazione e incluso nel messaggio; ricerche per identificativo e per round + stato. Contestualmente, la costruzione del JSON passa a una serializzazione vera invece della concatenazione di stringhe (oggi l'username non viene mai escapato).
 - **Dispatch sul tipo di messaggio**, oggi completamente ignorato: qualunque messaggio in arrivo viene trattato come risultato di round. I quattro tipi (risultato, ledger, annullamento round, rifiuto puntuale) vanno instradati ai rispettivi handler.

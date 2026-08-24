@@ -387,9 +387,35 @@ log_mnesia_result(What, {aborted, Reason}) when element(1, Reason) =:= already_e
 log_mnesia_result(What, Other) ->
     io:format("[MNESIA] ~s: ~p~n", [What, Other]).
 
+%% Allinea la tabella esistente al record corrente. Senza, un database
+%% creato da una versione precedente farebbe fallire ogni scrittura con
+%% {bad_type, ...} e il motivo non sarebbe evidente dal messaggio.
+migrate_table_if_needed() ->
+    Current = record_info(fields, snapshot_record),
+    case catch mnesia:table_info(snapshot_record, attributes) of
+        Current ->
+            ok;
+        Old when is_list(Old) ->
+            io:format("[MNESIA] Schema della tabella cambiato (~p -> ~p): migrazione~n",
+                      [length(Old), length(Current)]),
+            Added = length(Current) - length(Old),
+            Res = mnesia:transform_table(
+                    snapshot_record,
+                    fun(Rec) ->
+                        %% I record vecchi non hanno i campi nuovi: si estendono
+                        %% con i default del record corrente.
+                        list_to_tuple(tuple_to_list(Rec) ++ lists:duplicate(Added, false))
+                    end,
+                    Current),
+            io:format("[MNESIA] Migrazione: ~p~n", [Res]);
+        _ ->
+            ok
+    end.
+
 wait_for_snapshot_table() ->
     case mnesia:wait_for_tables([snapshot_record], ?MNESIA_WAIT) of
         ok ->
+            migrate_table_if_needed(),
             io:format("[MNESIA] Pronto. Copie su disco: ~p~n", [disc_copies_of_table()]);
         {timeout, _} ->
             %% Comportamento normale di Mnesia, non un errore: la copia locale

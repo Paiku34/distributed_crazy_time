@@ -64,6 +64,12 @@ init([]) ->
     Leader = current_leader(),
     {ok, #state{leader = Leader}}.
 
+%% Bet consumate dal broker e non ancora ackate: al crash del leader sono
+%% quelle che il broker riconsegnera' da solo, quindi NON vanno rimborsate.
+%% Il nuovo leader le raccoglie per escluderle dall'annullamento del round.
+handle_call({collect_inflight, _Round}, _From, State) ->
+    {reply, maps:keys(State#state.inflight), State};
+
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 

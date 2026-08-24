@@ -25,5 +25,10 @@
     winner_index,
     local_states,     %% #{Participant => term()}
     channel_states,   %% #{{From, To} => [term()]} messaggi in transito
-    ledger            %% [BetMap] insieme autorevole delle bet del round
+    ledger,           %% [BetMap] insieme autorevole delle bet del round
+    %% Il risultato del round e' gia' stato pubblicato su results_queue?
+    %% E' il discriminante del recovery: un checkpoint con questo campo a
+    %% false vuol dire che il leader e' morto DOPO il gong ma PRIMA di
+    %% pagare, quindi il round si puo' completare invece di annullarlo.
+    result_published = false
 }).

@@ -21,7 +21,10 @@
 -module(leader_election).
 -behaviour(gen_server).
 
--export([start_link/0, start_election/0, get_leader/0, is_leader/0, node_down/1]).
+-include("game_engine.hrl").
+
+-export([start_link/0, start_election/0, get_leader/0, is_leader/0, node_down/1,
+         cancel_round/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 -record(state, {
@@ -48,6 +51,13 @@ get_leader() ->
 
 is_leader() ->
     gen_server:call(?MODULE, is_leader).
+
+%% Annulla un round: rimborsa le sue bet pendenti TRANNE quelle che i worker
+%% superstiti hanno ancora in mano, che il broker riconsegnera' da solo.
+%% Chiamata anche dal wheel quando un round interrotto non e' completabile.
+cancel_round(Round) ->
+    spawn(fun() -> do_cancel_round(Round) end),
+    ok.
 
 %% Notifica della caduta di un nodo, inviata da cluster_manager.
 %% E' un cast: il chiamante non deve mai bloccarsi su questa decisione.
@@ -115,6 +125,7 @@ handle_cast({coordinator, Leader}, State) ->
     io:format("[ELECTION] Nuovo leader eletto: ~p~n", [Leader]),
     NewRole = case Leader =:= node() of true -> leader; false -> standby end,
     apply_role(NewRole),          %% attiva o disattiva il SOLO wheel_process
+    maybe_recover(State#state.role, NewRole),
     set_local_leader(Leader),     %% il worker locale deve sapere a chi inoltrare
     {noreply, State#state{leader = Leader, role = NewRole,
                           election_in_progress = false, election_timer = undefined}};
@@ -164,10 +175,23 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal functions
 %%====================================================================
 
+%% Il recovery parte SOLO alla transizione standby -> leader, non a ogni
+%% rielezione: le elezioni si ripetono a ogni nodo che entra o esce, e
+%% rieseguirlo su un leader gia' in carica annullerebbe il round in corso.
+maybe_recover(leader, leader) -> ok;
+maybe_recover(_OldRole, leader) ->
+    %% Fuori dal gen_server: raccoglie le bet non ackate dai worker con
+    %% chiamate che possono attendere fino a 2 s ciascuna, e l'elezione non
+    %% deve restare bloccata nel frattempo.
+    spawn(fun() -> recover_from_checkpoint() end),
+    ok;
+maybe_recover(_OldRole, _NewRole) -> ok.
+
 %% Esito di un tentativo di vittoria, con la guardia di quorum applicata.
 resolve_victory(State) ->
     case declare_victory(node()) of
         leader ->
+            maybe_recover(State#state.role, leader),
             State#state{leader = node(), role = leader,
                         election_in_progress = false, election_timer = undefined};
         standby ->
@@ -249,6 +273,77 @@ broadcast_leader(Leader) ->
 %% Comunica il leader al solo worker locale (quando l'annuncio arriva da altri).
 set_local_leader(Leader) ->
     gen_server:cast(worker, {set_leader, Leader}).
+
+%%====================================================================
+%% Recovery al cambio di leader
+%%====================================================================
+
+%% Due rami, decisi leggendo l'ultimo checkpoint su Mnesia.
+%%
+%%   A. checkpoint presente e risultato NON ancora pubblicato
+%%      -> il leader precedente e' morto dopo il gong ma prima di pagare:
+%%         il round si COMPLETA riusando l'esito catturato nel taglio.
+%%
+%%   B. nessun checkpoint da completare
+%%      -> il crash e' avvenuto in fase di puntata, quindi non esiste esito.
+%%         Si annulla il SOLO round interrotto, e non tutte le sue bet: quelle
+%%         che i worker hanno ancora in mano rientrano dal broker e verranno
+%%         giocate nel round successivo. Rimborsarle sarebbe un doppio gioco.
+recover_from_checkpoint() ->
+    timer:sleep(500),   %% lascia al wheel il tempo di attivarsi
+    case snapshot:get_last() of
+        {ok, #snapshot_record{result_published = false} = Rec} ->
+            io:format("[RECOVERY] Checkpoint del round ~p con risultato non pubblicato~n",
+                      [Rec#snapshot_record.round]),
+            gen_server:cast(wheel_process,
+                            {complete_round,
+                             Rec#snapshot_record.round,
+                             Rec#snapshot_record.ledger,
+                             Rec#snapshot_record.winner_segment,
+                             Rec#snapshot_record.winner_index});
+        {ok, #snapshot_record{round = LastRound}} ->
+            io:format("[RECOVERY] Ultimo round completato: ~p. "
+                      "Annullo l'eventuale round interrotto ~p~n", [LastRound, LastRound + 1]),
+            do_cancel_round(LastRound + 1);
+        none ->
+            io:format("[RECOVERY] Nessun checkpoint: niente da recuperare~n"),
+            ok
+    end.
+
+do_cancel_round(Round) ->
+    Excluded = collect_inflight(Round),
+    Payload = lists:flatten(io_lib:format(
+        "{\"type\":\"round_cancelled\",\"round\":~p,\"exclude_bet_ids\":~s}",
+        [Round, json_list(Excluded)])),
+    case rabbitmq_manager:publish(<<"results_queue">>, unicode:characters_to_binary(Payload)) of
+        ok ->
+            io:format("[RECOVERY] Round ~p annullato. Bet escluse dal rimborso (rientrano "
+                      "dal broker): ~p~n", [Round, length(Excluded)]);
+        {error, Reason} ->
+            io:format("[RECOVERY] Pubblicazione dell'annullamento fallita: ~p~n", [Reason])
+    end.
+
+%% Bet consumate dal broker e mai ackate, chieste a tutti i worker vivi.
+%% Sono l'insieme che distingue le puntate DAVVERO perse (da rimborsare) da
+%% quelle che il broker rigiochera' da solo.
+collect_inflight(Round) ->
+    Nodes = try cluster_manager:get_participants() of
+                L when is_list(L) -> L
+            catch _:_ -> [node()]
+            end,
+    lists:usort(lists:flatmap(fun(N) ->
+        try gen_server:call({worker, N}, {collect_inflight, Round}, 2000) of
+            Ids when is_list(Ids) -> Ids;
+            _ -> []
+        catch
+            _:_ ->
+                io:format("[RECOVERY] Worker su ~p non raggiungibile per collect_inflight~n", [N]),
+                []
+        end
+    end, Nodes)).
+
+json_list(Ids) ->
+    "[" ++ string:join(["\"" ++ binary_to_list(I) ++ "\"" || I <- Ids, is_binary(I)], ",") ++ "]".
 
 cancel_timer(undefined) -> ok;
 cancel_timer(TRef) -> erlang:cancel_timer(TRef), ok.

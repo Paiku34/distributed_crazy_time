@@ -510,6 +510,15 @@ function handleGameState(data) {
 
 // ===== GAME RESULT HANDLER =====
 function handleGameResult(data) {
+    // Il dealer e' caduto a meta' round: le puntate non rigiocabili sono gia'
+    // state rimborsate dal gateway, qui si avvisa e si ricarica il saldo.
+    if (data.type === 'round_cancelled') {
+        showRoundCancelled(data.round);
+        myBetsThisRound = {};
+        fetchBalance();
+        return;
+    }
+
     wheelCenterText.innerHTML = data.winner || '?';
 
     // Calculate if player won
@@ -1372,6 +1381,23 @@ function animatePachinko(multiplier, details, onComplete) {
 
 
 // ===== BALANCE =====
+// Avviso di round annullato: banner temporaneo, senza bloccare il gioco —
+// il nuovo dealer ha gia' aperto il round successivo.
+function showRoundCancelled(round) {
+    const banner = document.createElement('div');
+    banner.className = 'round-cancelled-banner';
+    banner.textContent = round
+        ? `Round ${round} annullato: il dealer e' caduto. Le puntate non giocate sono state rimborsate.`
+        : "Round annullato: il dealer e' caduto. Le puntate non giocate sono state rimborsate.";
+    Object.assign(banner.style, {
+        position: 'fixed', top: '20px', left: '50%', transform: 'translateX(-50%)',
+        background: '#b8860b', color: '#fff', padding: '14px 22px', borderRadius: '8px',
+        zIndex: '9999', fontWeight: 'bold', boxShadow: '0 4px 12px rgba(0,0,0,.4)'
+    });
+    document.body.appendChild(banner);
+    setTimeout(() => banner.remove(), 8000);
+}
+
 function fetchBalance() {
     if (!currentUser) return;
     authFetch(`/api/wallet/balance`)

@@ -105,6 +105,44 @@ public class LedgerListener {
         }
     }
 
+    /**
+     * Annullamento di un round interrotto dal crash del dealer.
+     *
+     * Rimborsa le pendenti di quel round TRANNE quelle elencate in
+     * exclude_bet_ids: sono state consumate da un worker ma mai confermate,
+     * quindi il broker le riconsegnera' e verranno giocate nel round
+     * successivo. Rimborsarle significherebbe restituire i soldi E farle
+     * girare lo stesso (regola R1).
+     */
+    @Transactional
+    public void cancelRound(JsonNode root) {
+        int round = root.path("round").asInt(-1);
+        if (round < 0) {
+            log.warn("round_cancelled senza round: {}", root);
+            return;
+        }
+
+        Set<String> excluded = new HashSet<>();
+        JsonNode ids = root.path("exclude_bet_ids");
+        if (ids.isArray()) {
+            ids.forEach(n -> excluded.add(n.asText()));
+        }
+
+        List<Bet> pending = betRepository.findByRoundAndStatus(round, "PENDING");
+        int refunded = 0;
+        for (Bet bet : pending) {
+            if (bet.getBetId() != null && excluded.contains(bet.getBetId())) {
+                log.info("Round {} annullato: la bet {} rientra dal broker, nessun rimborso",
+                         round, bet.getBetId());
+                continue;
+            }
+            refund(bet, round);
+            refunded++;
+        }
+        log.info("Round {} annullato: {} bet rimborsate, {} escluse perche' verranno rigiocate",
+                 round, refunded, excluded.size());
+    }
+
     private void refund(Bet bet, int round) {
         Player player = playerRepository.findByUsernameForUpdate(bet.getUsername()).orElse(null);
         if (player == null) {

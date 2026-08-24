@@ -16,7 +16,7 @@ Questo piano definisce le modifiche al codice e a `implementation_plan.md` per r
 ## Stato del codice — baseline di questo piano
 
 > [!IMPORTANT]
-> **Questo documento è stato riscritto sul codice reale al commit `6ef3b73`, e poi aggiornato dopo il retrofit.** Gli Step 1-12 di [ordine_implementazione.md](ordine_implementazione.md) — Blocchi **A, B, C e D** — sono stati **implementati e verificati** su cluster a 3 nodi con broker e gateway attivi: i punti relativi sono marcati ✅ qui sotto. La prima stesura era ancorata al codice della sola **Fase 1** (AMQP nativo). Nel frattempo sono state implementate anche la **Fase 2** (`cluster_manager.erl`) e la **Fase 3** (`leader_election.erl`) **seguendo la stesura originale** di `implementation_plan.md`, cioè senza applicare prima le correzioni strutturali che questo piano richiedeva. Parte del lavoro delle Fasi 2-3 va quindi **corretta**, non aggiunta: i punti interessati sono marcati inline con 🔧.
+> **Questo documento è stato riscritto sul codice reale al commit `6ef3b73`, e poi aggiornato dopo il retrofit.** **L'implementazione descritta da questo piano è completa.** Gli Step 1-13 di [ordine_implementazione.md](ordine_implementazione.md) sono stati **implementati e verificati** su cluster a 3 nodi con broker e gateway attivi: i punti relativi sono marcati ✅ qui sotto. La prima stesura era ancorata al codice della sola **Fase 1** (AMQP nativo). Nel frattempo sono state implementate anche la **Fase 2** (`cluster_manager.erl`) e la **Fase 3** (`leader_election.erl`) **seguendo la stesura originale** di `implementation_plan.md`, cioè senza applicare prima le correzioni strutturali che questo piano richiedeva. Parte del lavoro delle Fasi 2-3 va quindi **corretta**, non aggiunta: i punti interessati sono marcati inline con 🔧.
 
 | Componente | Stato |
 | :--- | :--- |
@@ -24,9 +24,9 @@ Questo piano definisce le modifiche al codice e a `implementation_plan.md` per r
 | [cluster_manager.erl](erlang-engine/game_engine/src/cluster_manager.erl) | ✅ Completo. Discovery, `monitor_nodes(true, [{node_type, all}])`, reconnect, **`configured_nodes/0` e `get_participants/0`**, delega a `leader_election:node_down/1`, **bootstrap Mnesia** a due rami, `subscribe(system)`, `force_load_snapshots/0` |
 | [leader_election.erl](erlang-engine/game_engine/src/leader_election.erl) | ✅ Fase 3 + retrofit. Bully completo, `apply_role/1` che tocca **solo** il wheel, `broadcast_leader/1` con `{set_leader, N}`, **guardia di quorum** in `declare_victory/1` e `node_down/1`, guardia su `election_in_progress` |
 | [worker.erl](erlang-engine/game_engine/src/worker.erl) | ✅ Completo: consumer su **ogni** nodo, instradamento al leader, **ack differito** con `inflight` + timeout, **partecipante al taglio** (marker e riporto al collector) |
-| [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl) | ✅ Iniziatore del taglio: trigger al gong dopo l'estrazione, marker verso i worker, chiusura con merge delle bet in transito, abort locale, `settled_bet_ids` (R3), `payouts` con `bet_id`. ❌ resta `complete_round` (recovery) |
+| [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl) | ✅ **Completo** — iniziatore del taglio, merge delle bet in transito, abort locale, `settled_bet_ids` (R3), `payouts` con `bet_id`, `complete_round` e `mark_result_published` |
 | [game_engine.app.src](erlang-engine/game_engine/src/game_engine.app.src) | ✅ `amqp_client` e **`mnesia`** fra le `applications`, `snapshot` fra i `registered`, config broker, `peer_nodes` con tutti e 3 i nodi |
-| Java gateway | ✅ `bet_id` UUID, dispatch sul campo `type`, `BetRejectionHandler` idempotente, **`LedgerListener` con R1/R2**, `PayoutListener` per round e per `bet_id`, `RefundListener` rimosso. ❌ resta il ramo `round_cancelled` |
+| Java gateway | ✅ **Completo** — `bet_id` UUID, dispatch sui quattro tipi, `BetRejectionHandler` idempotente, `LedgerListener` con R1/R2 e `round_cancelled`, `PayoutListener` per round e per `bet_id`, `RefundListener` rimosso |
 
 ### Divergenze fra questo piano e il codice attuale
 
@@ -526,7 +526,7 @@ cd java-gateway && mvn test
 3. ✅ **FATTO — Guardia di quorum** su `declare_victory/1` e `node_down/1`. Va prima della Fase 4: senza, gli `snapshot_record` concorrenti di due leader corrompono Mnesia al primo test di partizione.
 4. ✅ **FATTO — Fase 4 riscritta**: `cl_recorder` → partecipanti → collector `snapshot.erl` → persistenza Mnesia → pubblicazione ledger. Con Mnesia in piedi si chiude anche **R3**: `settled_bet_ids` ripopolato dai `snapshot_record` all'avvio e a ogni elezione. Fino a qui la dedup copre solo l'intra-round; è l'unico punto del percorso in cui il sistema è temporaneamente esposto alla doppia giocata, ed è per questo che R3 non può slittare oltre.
 5. ✅ **FATTO — UC2 lato Java**: dispatch su `type`, handler `bet_rejected`, `LedgerListener` con le regole R1/R2, `PayoutListener` per-round, rimozione di `RefundListener` e di `refunds_queue` (solo dopo il passo 1).
-6. **Fase 5 corretta**: recovery dal checkpoint; fallback `round_cancelled` con `exclude_bet_ids`, che dipende dal `{collect_inflight, R}` introdotto ai passi 0-1.
-7. **Fase 6**: test della Parte 7.
+6. ✅ **FATTO — Fase 5 corretta**: recovery dal checkpoint; fallback `round_cancelled` con `exclude_bet_ids`, raccolti via `{collect_inflight, R}`. Il discriminante fra i due rami è il campo `result_published` aggiunto al checkpoint. Il recovery parte **solo** alla transizione standby → leader.
+7. 🔧 **QUASI FATTO — Fase 6**: test della Parte 7 percorsi quasi tutti. Resta la **partizione di rete vera**: la fault tolerance è stata provata uccidendo processi, non separando la rete.
 
 I passi 0-4 lasciano il sistema funzionante a ogni tappa. Il passo 5 è quello che rende lo snapshot **consumato**: fino ad allora resta un artefatto di log, cioè esattamente la critica dell'analisi.

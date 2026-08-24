@@ -255,11 +255,28 @@ Regole R1 e R2; payout per round e per `bet_id` al posto della scansione globale
 
 ## Coda — Phase 5 e 6
 
-### - [ ] Step 13 — Recovery a due rami · L
+### - [x] Step 13 — Recovery a due rami · L — ✅ FATTO
 `complete_round` dal checkpoint quando esiste; `round_cancelled` con `exclude_bet_ids` raccolti via `{collect_inflight, R}` quando non esiste; notifica `round_cancelled` sul frontend. È il **secondo** consumatore dello snapshot: senza, il checkpoint resta solo un audit trail.
 
-### - [ ] Step 14 — Test finali
+**File**: [leader_election.erl](erlang-engine/game_engine/src/leader_election.erl), [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl), [worker.erl](erlang-engine/game_engine/src/worker.erl), `include/game_engine.hrl`, `LedgerListener.java`, `GameResultListener.java`, `app.js`
+
+Il discriminante fra i due rami è un campo nuovo del checkpoint, `result_published`, scritto dal wheel subito dopo aver pubblicato l'esito su `results_queue`: un checkpoint con quel campo a `false` significa «il leader è morto dopo il gong ma prima di pagare». Il record cambia forma, quindi il bootstrap Mnesia esegue una `transform_table` quando trova una tabella con attributi diversi — senza, un database creato dalla versione precedente farebbe fallire ogni scrittura con `bad_type`.
+
+> ✅ **Eseguita**, con broker, 3 nodi e gateway:
+> - **ramo A** — bet da 10 su `1`, leader ucciso in fase `spinning`: `Checkpoint del round 4 con risultato non pubblicato` → `Completo il round 4: 10 x10 su 1 bet dal ledger`. Il round viene **chiuso con l'esito catturato nel taglio** (vinceva il `10`, la puntata era sull'`1`): la bet risulta persa, non rimborsata, e il saldo resta 90. Nessun round perso;
+> - **ramo B** — bet da 20 su `2`, leader ucciso in fase di puntata: `Ultimo round completato: 8. Annullo l'eventuale round interrotto 9` → `Round 9 annullato: 1 bet rimborsate, 0 escluse`. Saldo 70 → **90**;
+> - il frontend riceve `round_cancelled` sul topic dei risultati e mostra il banner ricaricando il saldo.
+>
+> **Due bug trovati dai test e corretti.** Il recovery girava a **ogni** `apply_role(leader)`, quindi a ogni rielezione: un leader già in carica annullava il round che stava giocando, rimborsando puntate ancora sulla ruota. Ora parte solo alla transizione standby → leader. E il nuovo leader ripartiva dal **proprio** contatore di round, fermo da quando era standby, rinumerando round già esistenti e facendo collidere i checkpoint: ora si allinea all'ultimo round conosciuto.
+>
+> Una conferma inattesa: un tentativo di test è fallito perché, dopo due kill, restava **un solo nodo su tre** e nessuno si autoeleggeva. Non era un difetto — era la guardia di quorum del Blocco A che faceva il suo lavoro.
+
+### - [x] Step 14 — Test finali — 🔧 QUASI COMPLETI
 La checklist completa della Fase 6, con `prefetch = 1` durante i test di distribuzione (con 10 un burst breve può finire quasi tutto sul primo consumer e far sembrare rotto un refactoring corretto).
+
+> ✅ **Eseguiti** lungo i quattro blocchi: formazione del cluster ed elezione, quorum e retrocessione, distribuzione delle bet fra i worker, instradamento dei comandi al leader, ack differito con riconsegna, deduplica intra e cross-round, bootstrap e replica Mnesia con persistenza al riavvio, canali non vuoti al taglio, ledger pubblicato e consumato, R1/R2, rimborsi puntuali idempotenti, recovery nei due rami.
+>
+> ❌ **Non eseguito: la partizione di rete vera.** Tutti i test di fault tolerance sono stati fatti uccidendo processi, non separando la rete. La guardia di quorum è stata verificata nella forma «nodo isolato che non si autoelegge», ma lo scenario che conta davvero — partizione 2-1 con il **leader in carica** nella minoranza, che deve autoretrocedersi — richiede di manipolare la rete fra i nodi (regole firewall o namespace) e resta da provare. Con esso restano non verificati il log di `inconsistent_database` e l'assenza di ledger divergenti alla riconnessione.
 
 ---
 

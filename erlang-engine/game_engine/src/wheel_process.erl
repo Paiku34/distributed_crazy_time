@@ -199,8 +199,39 @@ handle_cast(activate, State = #state{active = false}) ->
     %% Regola R3: il nuovo leader ricarica dai checkpoint le bet gia'
     %% liquidate, altrimenti le riconsegne che arrivano subito dopo un
     %% crash verrebbero rigiocate.
+    %% Il contatore locale di un nodo standby e' fermo da quando ha smesso di
+    %% giocare: ripartire da li' rinumererebbe round gia' esistenti, facendo
+    %% collidere i nuovi checkpoint con quelli storici.
+    Round = max(State#state.round, last_known_round() + 1),
     {noreply, State#state{active = true, phase = betting, time_left = ?BET_DURATION,
+                          round = Round,
                           settled_bet_ids = reload_settled()}};
+%% --- RECOVERY, ramo A: completa un round interrotto dopo il gong ---
+%%
+%% Il nuovo leader non rigioca nulla: riusa l'esito catturato nel taglio e
+%% le bet del ledger, che sono l'insieme autorevole del round (comprese
+%% quelle che al gong erano ancora in volo).
+handle_cast({complete_round, Round, Ledger, WinnerSeg, WinnerIndex}, State) ->
+    case segment_type(WinnerSeg) of
+        {multiplier, Value} ->
+            io:format("[RECOVERY] Completo il round ~p: ~s x~p su ~p bet dal ledger~n",
+                      [Round, WinnerSeg, Value, length(Ledger)]),
+            resolve_round(WinnerSeg, Value, WinnerIndex, Ledger, Round),
+            NewHistory = lists:sublist([{WinnerSeg, Value} | State#state.history], 21),
+            erlang:send_after(?COOLDOWN, self(), new_round),
+            {noreply, State#state{phase = cooldown, time_left = 0, round = Round,
+                                  bets = [], history = NewHistory,
+                                  settled_bet_ids = add_settled(Ledger, State#state.settled_bet_ids)}};
+        {minigame, Module} ->
+            %% L'esito del bonus non e' mai stato determinato: il taglio cattura
+            %% il segmento vincente, non il risultato del minigioco. Il round
+            %% non e' completabile e va annullato.
+            io:format("[RECOVERY] Il round ~p era finito sul minigioco ~p: esito mai~n"
+                      "[RECOVERY] determinato, il round viene annullato~n", [Round, Module]),
+            leader_election:cancel_round(Round),
+            {noreply, State}
+    end;
+
 handle_cast(activate, State = #state{active = true}) ->
     {noreply, State};  %% Gia' attivo
 
@@ -366,6 +397,7 @@ handle_info({resolve_async_minigame, SegName, Details, BonusBets, WinnerIndex}, 
     %% -1 come multiplier: segnala al gateway Java di usare l'array payouts invece del campo multiplier
     Payload = build_result_json(SegName, <<"async_minigame">>, -1, WinnerIndex, Details, Payouts, State#state.round),
     publish_to_queue("results_queue", Payload),
+    mark_result_published(State#state.round),
     
     %% Add to history
     HistoryMult = case SegName of
@@ -441,6 +473,7 @@ resolve_round(WinnerSeg, Multiplier, WinnerIndex, Bets, Round) ->
     Payouts = compute_payouts(WinnerSeg, Multiplier, Bets),
     Payload = build_result_json(WinnerSeg, <<"multiplier">>, Multiplier, WinnerIndex, #{}, Payouts, Round),
     publish_to_queue("results_queue", Payload),
+    mark_result_published(Round),
     io:format("[WHEEL] Round #~p risolto. Vincitore: ~s (x~p). Pagamenti: ~p~n",
               [Round, WinnerSeg, Multiplier, length(Payouts)]).
 
@@ -449,6 +482,7 @@ resolve_round_with_bonus(BonusSeg, Multiplier, Details, Bets, WinnerIndex, Round
     Payouts = compute_payouts(BonusSeg, Multiplier, Bets),
     Payload = build_result_json(BonusSeg, <<"minigame">>, Multiplier, WinnerIndex, Details, Payouts, Round),
     publish_to_queue("results_queue", Payload),
+    mark_result_published(Round),
     io:format("[WHEEL] Round #~p risolto (BONUS ~s, x~p). Pagamenti: ~p~n",
               [Round, BonusSeg, Multiplier, length(Payouts)]).
 
@@ -653,6 +687,20 @@ add_settled(Bets, Set) ->
             Id -> sets:add_element(Id, Acc)
         end
     end, Set, Bets).
+
+%% Ultimo round di cui esiste un checkpoint, 0 se non ce ne sono.
+last_known_round() ->
+    case snapshot:get_last() of
+        {ok, Rec} -> Rec#snapshot_record.round;
+        none -> 0
+    end.
+
+%% Segna il checkpoint del round come "risultato pubblicato": e' cio' che
+%% al recovery distingue un round da completare da uno gia' chiuso.
+mark_result_published(Round) ->
+    lists:foreach(fun(Rec) ->
+        catch mnesia:dirty_write(Rec#snapshot_record{result_published = true})
+    end, snapshot:get_for_round(Round)).
 
 fmt_id(undefined) -> "senza id";
 fmt_id(Id) when is_binary(Id) -> binary_to_list(Id);

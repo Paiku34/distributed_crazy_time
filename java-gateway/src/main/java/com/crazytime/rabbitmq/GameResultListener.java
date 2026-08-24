@@ -66,6 +66,11 @@ public class GameResultListener {
                 messagingTemplate.convertAndSend("/topic/game-results", message);
             }
             case "round_ledger" -> ledgerListener.processLedger(root);
+            case "round_cancelled" -> {
+                ledgerListener.cancelRound(root);
+                // Il frontend deve poter avvisare il giocatore e ricaricare il saldo.
+                messagingTemplate.convertAndSend("/topic/game-results", message);
+            }
             case "bet_rejected" -> betRejectionHandler.rejectBet(root);
             default -> log.warn("Tipo di messaggio non gestito su results_queue: {}", type);
         }
