@@ -88,6 +88,10 @@ compute_payouts(Details, Bets, Choices) ->
                 {true, #{
                     username => Username,
                     bet => Amount,
+                    %% bet_id: senza, il gateway non riesce ad associare la vincita
+                    %% alla scommessa (cerca per identificativo) e la puntata
+                    %% resterebbe PENDING senza essere pagata.
+                    bet_id => maps:get(<<"bet_id">>, Bet, <<"">>),
                     payout => Amount + (Amount * UserMult)
                 }};
             _ -> false

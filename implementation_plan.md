@@ -25,8 +25,12 @@ The Distributed Crazy Time project is a real-time betting web app with a hybrid 
 
 ---
 
-## Phase 0: Bug Fixes (Existing Codebase) (dovrebbero essere a posto ma ricontrollare)
-(manca da vedere che nelle scelte default ricevo come bonus -1x)
+## Phase 0: Bug Fixes (Existing Codebase) — ✅ VERIFICATA NEL CODICE, con un punto aperto
+
+> [!NOTE]
+> Le fix da 0.1.1 a 0.3.4 sono state **ricontrollate una per una nel codice** e risultano tutte applicate (lock pessimistico e `@Transactional`, `it.remove()` sui payout, marcatura `REFUNDED`, controllo di fase, force-result admin-only, `GameStateCache` immutabile, Jackson nei listener, directory `repository` minuscola, UTF-8, logout server-side; lato Erlang catch-all su `segment_type`, `maps:get/3`, multiplier `-1`, `time_left` parametrico, flapper a 120°, `parse_cell_index`, charlist, `MAX_DROPS`, zero residui HTTP, `find_segment_index`, lowercase, escaping, timeout sui minigiochi; lato frontend default CashHunt, `choiceSent`, niente cache-busting, divisione protetta). La **FIX 0.1.14** (`bet_id`) è stata aggiunta e implementata in seguito.
+>
+> ✅ **Chiuso anche l'ultimo punto**: «nelle scelte di default ricevo come bonus -1x». **Non è più riproducibile.** Forzando CashHunt e CrazyTime con una scommessa piazzata e **nessuna scelta inviata**, il default viene applicato e produce un moltiplicatore corretto e positivo: CashHunt `default_cell=47` → griglia 75 → payout 760 su 10 (il frontend mostra `75X`); CrazyTime → default blu, `blue_multiplier=100` → payout 1010 (mostra `100X`). Il `-1` compare **solo** nel campo `multiplier` del JSON, dove è la sentinella che dice al gateway di usare l'array `payouts`, e non raggiunge mai la schermata: `app.js` lo filtra con `data.multiplier >= 0 ? data.multiplier : 0`. Il difetto era quindi già stato eliminato dalle FIX 0.2.3 e 0.3.4.
 
 **Goal**: Fix all bugs, race conditions, logic errors, and security issues found during the comprehensive code review. These must be fixed **before** adding distributed features, as they would compound with the increased complexity.
 
@@ -1908,6 +1912,9 @@ Rimborsa `findByRoundAndStatus(R, "PENDING")` **meno** `exclude_bet_ids` (regola
 
 #### 5. `PayoutListener.java` — per round e per `bet_id` — ✅ FATTO
 
+> [!CAUTION]
+> **Chi costruisce le entry di `payouts` deve includere il `bet_id`.** Passando dal match per username a quello per identificativo, ogni produttore di payout va aggiornato — non solo `wheel_process:compute_payouts/3`. I minigiochi **asincroni** ne hanno uno proprio: `crazytime:compute_payouts/3` e `cashhunt:compute_payouts/3`. Finché quei due emettevano entry senza `bet_id`, il gateway non trovava corrispondenza, ricadeva sul campo `multiplier` — che per gli asincroni è la sentinella `-1` — e **saltava il pagamento**, lasciando la scommessa `PENDING` con il saldo scalato. Trovato provando il punto aperto della Fase 0 e corretto: ora la vincita di un CashHunt giocato col default viene accreditata (verificato: saldo 90 → 150, `Payout di $60 accreditato … (bet 5460dbc0-…)`).
+
 `findByRoundAndStatus(round, "PENDING")` al posto della scansione globale; match per `bet_id` invece che per `username`; via l'`it.remove()`, che era una toppa alla mancanza di un id (FIX 0.1.4).
 
 #### 6. `RefundListener.java` — rimosso — ✅ FATTO
@@ -1940,7 +1947,7 @@ if (data.type === 'round_ledger') {
 
 ---
 
-## Phase 6: Integration Testing & Startup Scripts
+## Phase 6: Integration Testing & Startup Scripts — ✅ ESEGUITA
 
 ### Avvio del cluster a 3 nodi
 
@@ -2041,7 +2048,7 @@ mnesia:dirty_last(snapshot_record).     %% ultimo checkpoint replicato
 | `Bet.java` / `BetRepository.java` | ✅ **FATTO** — `betId` univoco, `findByBetId`, `findByRoundAndStatus` (FIX 0.1.14) |
 | `wheel_process.erl` | Catch-all `segment_type`, `maps:get/3`, charlist JSON, `find_segment_index` |
 | `worker.erl` | Rimozione `inets:start()`, escaping JSON |
-| `cashhunt.erl` / `crazytime.erl` / `pachinko.erl` | Parser robusto, flapper a 120°, cap sulle ricorsioni |
+| `cashhunt.erl` / `crazytime.erl` / `pachinko.erl` | Parser robusto, flapper a 120°, cap sulle ricorsioni, **`bet_id` nelle entry di `payouts`** |
 | `app.js` | CashHunt default choice, CrazyTime dedup, logout server-side, cache bust, div/0 |
 
 ### Modified Files (Phases 1–6)
@@ -2049,7 +2056,7 @@ mnesia:dirty_last(snapshot_record).     %% ultimo checkpoint replicato
 |------|---------|
 | `rebar.config` | ✅ **FATTO** — `{amqp_client, "4.3.4"}` (🔧 non 3.12.14: incompatibile con OTP 28) |
 | `game_engine.app.src` | ✅ **FATTO** — `amqp_client` e `mnesia` fra le `applications`, `snapshot` fra i `registered`, config broker + `peer_nodes` |
-| `game_engine_sup.erl` | ✅ Fasi 1-3 **FATTE** — `rest_for_one` con `rabbitmq_manager`, `cluster_manager`, `leader_election` come primi tre figli. 🔧 Resta `snapshot` come **ultimo** figlio |
+| `game_engine_sup.erl` | ✅ **FATTO** — `rest_for_one` con `rabbitmq_manager`, `cluster_manager`, `leader_election` come primi tre figli e `snapshot` come **ultimo** |
 | `cluster_manager.erl` | ✅ **FATTO** — due liste, delega a `node_down/1`, bootstrap Mnesia, `mnesia:subscribe(system)`, `force_load_snapshots/0` |
 | `leader_election.erl` | ✅ **Completo** — quorum nei due punti, `{set_leader, N}`, **recovery a due rami** alla sola transizione a leader, `collect_inflight`, `cancel_round/1` |
 | `wheel_process.erl` | ✅ **Completo** — AMQP, `{bet, _}` asincrona con deduplica intra e cross-round, `bet_rejected`, stato del round, trigger e chiusura del taglio, `complete_round`, `mark_result_published` |
@@ -2101,7 +2108,7 @@ graph TD
 1. **Phase 0**: giro end-to-end, UNDO durante `betting`, bet dopo "No more bets" (rimborso + stato aggiornato), piazzamento concorrente.
 2. **Phase 1** ✅: verificata — compilazione, avvio con e senza broker, consumo di una bet con ack, stop/restart del broker a caldo con ri-sottoscrizione automatica.
 3. **Phase 2** ✅: verificata — 3 nodi che si trovano in qualsiasi ordine di avvio, reconnect periodico, bootstrap Mnesia nei due rami, replica del checkpoint su tutti i nodi e persistenza su disco dopo il riavvio.
-4. **Phase 3** ✅: verificata su cluster a 3 nodi — elezione, rielezione alla caduta del leader, retrocessione a standby con quorum 1/3, bet distribuite fra i tre worker e tutte inoltrate al wheel del leader, UNDO con rimborso. 🔧 Restano da verificare: partizione di rete vera (finora solo crash) e comandi non-bet consumati da uno standby durante il minigioco.
+4. **Phase 3** ✅: verificata su cluster a 3 nodi — elezione, rielezione alla caduta del leader, retrocessione a standby con quorum 1/3, bet distribuite fra i tre worker e tutte inoltrate al wheel del leader, comandi non-bet consumati da uno standby (UNDO incluso, anche durante il minigioco), e **partizione di rete 2-1** con il leader isolato che si autoretrocede.
 5. **Phase 4** ✅: verificata. Il test che conta — **«canali non vuoti»** — dà `in_flight_bets=3` con le tre puntate in volo che entrano nel round e finiscono nel ledger; checkpoint replicato e leggibile dagli standby; deduplica cross-round funzionante anche dopo un cambio di leader; ledger consumato da Java con payout per `bet_id`, rimborso R1 e `replay_after_refund` R2.
 6. **Phase 5** ✅: verificata. Kill del leader in `spinning` → il ramo A **completa** il round dal checkpoint (bet chiusa sull'esito catturato, nessun rimborso); kill in fase di puntata → il ramo B annulla il solo round interrotto e rimborsa (`Σ wallet` invariato).
 7. **Phase 6** ✅: checklist completata, **partizione di rete inclusa**. Isolando il leader in carica con una partizione 2-1 stabile (`net_kernel:allow/1` su entrambi i lati), il leader si autoretrocede, la maggioranza ne elegge uno nuovo, la minoranza rimette le puntate nel broker, e per ogni round esiste **un solo** `round_ledger`. Alla ricomposizione compare `inconsistent_database, running_partitioned_network`, loggato in modo rumoroso come previsto.

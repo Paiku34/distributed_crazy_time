@@ -246,6 +246,8 @@ Regole R1 e R2; payout per round e per `bet_id` al posto della scansione globale
 
 **Verifica**: a gioco fermo, `SELECT * FROM bets WHERE status='PENDING'` deve tornare **vuota**.
 
+> ⚠️ **Attenzione, scoperto dopo**: passando al match per `bet_id`, vanno aggiornati **tutti** i produttori di payout, non solo `wheel_process`. I minigiochi asincroni (`crazytime`, `cashhunt`) costruiscono le proprie entry: finché non portavano il `bet_id`, il gateway non trovava corrispondenza, ricadeva sul campo `multiplier` — che per gli asincroni è la sentinella `-1` — e **saltava il pagamento**. Corretto e verificato: vincita di un CashHunt accreditata (saldo 90 → 150).
+>
 > ✅ **Eseguita end-to-end col gateway acceso**:
 > - **percorso normale**: bet da 20 dall'API → `Ledger del round 4 (1 bet)` → `Payout di $40 accreditato … (bet 2b58c59b-… su 1)`. Il payout è trovato **per `bet_id`** e la query è **per round**;
 > - **R1**: bet pendente del round 7 assente dal ledger → `assente dal ledger del round 7: rimborsati $15.00`, saldo 105 → 120;
