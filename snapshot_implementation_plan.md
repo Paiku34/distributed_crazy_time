@@ -250,7 +250,7 @@ Le tre regole rendono ogni percorso deterministico e sono ciò che i test «Kill
 ## Parte 4B — Modifiche a `implementation_plan.md` — ✅ APPLICATE
 
 > Le modifiche descritte da questa sezione sono state **riportate in `implementation_plan.md`**: quel documento descrive ora il progetto corretto. Qui resta la traccia di cosa è cambiato e dove, così che i due piani si leggano insieme.
-> **Il codice non è stato toccato**: la realizzazione resta da fare, nell'ordine della §Parte 8, e la §Parte 4A (correzioni al codice già scritto delle Fasi 2-3) è il primo passo.
+> **Anche la realizzazione è conclusa**: il percorso è stato eseguito nell'ordine della §Parte 8, partendo dalla §Parte 4A (correzioni al codice già scritto delle Fasi 2-3). Gli esiti step per step sono in [ordine_implementazione.md](ordine_implementazione.md).
 
 | Sezione di `implementation_plan.md` | Cosa è stato riportato |
 |---|---|
@@ -511,6 +511,9 @@ cd java-gateway && mvn test
 | Partizione di rete 2-1, isolando uno standby | Il lato di minoranza non elegge un leader; i suoi worker fanno `reject{requeue=true}` e le bet vengono servite dalla maggioranza |
 | Riconnessione dopo la partizione | **Non** attendersi l'assenza di `inconsistent_database`: Mnesia emette `{inconsistent_database, running_partitioned_network, _}` alla rilevazione della **partizione**, non della divergenza dei dati, e tutti i nodi hanno una replica di `snapshot_record` quindi Mnesia attiva. L'evento è normale e va solo loggato. Ciò che si verifica è l'assenza di **divergenza**: esattamente una scrittura di `snapshot_record` per round, ed esattamente un `type:"round_ledger"` su `results_queue` per round. Due ledger per lo stesso round = split-brain non contenuto. Con `disc_copies` senza opzione `majority` la riparazione resta manuale se la divergenza si verifica davvero: il quorum la rende improbabile, non impossibile |
 | Invariante di conservazione | Su ogni `snapshot_record`: `Σ wallet + Σ bet_bloccate + Σ payout_in_volo` costante fra snapshot consecutivi |
+
+> [!CAUTION]
+> **Limite osservato durante il test di partizione: se un cluster partizionato viene riavviato, quale copia sopravvive lo decide Mnesia.** Dopo la partizione 2-1, riavviando i nodi, i checkpoint scritti dalla **maggioranza** non erano più leggibili ed è rimasta la copia del nodo isolato. La perdita è un dato osservato (chiavi mancanti su due nodi, file `.DCD` identici e sovrascritti); il meccanismo che l'ha causata è un'inferenza, e la sequenza del test — riavvio del nodo isolato prima degli altri — può averla influenzata. Il quorum garantisce **un solo scrittore**, quindi la divergenza non viene *prodotta*, ma non sceglie la replica autoritativa al caricamento. Mitigazioni: `{majority, true}` sulla tabella e `mnesia:set_master_nodes/2` prima di far ripartire il cluster.
 
 **Ispezione Mnesia** — da una shell su un nodo standby, `mnesia:dirty_last(snapshot_record)` deve mostrare lo stesso record scritto dal leader: prova diretta della replica del checkpoint.
 

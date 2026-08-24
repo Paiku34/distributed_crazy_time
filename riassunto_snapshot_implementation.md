@@ -21,7 +21,7 @@ Cosa c'è oggi nel codice:
 
 **Anche la partizione di rete è stata provata**, con una partizione logica stabile: il leader isolato nella minoranza si autoretrocede, la maggioranza ne elegge uno nuovo, la minoranza rimette le puntate nel broker e per ogni round esiste un solo ledger. Alla ricomposizione compare l'evento di database inconsistente, loggato come previsto.
 
-**Due limiti noti da dichiarare nella relazione**, entrambi caratteristiche di Mnesia e non difetti del codice: un nodo riavviato da solo carica la propria copia solo se era l'ultimo a spegnersi; e se un cluster partizionato viene riavviato per intero, Mnesia adotta una delle copie senza unirle — nel test ha vinto quella della minoranza, più vecchia, facendo perdere i checkpoint scritti dalla maggioranza. Il quorum garantisce un solo scrittore, quindi la divergenza non viene prodotta, ma la scelta di quale copia sopravvive a un riavvio resta di Mnesia.
+**Due limiti noti da dichiarare nella relazione**, entrambi caratteristiche di Mnesia e non difetti del codice: un nodo riavviato da solo carica la propria copia solo se era l'ultimo a spegnersi; e se un cluster partizionato viene riavviato, quale copia sopravvive lo decide Mnesia — nel nostro test è rimasta quella del nodo isolato e i checkpoint della maggioranza sono andati persi. La perdita è un dato osservato; il meccanismo che l'ha causata no, e la sequenza del test può averlo influenzato. Il quorum garantisce un solo scrittore, quindi la divergenza non viene prodotta, ma non sceglie la replica autoritativa al riavvio.
 
 ---
 
