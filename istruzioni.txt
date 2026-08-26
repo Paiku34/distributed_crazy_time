@@ -97,3 +97,28 @@ NOTE:
   → è normale, l'elezione verrà aggiunta nella prossima fase
 - Se vuoi usare solo 1 nodo come prima, usa il vecchio comando:
   escript ..\rebar3 shell
+
+
+
+========================================
+  DEPLOYMENT SU VM
+========================================
+
+per copiare i file sulle VM si usa SCP:
+
+scp -r "C:\Users\cacak\OneDrive\Desktop\distributed_crazy_time" root@10.2.1.16:/root/
+scp -r "C:\Users\cacak\OneDrive\Desktop\distributed_crazy_time" root@10.2.1.15:/root/
+(fare una volta sola)
+
+dopo aver copiato i file, devi entrare nelle VM ed eseguire questi comandi:
+apri terminali come in localhost solo che devi collegarti ssh ad ogni terminale per esempio:
+ssh root@[IP_ADDRESS]
+
+aprire browsers come 10.2.1.15:8080
+
+quindi: 1 terminale ssh 10.2.1.15 con spring
+        2 terminale ssh 10.2.1.15 con erlang game1 : ERL_FLAGS="-name game1@10.2.1.15 -setcookie crazytime" ../rebar3 shell
+        3 terminale ssh 10.2.1.15 con erlang game2 : ERL_FLAGS="-name game2@10.2.1.15 -setcookie crazytime" ../rebar3 shell
+
+        4 terminale ssh 10.2.1.16 con erlang game3 : ERL_FLAGS="-name game3@10.2.1.16 -setcookie crazytime" ../rebar3 shell (leader)
+        
