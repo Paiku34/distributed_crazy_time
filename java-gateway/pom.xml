@@ -12,6 +12,17 @@
   <properties>
     <argLine>-XX:+EnableDynamicAgentLoading</argLine>
   </properties>
+
+  <build>
+    <plugins>
+      <!-- Goal repackage: produce il jar eseguibile con le dipendenze incluse,
+           necessario per `java -jar` sulle VM (vedi docs/deploy_vm.md). -->
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
   <dependencies>
     <!-- Spring Data JPA per gestire il database -->
     <dependency>
