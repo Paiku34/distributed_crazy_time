@@ -4,7 +4,7 @@ Sintesi ad alto livello delle modifiche descritte in [snapshot_implementation_pl
 
 ---
 
-## Stato dell'implementazione — ✅ completata
+## Stato dell'implementazione — [FATTO] completata
 
 > **Tutte le fasi di questo piano sono state implementate e verificate** su un cluster a 3 nodi con RabbitMQ e gateway Java attivi. Il percorso operativo seguito, step per step e con gli esiti di ogni verifica, è in [ordine_implementazione.md](ordine_implementazione.md); `implementation_plan.md` recepisce le stesse conclusioni nelle sue Fasi 2-5.
 
@@ -45,7 +45,7 @@ Il rifacimento nasce da una sola idea: **spostare i marker sui canali applicativ
 
 ---
 
-## Fase 0 — Retrofit di ciò che le Fasi 2-3 hanno già scritto — ✅ FATTA
+## Fase 0 — Retrofit di ciò che le Fasi 2-3 hanno già scritto — [FATTO] FATTA
 
 Il passo che rimette il codice sulla traiettoria di questo piano. È stato eseguito e verificato: 6 scommesse pubblicate sulla coda si distribuiscono fra i tre worker e arrivano **tutte** al wheel del solo leader; l'annullamento puntate rimborsa correttamente; alla caduta del leader se ne elegge un altro, e un nodo rimasto solo su tre si rifiuta di autoeleggersi.
 
@@ -57,13 +57,13 @@ Il passo che rimette il codice sulla traiettoria di questo piano. È stato esegu
 
 ---
 
-## Fase 1 — Prerequisiti — ✅ FATTA
+## Fase 1 — Prerequisiti — [FATTO] FATTA
 
 Modifiche indipendenti dallo snapshot, da fare per prime perché tutto il resto vi si appoggia. **L'ordine interno conta**, ed è stato rispettato: identificativo di bet prima dell'ack differito, percorso di annullamento spostato sul nuovo evento prima di rimuovere la vecchia coda dei rimborsi.
 
 - **Identificatore univoco di bet**: un `bet_id` UUID generato da Java, presente sia sul messaggio AMQP sia sull'entità persistita, mentre il numero di round resta assegnato in modo autoritativo da Erlang. È il prerequisito di tutto il resto e la correzione alla radice di bug finora affrontati solo per sintomo.
 - **Stato del round promosso nello stato del processo wheel**: oggi segmento vincente, indice e dettagli del minigioco vivono solo dentro messaggi temporizzati in volo. Senza questo, nessun recovery è possibile.
-- ✅ **Possibilità di rifiutare messaggi AMQP** (oltre al solo ack): **già disponibile** nel gestore della connessione. Resta l'unica avvertenza di sempre — il worker deve passare dal gestore e mai dal canale AMQP diretto, perché il canale cambia a ogni riconnessione e solo il gestore sa qual è quello valido.
+- [FATTO] **Possibilità di rifiutare messaggi AMQP** (oltre al solo ack): **già disponibile** nel gestore della connessione. Resta l'unica avvertenza di sempre — il worker deve passare dal gestore e mai dal canale AMQP diretto, perché il canale cambia a ogni riconnessione e solo il gestore sa qual è quello valido.
 - **Comunicazione worker → wheel da sincrona ad asincrona**, con l'esito che torna indietro come messaggio dedicato.
 - **Ack differito** (vedi sotto) e **deduplica per `bet_id`**.
 - **Nuovo evento di rifiuto puntuale di una singola bet**, con il relativo handler lato Java, **incluso il percorso di annullamento puntate (UNDO)**, che deve passare da questo evento *prima* che venga rimossa la vecchia coda dei rimborsi.
@@ -78,22 +78,22 @@ Il worker acquisisce inoltre un **timeout sulle bet in attesa di risposta**: all
 
 ---
 
-## Fase 2 — Infrastruttura di cluster e persistenza — ✅ FATTA
+## Fase 2 — Infrastruttura di cluster e persistenza — [FATTO] FATTA
 
 Il cluster manager esisteva già: qui si trattava di estenderlo.
 
-- ✅ **Bootstrap di Mnesia** con join dinamico in due rami distinti (primo nodo che crea lo schema; nodo che si aggiunge a un cluster dove la tabella esiste già), sempre dopo la formazione del cluster — il punto d'aggancio naturale è lo stesso ritardo che oggi precede la prima elezione, mai l'avvio del processo. Il passo che si dimentica più spesso è la conversione dello schema su disco: senza, un nodo perde la propria copia a ogni riavvio, vanificando la persistenza. Va inoltre dichiarata la dipendenza da Mnesia nella configurazione dell'applicazione, oggi assente.
-- ✅ Il gestore del cluster espone due liste distinte:
+- [FATTO] **Bootstrap di Mnesia** con join dinamico in due rami distinti (primo nodo che crea lo schema; nodo che si aggiunge a un cluster dove la tabella esiste già), sempre dopo la formazione del cluster — il punto d'aggancio naturale è lo stesso ritardo che oggi precede la prima elezione, mai l'avvio del processo. Il passo che si dimentica più spesso è la conversione dello schema su disco: senza, un nodo perde la propria copia a ogni riavvio, vanificando la persistenza. Va inoltre dichiarata la dipendenza da Mnesia nella configurazione dell'applicazione, oggi assente.
+- [FATTO] Il gestore del cluster espone due liste distinte:
   - la lista **ordinata e stabile dei nodi vivi**, che è quella che lo snapshot congela all'avvio del taglio;
   - la lista **statica dei nodi configurati**, che è il denominatore del quorum. Usare la lista dei nodi correntemente connessi renderebbe la guardia inutile, perché in partizione si riduce da sola.
   Entrambe vanno **intersecate con l'elenco dei nodi configurati**: il monitoraggio include anche i nodi nascosti e le shell diagnostiche, che altrimenti regalerebbero quorum al lato sbagliato e diventerebbero partecipanti fantasma dello snapshot. La lista statica **non richiede nuova configurazione**: l'elenco completo dei tre nodi è già presente fra i parametri dell'applicazione, va solo riesposto includendo il nodo locale, che oggi viene filtrato all'avvio.
-- ✅ **Sottoscrizione agli eventi di sistema di Mnesia** con log rumoroso in caso di database inconsistente.
+- [FATTO] **Sottoscrizione agli eventi di sistema di Mnesia** con log rumoroso in caso di database inconsistente.
 - Due cose imparate implementando: quando nessun nodo possiede ancora la tabella, **crea solo il nodo con il nome più basso** fra quelli connessi (altrimenti tre nodi avviati insieme si creano tre database indipendenti); e un nodo riavviato **da solo** carica la propria copia solo se era l'ultimo a spegnersi, altrimenti attende le altre repliche — con una funzione esplicita per forzare il caricamento quando quei nodi non torneranno.
 - Va documentato che il checkpoint esiste **solo dopo il gong**: copre quindi il crash nelle fasi successive, mentre un crash in fase di puntata ricade sul percorso di riconciliazione (ack differito + annullamento selettivo). Le due protezioni sono complementari, nessuna basta da sola.
 
 ---
 
-## Fase 3 — Elezione del leader e quorum — ✅ FATTA
+## Fase 3 — Elezione del leader e quorum — [FATTO] FATTA
 
 Modifica sostanziale rispetto al piano originale, e in parte correzione di codice già scritto (vedi Fase 0). Tutto ciò che segue è ora nel codice.
 
@@ -120,7 +120,7 @@ Due accorgimenti a corredo: la chiave dei record di snapshot include l'iniziator
 
 ---
 
-## Fase 4 — Lo snapshot Chandy-Lamport riscritto — ✅ FATTA
+## Fase 4 — Lo snapshot Chandy-Lamport riscritto — [FATTO] FATTA
 
 Ha **sostituito integralmente** la Fase 4 di `implementation_plan.md`, che è stato aggiornato di conseguenza: quel documento descrive ora il progetto qui riassunto. Cosa cambia rispetto alla stesura precedente:
 
@@ -141,7 +141,7 @@ Ha **sostituito integralmente** la Fase 4 di `implementation_plan.md`, che è st
 
 ---
 
-## Fase 5 — Riconciliazione e regole di correttezza — ✅ FATTA
+## Fase 5 — Riconciliazione e regole di correttezza — [FATTO] FATTA
 
 L'ack differito e l'annullamento del round si contraddicono se lasciati impliciti: il primo dice che le bet non ackate vengono **rigiocate**, il secondo che le bet pendenti del round caduto vengono **rimborsate**. Una bet che cade in entrambe le descrizioni verrebbe rimborsata *e* giocata.
 
@@ -159,7 +159,7 @@ Il nuovo leader raccoglie dai worker superstiti le bet non ackate proprio per se
 - **R2 — Chi è autoritativo.** Lo stato lato Java è autoritativo sui **movimenti di denaro**, il ledger Erlang sull'**esito di gioco**. Una bet già rimborsata che ricompare in un ledger successivo non viene mai pagata; va però loggata e chiusa in stato terminale, perché è l'unico caso in cui l'utente vede sulla ruota una puntata che gli è stata restituita — un'anomalia visiva da documentare, non una duplicazione di denaro.
 - **R3 — L'insieme di deduplica è l'unione dei ledger persistiti**, non la lista delle bet in memoria. Quest'ultima viene azzerata a ogni round, quindi da sola garantisce l'idempotenza soltanto *dentro la finestra del round*: una riconsegna che arriva nel round successivo verrebbe accettata di nuovo, giocata due volte e pagata due volte. È la regola che rende davvero sicuro l'ack differito. Il wheel mantiene perciò un insieme delle bet già liquidate negli ultimi round, ripopolato dai record persistiti **all'avvio e a ogni elezione** — è proprio dopo un crash che le riconsegne arrivano.
 
-### Recovery a due rami — ✅ fatto
+### Recovery a due rami — [FATTO] fatto
 
 L'approccio «annulla il round e rimborsa tutto» viene sostituito da un percorso a due rami, deciso leggendo l'ultimo checkpoint su Mnesia:
 
@@ -172,10 +172,10 @@ Viene inoltre eliminato il rimborso globale su tutte le bet pendenti, che colpiv
 
 ---
 
-## Fase 6 — Allineamento del gateway Java e del frontend — ✅ FATTA
+## Fase 6 — Allineamento del gateway Java e del frontend — [FATTO] FATTA
 
-✅ Già fatti: identificativo univoco sulla bet con serializzazione vera, ricerche per identificativo e per round, dispatch sul tipo di messaggio, handler del rifiuto puntuale idempotente, **handler del ledger con le regole R1/R2**, **payout per round e per identificativo**, rimozione del blocco che inghiottiva le eccezioni nel payout e della vecchia coda dei rimborsi.
-✅ Completata anche la parte finale: il ramo di annullamento round con l'elenco delle bet da escludere, e la notifica sul frontend con ricarica del saldo.
+[FATTO] Già fatti: identificativo univoco sulla bet con serializzazione vera, ricerche per identificativo e per round, dispatch sul tipo di messaggio, handler del rifiuto puntuale idempotente, **handler del ledger con le regole R1/R2**, **payout per round e per identificativo**, rimozione del blocco che inghiottiva le eccezioni nel payout e della vecchia coda dei rimborsi.
+[FATTO] Completata anche la parte finale: il ramo di annullamento round con l'elenco delle bet da escludere, e la notifica sul frontend con ricarica del saldo.
 
 - **Entità e API**: nuovo campo identificativo univoco sulla bet, generato all'accettazione e incluso nel messaggio; ricerche per identificativo e per round + stato. Contestualmente, la costruzione del JSON passa a una serializzazione vera invece della concatenazione di stringhe (oggi l'username non viene mai escapato).
 - **Dispatch sul tipo di messaggio**, oggi completamente ignorato: qualunque messaggio in arrivo viene trattato come risultato di round. I quattro tipi (risultato, ledger, annullamento round, rifiuto puntuale) vanno instradati ai rispettivi handler.

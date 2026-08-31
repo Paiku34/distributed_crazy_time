@@ -13,9 +13,13 @@ Credenziali: `root` / `root`. Ubuntu 24.04, Java 25, Erlang/OTP 28, Maven 3.9.11
 cioè 2 su 3 (vedi [limiti_noti.md](limiti_noti.md#1-consistenza-scelta-sopra-disponibilità-il-quorum)).
 Mettendo due nodi su VM1 e uno su VM2, una partizione fra le due macchine lascia la
 maggioranza dallo stesso lato del gateway: il gioco continua e il nodo isolato si
-autoretrocede. È esattamente lo scenario da mostrare — e con due macchine reali si può
-finalmente fare con regole di firewall invece che con una partizione logica
-(punto 11 dei limiti noti, "test non eseguiti").
+autoretrocede. È esattamente lo scenario da mostrare, e su due macchine distinte
+il nodo isolato è isolato **davvero**: la sua rete, la sua beam, il suo disco
+Mnesia (punto 11 dei limiti noti, "test non eseguiti").
+
+L'isolamento si provoca dalla shell Erlang di `game3`
+([sezione 6.2](#62-partizione-fra-game3-e-la-maggioranza)): i container non
+permettono di manipolare il firewall.
 
 **Quanti terminali servono.** Le sezioni 1–4 sono preparazione: comandi che partono,
 finiscono e restituiscono il prompt, quindi vanno bene tutti nello stesso terminale,
@@ -84,10 +88,19 @@ cd /Users/gabrielecaioli/Downloads/Uni/DistributedSystemsMT/ProgettoDistributedS
 # Jar eseguibile dello Spring Boot gateway
 cd java-gateway && mvn -DskipTests package && cd ..
 ls -lh java-gateway/target/java-gateway-0.0.1-SNAPSHOT.jar
+unzip -p java-gateway/target/java-gateway-0.0.1-SNAPSHOT.jar META-INF/MANIFEST.MF | grep Main-Class
 
 # Dipendenze Erlang (amqp_client & co.) compilate dentro _build/
 cd erlang-engine/game_engine && ../rebar3 compile && cd ../..
 ```
+
+Il jar deve pesare **~55 MB** e il manifest deve contenere
+`Main-Class: org.springframework.boot.loader.launch.JarLauncher`: è il jar
+*repackaged*, con le dipendenze incluse. Se ne trovi uno da ~8 MB e `java -jar`
+risponde `no main manifest attribute`, significa che il goal `repackage` non è
+girato — serve `spring-boot-maven-plugin` dichiarato nel `<build>` del
+[pom.xml](../java-gateway/pom.xml). Ereditare da `spring-boot-starter-parent` non
+basta: il parent ne fornisce solo la configurazione, non lo attiva.
 
 Il tuo OTP locale è 28, lo stesso delle VM: i `.beam` in `_build/` sono
 direttamente utilizzabili là.
@@ -104,7 +117,7 @@ container). Esclude git, il DB H2 locale e le directory Mnesia di sviluppo, ma
 cd /Users/gabrielecaioli/Downloads/Uni/DistributedSystemsMT/ProgettoDistributedSMT/distributed_crazy_time
 
 for IP in 10.2.1.17 10.2.1.18; do
-  tar czf - \
+  COPYFILE_DISABLE=1 tar czf - \
       --exclude='.git' \
       --exclude='.DS_Store' \
       --exclude='java-gateway/data' \
@@ -114,6 +127,18 @@ for IP in 10.2.1.17 10.2.1.18; do
 done
 ```
 
+`COPYFILE_DISABLE=1` non è opzionale: senza, il `tar` di macOS affianca a ogni file
+un gemello **AppleDouble** con prefisso `._` per i metadati estesi. Sulla VM quei
+gemelli diventano file veri, e `rebar3` si ferma prima ancora di compilare:
+
+```
+===> Multiple app files found in one app dir:
+     .../src/._game_engine.app.src and .../src/game_engine.app.src
+```
+
+Se ti è già successo, ripulisci le macchine con
+`ssh root@$IP "find /root/dct -name '._*' -delete"`.
+
 Su **VM1** servono due copie dell'engine, una per nodo: due `rebar3 shell` nella
 stessa directory si contendono `_build/` e la directory Mnesia va tenuta separata.
 
@@ -122,6 +147,13 @@ ssh root@10.2.1.17 'cp -r /root/dct/erlang-engine /root/dct/erlang-engine-2'
 ```
 
 Quindi: `game1` gira in `/root/dct/erlang-engine`, `game2` in `/root/dct/erlang-engine-2`.
+
+> **Attenzione (una volta sola):** `cp -r` cambia comportamento a seconda che la
+> destinazione esista: la prima volta crea la copia, la seconda copia *dentro* e
+> ti lascia `/root/dct/erlang-engine-2/erlang-engine/`. Se ti succede:
+> `rm -rf /root/dct/erlang-engine-2/erlang-engine` (il percorso annidato, non
+> quello di primo livello). Per i riallineamenti successivi usa la forma della
+> [sezione 8](#ho-toccato-lengine-erlang), che copia solo `src/` e `config/`.
 
 ---
 
@@ -135,26 +167,127 @@ ssh root@10.2.1.17
 apt-get update && apt-get install -y rabbitmq-server
 ```
 
-> Il pacchetto Ubuntu si porta dietro il proprio Erlang, indipendente dall'OTP 28
-> usato dall'engine: le due installazioni non si disturbano.
+### 3.1 Conflitto di versioni Erlang (da fare **una volta sola**)
+
+`apt` si porta dietro come dipendenza il **proprio** Erlang — `erlang-base` 25.3
+in `/usr/lib/erlang` — perché l'OTP 28 dell'immagine è installato da sorgente in
+`/usr/local/lib/erlang` e quindi `dpkg` non sa che esiste. Servono entrambi:
+`rabbitmq-server` 3.12 di Ubuntu è compilato per OTP 25, l'engine gira su OTP 28.
+
+Il problema è l'ordine del `PATH`: `/usr/local/bin` precede `/usr/bin`, quindi
+senza intervento anche RabbitMQ parte su OTP 28 e muore prima di aprire la porta,
+con un errore che parla di Elixir e non di RabbitMQ:
+
+```
+beam/beam_load.c(594): Error loading function 'Elixir.Kernel':alias_defmodule/3:
+  please re-compile this module with an Erlang/OTP 28 compiler
+```
+
+Si fissa il `PATH` del **servizio** con un drop-in systemd, in cui
+`/usr/local/bin` è tolto del tutto e non solo retrocesso:
+
+```bash
+mkdir -p /etc/systemd/system/rabbitmq-server.service.d
+cat > /etc/systemd/system/rabbitmq-server.service.d/otp25.conf <<'EOF'
+[Service]
+Environment=PATH=/usr/lib/erlang/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+EOF
+systemctl daemon-reload
+```
+
+**È un passaggio una tantum**: il drop-in è un file su disco, sopravvive a
+riavvii del servizio e della macchina, e non compare fra i passaggi da ripetere
+della [sezione 8](#8-ho-modificato-il-codice-cosa-rifaccio). Lo rifai solo se
+reinstalli la VM da zero.
+
+Questo sistema il **servizio**. I comandi CLI non passano da systemd e hanno un
+problema in più, che vale la pena capire perché il sintomo è ingannevole:
+`rabbitmqctl` e `rabbitmq-plugins` sono entrambi symlink a
+`rabbitmq-script-wrapper`, che si comporta in due modi diversi:
+
+```sh
+elif [ `id -u` = `id -u rabbitmq` -o "$SCRIPT" = "rabbitmq-plugins" ] ; then
+    /usr/lib/rabbitmq/bin/${SCRIPT} "$@"                      # diretto → PATH preservato
+elif [ `id -u` = 0 ] ; then
+    su rabbitmq -s /bin/sh -c "/usr/lib/rabbitmq/bin/${SCRIPT} ${CMDLINE}"   # su → ambiente azzerato
+```
+
+`rabbitmq-plugins` è nominato nel primo ramo, quindi da root gira diretto e un
+eventuale prefisso `PATH=...` sopravvive. `rabbitmqctl` da root finisce nel ramo
+`su`, e `su` **ricostruisce l'ambiente da zero**: il tuo `PATH` viene buttato via
+e tornano i default di sistema, con `/usr/local/bin` (OTP 28) in testa. Risultato:
+prefissare `rabbitmqctl` non serve a niente, l'errore `beam_load.c` resta identico.
+
+La soluzione è presentarsi **già come utente `rabbitmq`**, così `id -u` coincide,
+si prende il primo ramo e non c'è nessun `su` di mezzo. Anche questo è da fare una
+volta sola:
+
+```bash
+cat > /usr/local/bin/rmq <<'EOF'
+#!/bin/sh
+exec sudo -u rabbitmq env PATH=/usr/lib/erlang/bin:/usr/sbin:/usr/bin:/sbin:/bin "$@"
+EOF
+chmod +x /usr/local/bin/rmq
+```
+
+Da qui in poi ogni comando CLI si lancia con `rmq` davanti — `rmq rabbitmqctl status`,
+`rmq rabbitmqctl purge_queue bets_queue`. Non serve passare `HOME`: nel primo ramo
+il wrapper fa già `cd /var/lib/rabbitmq` e imposta `HOME=.` per trovare il cookie.
+La conferma che funziona è la riga `Erlang/OTP 25 [erts-13.2.2.5]` nell'output di
+`rmq rabbitmqctl status`.
+
+> **Attenzione:** Non mettere mai `/usr/lib/erlang/bin` nel `PATH` della tua shell con `export`
+> o nel `.bashrc`: in quella sessione `../rebar3 shell` girerebbe su OTP 25 e i
+> `.beam` compilati sul Mac con OTP 28 non si caricherebbero — stesso errore,
+> ribaltato sull'engine. Il senso di `rmq` è proprio confinare l'OTP 25 al singolo
+> comando.
+
+> `sudo` stampa `unable to resolve host Distributed2025-1516`: innocuo, è
+> l'hostname assente da `/etc/hosts`. Si zittisce con
+> `echo "127.0.1.1 $(hostname)" >> /etc/hosts`.
+
+Perché la convivenza è legittima: RabbitMQ e l'engine parlano **AMQP su TCP**, non
+condividono la VM Erlang. L'unico gruppo che deve avere versioni compatibili fra
+loro è `game1`/`game2`/`game3`, che usano distribuzione Erlang e Mnesia.
+
+### 3.2 Configurazione
 
 **Passaggio obbligatorio.** Di default RabbitMQ accetta l'utente `guest` solo da
 `localhost`: senza questo, `game3` su VM2 verrebbe rifiutato con
 `ACCESS_REFUSED`.
 
 ```bash
+# forma rilanciabile: cancella e riscrive, invece di accodare a ogni esecuzione
+sed -i '/^loopback_users/d' /etc/rabbitmq/rabbitmq.conf
 echo 'loopback_users = none' >> /etc/rabbitmq/rabbitmq.conf
-rabbitmq-plugins enable rabbitmq_management     # dashboard su :15672, opzionale
+
 systemctl restart rabbitmq-server
-systemctl status rabbitmq-server --no-pager
+rmq rabbitmq-plugins enable rabbitmq_management    # dashboard su :15672, opzionale
 ```
 
-Se il container non ha systemd attivo (in questo caso il broker resta in foreground
-e occupa il terminale: aprine un altro per proseguire, o lancialo dentro `tmux`):
+Il solo `echo >>` **accoda**: rilanciando il blocco ti ritrovi la riga ripetuta.
+RabbitMQ la tollera (vince l'ultima) ma il file diventa illeggibile, e non capisci
+più quale valore è attivo.
+
+Verifica: le tre porte in ascolto e la CLI che risponde sull'OTP giusto.
 
 ```bash
-sudo -u rabbitmq RABBITMQ_CONFIG_FILE=/etc/rabbitmq/rabbitmq /usr/lib/rabbitmq/bin/rabbitmq-server
+ss -lntp | grep -E '5672|15672'    # 5672 AMQP, 15672 dashboard, 25672 clustering
+rmq rabbitmqctl status | grep -E 'RabbitMQ version|Erlang configuration'
 ```
+
+> **Solo se `systemctl` non funziona** — alternativa ai due comandi qui sopra, non
+> un passaggio in più. Se `systemctl status rabbitmq-server` risponde con un unit
+> `loaded`, salta questo riquadro: lanciarlo con il servizio già attivo avvia un
+> secondo broker che collide su porte e nome di nodo.
+>
+> Senza systemd il drop-in non serve, ma il `PATH` va passato lo stesso, e il
+> broker resta in foreground occupando il terminale (aprine un altro per
+> proseguire, o lancialo dentro `tmux`):
+>
+> ```bash
+> rmq /usr/lib/rabbitmq/bin/rabbitmq-server
+> ```
 
 Verifica da **VM2** che il broker sia raggiungibile:
 
@@ -173,8 +306,9 @@ nel repo, che sovrascrive:
 
 - `rabbitmq.host` → `"10.2.1.17"`
 - `peer_nodes` → `['game1@10.2.1.17', 'game2@10.2.1.17', 'game3@10.2.1.18']`
-- porte fisse per la distribuzione Erlang (9100–9155), così sai cosa aprire e puoi
-  scrivere regole iptables mirate
+- porte fisse per la distribuzione Erlang (9100–9155): senza, la beam ne sceglie
+  una a caso a ogni avvio e non sapresti cosa aprire se un giorno ci fosse un
+  firewall di mezzo
 
 Lo **stesso file** va bene su entrambe le VM: `cluster_manager` filtra da
 `peer_nodes` il nome del nodo locale.
@@ -182,18 +316,18 @@ Lo **stesso file** va bene su entrambe le VM: `cluster_manager` filtra da
 Il gateway non richiede modifiche: gira su VM1 insieme al broker, e
 `spring.rabbitmq.host=localhost` è già corretto.
 
-### Firewall
+### Porte usate
 
-Di norma i container non hanno filtri attivi. In caso contrario, su entrambe le VM:
+I container non hanno filtri attivi, quindi non c'è nulla da configurare. L'elenco
+serve a sapere cosa passa fra le due macchine:
 
-```bash
-ufw status                       # se "inactive", non serve altro
-# se attivo:
-ufw allow 8080/tcp               # GUI + REST (VM1)
-ufw allow 5672/tcp               # AMQP (VM1)
-ufw allow 4369/tcp               # epmd
-ufw allow 9100:9155/tcp          # distribuzione Erlang
-```
+| Porta | Protocollo | Dove | A cosa serve |
+|---|---|---|---|
+| 8080 | TCP | VM1 | GUI e REST del gateway |
+| 5672 | TCP | VM1 | AMQP, il broker |
+| 15672 | TCP | VM1 | dashboard RabbitMQ |
+| 4369 | TCP | entrambe | `epmd`, il name server della distribuzione Erlang |
+| 9100–9155 | TCP | entrambe | distribuzione Erlang fra i nodi |
 
 ---
 
@@ -290,40 +424,57 @@ python3 stress_test.py http://10.2.1.17:8080
 puntate si distribuiscono fra i worker dei nodi (competing consumers sulla
 `bets_queue`), mentre il wheel gira solo sul leader.
 
-### 6.2 Partizione di rete **reale** fra le due VM
+### 6.2 Partizione fra `game3` e la maggioranza
 
 Questo è il test che in locale non si poteva fare: colma il punto 11 dei limiti
-noti. Su **VM2**, isola `game3` dalla maggioranza:
+noti. Si esegue **interamente dalla shell Erlang di `game3`**.
 
-```bash
-ssh root@10.2.1.18
-iptables -A INPUT  -s 10.2.1.17 -j DROP
-iptables -A OUTPUT -d 10.2.1.17 -j DROP
+**Il test.** Nella finestra di `game3` (prompt `(game3@10.2.1.18)1>`), tre
+comandi, uno alla volta, ciascuno chiuso dal punto:
+
+```erlang
+net_kernel:allow(['game3@10.2.1.18']).
+erlang:disconnect_node('game1@10.2.1.17').
+erlang:disconnect_node('game2@10.2.1.17').
 ```
 
-> Blocca **solo** l'IP del peer. Un `DROP` generico ti farebbe cadere anche la
-> sessione SSH, che arriva dall'indirizzo VPN del tuo Mac, non da 10.2.1.17.
+L'ordine conta. `disconnect_node/1` da solo non basta: la distribuzione Erlang
+riconnette al primo messaggio e la partizione si richiuderebbe in un istante. È
+`net_kernel:allow/1`, chiamata **prima**, a reggere l'isolamento rifiutando le
+riconnessioni. Restringe i nodi ammessi a se stesso, quindi `game1` e `game2`
+vengono respinti in fase di handshake.
+
+Il nodo resta **isolato ma vivo**: la sua shell risponde ancora, e lì dentro puoi
+verificare l'effetto.
+
+```erlang
+nodes().     %% deve rispondere []
+```
 
 Cosa aspettarsi:
 
-- `game3` (leader, ora 1/3) logga `Quorum ... non raggiunto` e si autoretrocede a
-  standby: nessun round parte da quel lato;
-- `game1` e `game2` (2/3) eleggono `game2` leader e il gioco prosegue sulla GUI;
-- `game3` perde anche il broker e logga `Broker non raggiungibile`, ritentando.
+- `game3` (leader, ora 1/3) logga `[ELECTION] Quorum 1/3 non raggiunto` e
+  `[ROLE] Questo nodo ora e' in STANDBY`, con `[WHEEL] DISATTIVATO`: nessun round
+  parte da quel lato;
+- `game1` e `game2` (2/3) eleggono `game2` leader e il gioco prosegue sulla GUI.
 
-Ripristino:
+**Ripristino: riavviare `game3`.** `Ctrl-C` due volte nella sua finestra, poi lo
+stesso comando di avvio della sezione 5. Non è un ripiego: una volta chiamata
+`allow/1`, la lista dei nodi ammessi non si può più svuotare — `allow([])` non
+annulla nulla — e l'unico modo di togliere la restrizione è ricreare `net_kernel`,
+cioè far ripartire il nodo. Rientrando, `game3` riprende il ruolo di leader alla
+rielezione, che è l'ultima cosa che il test deve mostrare.
 
-```bash
-iptables -D INPUT  -s 10.2.1.17 -j DROP
-iptables -D OUTPUT -d 10.2.1.17 -j DROP
-```
+> **Differenza rispetto a una partizione di rete vera:** qui il broker resta
+> raggiungibile da `game3`, quindi non vedrai `Broker non raggiungibile`. Se ti
+> serve anche quell'aspetto, chiudi la connessione AMQP di VM2 dalla dashboard
+> RabbitMQ (*Connections* → la connessione da `10.2.1.18` → *Force Close*): il
+> nodo ritenta, e nei log compaiono i tentativi.
 
-`game3` rientra, e alla rielezione riprende il ruolo di leader.
-
-> Se il container è unprivileged, `iptables` fallisce con `Permission denied`:
-> ripiega sulla partizione logica già usata in locale (`erlang:disconnect_node/1`
-> più `net_kernel:allow/1`), oppure sospendi il processo della beam con
-> `kill -STOP` per simulare un nodo congelato.
+> **Variante: nodo congelato.** Da una shell su VM2, `pkill -STOP -f game3@10.2.1.18`
+> sospende la beam e `pkill -CONT -f game3@10.2.1.18` la risveglia. È l'unica
+> forma davvero reversibile senza riavvio, ma mostra solo il lato maggioranza:
+> `game3` è fermo e non logga, quindi l'autoretrocessione non si vede.
 
 ### 6.3 Crash del dealer
 
@@ -359,9 +510,9 @@ rm -rf /root/dct/java-gateway/data                     # utenti e scommesse H2
 E sul broker (VM1):
 
 ```bash
-rabbitmqctl purge_queue bets_queue
-rabbitmqctl purge_queue state_queue
-rabbitmqctl purge_queue results_queue
+rmq rabbitmqctl purge_queue bets_queue
+rmq rabbitmqctl purge_queue state_queue
+rmq rabbitmqctl purge_queue results_queue
 ```
 
 ---
@@ -369,8 +520,9 @@ rabbitmqctl purge_queue results_queue
 ## 8. Ho modificato il codice: cosa rifaccio?
 
 Le sezioni **0, 3 e 4 non si ripetono**: la VPN resta connessa, RabbitMQ resta
-installato, `vm.config` è già sulle macchine (a meno che non sia lui ad essere
-cambiato).
+installato col suo drop-in systemd, `vm.config` è già sulle macchine (a meno che
+non sia lui ad essere cambiato). Se invece hai chiuso il terminale della VPN,
+quella sì va rifatta — è l'unica cosa che non vive su disco.
 
 ### Ho toccato il gateway Java
 
@@ -391,7 +543,7 @@ riconnettono da soli al broker, che non è mai caduto.
 cd erlang-engine/game_engine && ../rebar3 compile && cd ../..
 
 for IP in 10.2.1.17 10.2.1.18; do
-  tar czf - --exclude='Mnesia.*' erlang-engine \
+  COPYFILE_DISABLE=1 tar czf - --exclude='Mnesia.*' erlang-engine \
   | ssh root@$IP 'tar xzf - -C /root/dct'
 done
 
@@ -436,6 +588,8 @@ riavviati: il sys.config si legge solo al boot.
 | Sintomo | Causa |
 |---|---|
 | `ACCESS_REFUSED` da `game3` | manca `loopback_users = none` in `/etc/rabbitmq/rabbitmq.conf` |
+| `beam_load.c ... Elixir.Kernel` da `rabbitmqctl` | l'hai lanciato da root: il wrapper fa `su` e azzera il `PATH`. Usa `rmq rabbitmqctl ...` ([3.1](#31-conflitto-di-versioni-erlang-da-fare-una-volta-sola)) |
+| RabbitMQ non parte, stesso errore `beam_load.c` | manca il drop-in systemd della [sezione 3.1](#31-conflitto-di-versioni-erlang-da-fare-una-volta-sola) |
 | `nodes()` vuoto | cookie diverso fra i nodi, oppure `--name` con hostname invece dell'IP |
 | Tutti standby, il gioco non parte | meno di 2 nodi su 3 attivi: è il quorum, non un bug |
 | Mnesia non carica i checkpoint dopo un riavvio | comportamento atteso (limite noto 2): `cluster_manager:force_load_snapshots().` |

@@ -623,8 +623,7 @@ function renderLastResults() {
 // ===== MINIGAME ANIMATIONS =====
 
 function getMinigameEmoji(name) {
-    const emojis = { Pachinko: '🔴', CoinFlip: '🪙', CashHunt: '🎯', CrazyTime: '🎡' };
-    return emojis[name] || '🎰';
+    return '';
 }
 
 function showMinigameAnimation(name, multiplier, details, onComplete) {
@@ -797,7 +796,7 @@ function animateCashHunt(multiplier, details, onComplete) {
     const defaultCell = details.default_cell || 0;
     const totalCells = cols * rows;
 
-    const emojis = ['🎯', '🐰', '⭐', '🎪', '🎲', '🍀', '💎', '🦊', '🎵', '🎈', '🔔', '🌟', '🎃', '🍎', '🎁', '🦄', '🐻', '🎮', '🏆', '🎺', '🌈', '🍕', '🎭', '🦋'];
+    const emojis = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K', 'L', 'M', 'N', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'];
     const scrollMults = [2, 3, 5, 7, 10, 15, 20, 25, 50, 75, 100, 200];
     let html = `
         <style>
@@ -1927,7 +1926,6 @@ function renderHistoryCards(bets) {
     if (!bets || bets.length === 0) {
         historyList.innerHTML = `
             <div class="history-empty">
-                <span class="empty-icon">🎰</span>
                 <span class="empty-text">Nessuna puntata trovata</span>
             </div>`;
         return;
@@ -1980,7 +1978,7 @@ function renderHistoryCards(bets) {
             <div class="history-round-group" style="animation-delay: ${gIdx * 0.04}s">
                 <div class="history-round-header">
                     <div class="history-round-title">
-                        <span class="history-round-badge">🎯 ${roundTitle}</span>
+                        <span class="history-round-badge">${roundTitle}</span>
                         <span class="history-round-count">(${countText} • Totale ${totalRoundStaked})</span>
                     </div>
                     <div class="history-round-meta">
@@ -2055,7 +2053,6 @@ async function loadBetHistory() {
         } else {
             historyList.innerHTML = `
                 <div class="history-empty">
-                    <span class="empty-icon">⚠️</span>
                     <span class="empty-text">Errore nel caricamento dello storico</span>
                 </div>`;
         }
@@ -2063,7 +2060,6 @@ async function loadBetHistory() {
         console.error('Errore caricamento storico:', err);
         historyList.innerHTML = `
             <div class="history-empty">
-                <span class="empty-icon">⚠️</span>
                 <span class="empty-text">Impossibile caricare lo storico</span>
             </div>`;
     }

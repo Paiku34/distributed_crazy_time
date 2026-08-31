@@ -160,7 +160,7 @@ if __name__ == "__main__":
             dettaglio = f"{amt}€ su {seg}"
             
             if not bet_results.get(u, False):
-                print(f"{u:<12} | {dettaglio:<20} | {start_bal:<12.2f} | {end_bal:<10.2f} | ⚠️ SCOMMESSA RIFIUTATA")
+                print(f"{u:<12} | {dettaglio:<20} | {start_bal:<12.2f} | {end_bal:<10.2f} | SCOMMESSA RIFIUTATA")
                 continue
             
             # Se ha perso, il saldo finale atteso è start_bal - amt
@@ -171,9 +171,9 @@ if __name__ == "__main__":
                 vincitori += 1
                 totale_vincite += payout
                 profitto_netto = round(payout - amt, 2)
-                print(f"{u:<12} | {dettaglio:<20} | {start_bal:<12.2f} | {end_bal:<10.2f} | 🤑 VINTO +{payout:.2f}€ (netto: {profitto_netto:+.2f}€)")
+                print(f"{u:<12} | {dettaglio:<20} | {start_bal:<12.2f} | {end_bal:<10.2f} | VINTO +{payout:.2f}€ (netto: {profitto_netto:+.2f}€)")
             else:
-                print(f"{u:<12} | {dettaglio:<20} | {start_bal:<12.2f} | {end_bal:<10.2f} | ❌ PERSO (-{amt:.2f}€)")
+                print(f"{u:<12} | {dettaglio:<20} | {start_bal:<12.2f} | {end_bal:<10.2f} | PERSO (-{amt:.2f}€)")
 
         print("-" * 85)
         print(f"Vincitori totali : {vincitori}/{accepted}")

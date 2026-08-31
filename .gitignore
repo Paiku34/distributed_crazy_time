@@ -10,7 +10,12 @@ ordine_implementazione.md
 # Log e file temporanei
 log.txt
 *.log
+logs/
 .DS_Store
+erl_crash.dump
+*.dump
+Mnesia.*
+erlang-engine*/game_engine/Mnesia.*
 
 # Database H2 persistente
 java-gateway/data/

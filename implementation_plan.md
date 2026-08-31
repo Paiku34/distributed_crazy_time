@@ -8,17 +8,17 @@ The Distributed Crazy Time project is a real-time betting web app with a hybrid 
 
 | # | Funzionalità | Stato |
 |---|---|---|
-| 1 | **Native AMQP integration** — `amqp_client` al posto del polling sulla Management API | ✅ **Fase 1 implementata** |
-| 2 | **Multi-node Erlang cluster** — engine su 2+ nodi che si scoprono a vicenda | ✅ **Fase 2 completa**: discovery, liste partecipanti/quorum e **Mnesia replicata** |
-| 3 | **Leader Election** — Bully Algorithm per eleggere un solo "Dealer" | ✅ **Fase 3 implementata e CORRETTA** (retrofit + quorum applicati) |
-| 4 | **Chandy-Lamport Snapshot** — stato globale consistente al "No more bets" | ✅ **IMPLEMENTATA e consumata**: marker sui canali applicativi, ledger su `results_queue`, checkpoint su Mnesia |
-| 5 | **Fault tolerance & recovery** — crash del dealer, nuovo leader, nessuna puntata persa | ✅ **IMPLEMENTATA**: regole R1/R2/R3, rimborsi puntuali e **recovery a due rami** dal checkpoint |
+| 1 | **Native AMQP integration** — `amqp_client` al posto del polling sulla Management API | [FATTO] **Fase 1 implementata** |
+| 2 | **Multi-node Erlang cluster** — engine su 2+ nodi che si scoprono a vicenda | [FATTO] **Fase 2 completa**: discovery, liste partecipanti/quorum e **Mnesia replicata** |
+| 3 | **Leader Election** — Bully Algorithm per eleggere un solo "Dealer" | [FATTO] **Fase 3 implementata e CORRETTA** (retrofit + quorum applicati) |
+| 4 | **Chandy-Lamport Snapshot** — stato globale consistente al "No more bets" | [FATTO] **IMPLEMENTATA e consumata**: marker sui canali applicativi, ledger su `results_queue`, checkpoint su Mnesia |
+| 5 | **Fault tolerance & recovery** — crash del dealer, nuovo leader, nessuna puntata persa | [FATTO] **IMPLEMENTATA**: regole R1/R2/R3, rimborsi puntuali e **recovery a due rami** dal checkpoint |
 
 > [!IMPORTANT]
 > **Le Fasi 4 e 5 sono state riscritte.** L'analisi in `snapshot_analisi.md` ha mostrato che lo snapshot come era progettato era **ridondante**: catturava uno stato già disponibile in locale sul leader, su canali vuoti per costruzione, e nessuno ne consumava il risultato. Il progetto definitivo — con le motivazioni, la verifica contro il codice e l'ordine di esecuzione dettagliato — è in [snapshot_implementation_plan.md](snapshot_implementation_plan.md), di cui esiste anche un [riassunto](riassunto_snapshot_implementation.md). Questo documento ne recepisce le conclusioni.
 
 > [!NOTE]
-> Le Fasi 2 e 3 erano state implementate **prima** che quella riscrittura esistesse, quindi parte del codice andava **corretta**, non solo estesa. ✅ **Il retrofit è stato eseguito**: il `worker` è ora attivo su **tutti** i nodi e instrada al leader, e la guardia di quorum è in funzione. Il percorso operativo completo, step per step, è in [ordine_implementazione.md](ordine_implementazione.md).
+> Le Fasi 2 e 3 erano state implementate **prima** che quella riscrittura esistesse, quindi parte del codice andava **corretta**, non solo estesa. [FATTO] **Il retrofit è stato eseguito**: il `worker` è ora attivo su **tutti** i nodi e instrada al leader, e la guardia di quorum è in funzione. Il percorso operativo completo, step per step, è in [ordine_implementazione.md](ordine_implementazione.md).
 
 > [!NOTE]
 > I limiti noti del sistema — quorum, comportamenti di Mnesia, blocco del wheel nel minigioco, test non eseguiti — sono raccolti in un unico posto: [limiti_noti.md](limiti_noti.md).
@@ -28,17 +28,17 @@ The Distributed Crazy Time project is a real-time betting web app with a hybrid 
 
 ---
 
-## Phase 0: Bug Fixes (Existing Codebase) — ✅ COMPLETATA E VERIFICATA
+## Phase 0: Bug Fixes (Existing Codebase) — [FATTO] COMPLETATA E VERIFICATA
 
 > [!NOTE]
 > Le fix da 0.1.1 a 0.3.4 sono state **ricontrollate una per una nel codice** e risultano tutte applicate (lock pessimistico e `@Transactional`, `it.remove()` sui payout, marcatura `REFUNDED`, controllo di fase, force-result admin-only, `GameStateCache` immutabile, Jackson nei listener, directory `repository` minuscola, UTF-8, logout server-side; lato Erlang catch-all su `segment_type`, `maps:get/3`, multiplier `-1`, `time_left` parametrico, flapper a 120°, `parse_cell_index`, charlist, `MAX_DROPS`, zero residui HTTP, `find_segment_index`, lowercase, escaping, timeout sui minigiochi; lato frontend default CashHunt, `choiceSent`, niente cache-busting, divisione protetta). La **FIX 0.1.14** (`bet_id`) è stata aggiunta e implementata in seguito.
 >
-> ✅ **Chiuso anche l'ultimo punto**: «nelle scelte di default ricevo come bonus -1x». **Non è più riproducibile.** Forzando CashHunt e CrazyTime con una scommessa piazzata e **nessuna scelta inviata**, il default viene applicato e produce un moltiplicatore corretto e positivo: CashHunt `default_cell=47` → griglia 75 → payout 760 su 10 (il frontend mostra `75X`); CrazyTime → default blu, `blue_multiplier=100` → payout 1010 (mostra `100X`). Il `-1` compare **solo** nel campo `multiplier` del JSON, dove è la sentinella che dice al gateway di usare l'array `payouts`, e non raggiunge mai la schermata: `app.js` lo filtra con `data.multiplier >= 0 ? data.multiplier : 0`. Il difetto era quindi già stato eliminato dalle FIX 0.2.3 e 0.3.4.
+> [FATTO] **Chiuso anche l'ultimo punto**: «nelle scelte di default ricevo come bonus -1x». **Non è più riproducibile.** Forzando CashHunt e CrazyTime con una scommessa piazzata e **nessuna scelta inviata**, il default viene applicato e produce un moltiplicatore corretto e positivo: CashHunt `default_cell=47` → griglia 75 → payout 760 su 10 (il frontend mostra `75X`); CrazyTime → default blu, `blue_multiplier=100` → payout 1010 (mostra `100X`). Il `-1` compare **solo** nel campo `multiplier` del JSON, dove è la sentinella che dice al gateway di usare l'array `payouts`, e non raggiunge mai la schermata: `app.js` lo filtra con `data.multiplier >= 0 ? data.multiplier : 0`. Il difetto era quindi già stato eliminato dalle FIX 0.2.3 e 0.3.4.
 
 **Goal**: Fix all bugs, race conditions, logic errors, and security issues found during the comprehensive code review. These must be fixed **before** adding distributed features, as they would compound with the increased complexity.
 
 > [!CAUTION]
-> Issues marked 🔴 CRITICAL can cause data corruption, money loss, or exploitable vulnerabilities. Fix these first.
+> Issues marked [CRITICO] CRITICAL can cause data corruption, money loss, or exploitable vulnerabilities. Fix these first.
 
 ---
 
@@ -46,7 +46,7 @@ The Distributed Crazy Time project is a real-time betting web app with a hybrid 
 
 ---
 
-#### 🔴 FIX 0.1.1: Double-Spending Race Condition in Bet Placement
+#### [CRITICO] FIX 0.1.1: Double-Spending Race Condition in Bet Placement
 
 **File**: [WalletController.java](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/java-gateway/src/main/java/com/crazytime/controller/WalletController.java) (lines 60–96)
 
@@ -78,7 +78,7 @@ public ResponseEntity<Map<String, Object>> placeBet(...) {
 
 ---
 
-#### 🔴 FIX 0.1.2: Lost Update Race Condition in PayoutListener
+#### [CRITICO] FIX 0.1.2: Lost Update Race Condition in PayoutListener
 
 **File**: [PayoutListener.java](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/java-gateway/src/main/java/com/crazytime/rabbitmq/PayoutListener.java) (lines 36, 79–86)
 
@@ -101,7 +101,7 @@ public void processPayouts(String message) {
 
 ---
 
-#### 🔴 FIX 0.1.3: RefundListener Never Updates Bet Status → Double Payout Exploit
+#### [CRITICO] FIX 0.1.3: RefundListener Never Updates Bet Status → Double Payout Exploit
 
 **File**: [RefundListener.java](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/java-gateway/src/main/java/com/crazytime/rabbitmq/RefundListener.java) (lines 44–50)
 
@@ -136,7 +136,7 @@ public void receiveRefund(String message) {
 
 ---
 
-#### 🔴 FIX 0.1.4: Duplicate Payout for Multiple Winning Bets
+#### [CRITICO] FIX 0.1.4: Duplicate Payout for Multiple Winning Bets
 
 **File**: [PayoutListener.java](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/java-gateway/src/main/java/com/crazytime/rabbitmq/PayoutListener.java) (lines 50–76)
 
@@ -166,7 +166,7 @@ if (payoutsNode == null || !payoutsNode.isArray() || payoutsNode.isEmpty()) {
 
 ---
 
-#### 🔴 FIX 0.1.14: Nessun identificativo univoco di bet (causa radice di 0.1.3 e 0.1.4) — ✅ IMPLEMENTATA
+#### [CRITICO] FIX 0.1.14: Nessun identificativo univoco di bet (causa radice di 0.1.3 e 0.1.4) — [FATTO] IMPLEMENTATA
 
 **Files**: `Bet.java`, `WalletController.java`, `BetRepository.java`
 
@@ -203,11 +203,11 @@ List<Bet> findByRoundAndStatus(Integer round, String status);
 > [!IMPORTANT]
 > È il **prerequisito delle Fasi 3-5**: senza `bet_id` l'ack differito introdurrebbe puntate duplicate e il ledger del round non sarebbe indirizzabile.
 >
-> ✅ **Implementata e verificata end-to-end**: l'UUID compare nella risposta dell'API, nel messaggio AMQP e nella riga persistita, ed è la chiave con cui Erlang chiede il rimborso di una singola puntata. La colonna è `unique` ma **nullable**, così le righe già presenti nel database non impediscono l'avvio.
+> [FATTO] **Implementata e verificata end-to-end**: l'UUID compare nella risposta dell'API, nel messaggio AMQP e nella riga persistita, ed è la chiave con cui Erlang chiede il rimborso di una singola puntata. La colonna è `unique` ma **nullable**, così le righe già presenti nel database non impediscono l'avvio.
 
 ---
 
-#### 🟡 FIX 0.1.5: Missing `@Transactional` on `placeBet`
+#### [MEDIO] FIX 0.1.5: Missing `@Transactional` on `placeBet`
 
 **File**: [WalletController.java](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/java-gateway/src/main/java/com/crazytime/controller/WalletController.java) (line 60)
 
@@ -217,7 +217,7 @@ List<Bet> findByRoundAndStatus(Integer round, String status);
 
 ---
 
-#### 🟡 FIX 0.1.6: No Game Phase Check Before Accepting Bets
+#### [MEDIO] FIX 0.1.6: No Game Phase Check Before Accepting Bets
 
 **File**: [WalletController.java](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/java-gateway/src/main/java/com/crazytime/controller/WalletController.java) (lines 60–111)
 
@@ -237,7 +237,7 @@ if (!"betting".equals(phase)) {
 
 ---
 
-#### 🟡 FIX 0.1.7: Dev Force-Result Endpoint Exposed to All Players
+#### [MEDIO] FIX 0.1.7: Dev Force-Result Endpoint Exposed to All Players
 
 **File**: [WalletController.java](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/java-gateway/src/main/java/com/crazytime/controller/WalletController.java) (lines 51–57)
 
@@ -259,7 +259,7 @@ public ResponseEntity<?> forceResult(@RequestParam String segment,
 
 ---
 
-#### 🟡 FIX 0.1.8: NPE and JSON Injection in `GameController.makeChoice`
+#### [MEDIO] FIX 0.1.8: NPE and JSON Injection in `GameController.makeChoice`
 
 **File**: [GameController.java](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/java-gateway/src/main/java/com/crazytime/controller/GameController.java) (lines 38–48)
 
@@ -291,7 +291,7 @@ public ResponseEntity<?> makeChoice(@RequestAttribute("player") Player player,
 
 ---
 
-#### 🟢 FIX 0.1.9: Non-Atomic `GameStateCache` Updates
+#### [BASSO] FIX 0.1.9: Non-Atomic `GameStateCache` Updates
 
 **File**: [GameStateCache.java](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/java-gateway/src/main/java/com/crazytime/rabbitmq/GameStateCache.java) (lines 13–29)
 
@@ -317,7 +317,7 @@ public class GameStateCache {
 
 ---
 
-#### 🟢 FIX 0.1.10: Regex JSON Parsing in Listeners — Use Jackson
+#### [BASSO] FIX 0.1.10: Regex JSON Parsing in Listeners — Use Jackson
 
 **Files**: [GameResultListener.java](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/java-gateway/src/main/java/com/crazytime/rabbitmq/GameResultListener.java) (lines 71–77), [RefundListener.java](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/java-gateway/src/main/java/com/crazytime/rabbitmq/RefundListener.java) (lines 58–62)
 
@@ -342,7 +342,7 @@ private String extractField(String json, String field) {
 
 ---
 
-#### 🟢 FIX 0.1.11: Case-Sensitive Directory/Package Mismatch
+#### [BASSO] FIX 0.1.11: Case-Sensitive Directory/Package Mismatch
 
 **Files**: `Repository/BetRepository.java`, `Repository/PlayerRepository.java`
 
@@ -352,7 +352,7 @@ private String extractField(String json, String field) {
 
 ---
 
-#### 🟢 FIX 0.1.12: Missing UTF-8 Encoding in AuthInterceptor Response
+#### [BASSO] FIX 0.1.12: Missing UTF-8 Encoding in AuthInterceptor Response
 
 **File**: [AuthInterceptor.java](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/java-gateway/src/main/java/com/crazytime/security/AuthInterceptor.java) (lines 37–40)
 
@@ -360,7 +360,7 @@ private String extractField(String json, String field) {
 
 ---
 
-#### 🟢 FIX 0.1.13: Logout Button Doesn't Call Server
+#### [BASSO] FIX 0.1.13: Logout Button Doesn't Call Server
 
 **File**: [app.js](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/java-gateway/src/main/resources/static/app.js) (lines 1698–1721)
 
@@ -387,7 +387,7 @@ logoutBtn.addEventListener('click', async () => {
 
 ---
 
-#### 🔴 FIX 0.2.1: Missing Catch-All in `segment_type/1` → Crashes `wheel_process`
+#### [CRITICO] FIX 0.2.1: Missing Catch-All in `segment_type/1` → Crashes `wheel_process`
 
 **File**: [wheel_process.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/wheel_process.erl) (lines 300–307)
 
@@ -411,7 +411,7 @@ segment_type(Unknown) ->
 
 ---
 
-#### 🔴 FIX 0.2.2: `undo_bets` Crashes on Missing Map Keys
+#### [CRITICO] FIX 0.2.2: `undo_bets` Crashes on Missing Map Keys
 
 **File**: [wheel_process.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/wheel_process.erl) (lines 104–108)
 
@@ -433,7 +433,7 @@ end, 0.0, UserBets),
 
 ---
 
-#### 🟡 FIX 0.2.3: Async Minigames Publish `multiplier: 0` → Zero Payouts
+#### [MEDIO] FIX 0.2.3: Async Minigames Publish `multiplier: 0` → Zero Payouts
 
 **File**: [wheel_process.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/wheel_process.erl) (lines 253–254)
 
@@ -450,7 +450,7 @@ And ensure `PayoutListener.java` checks `result_type` before falling back to `mu
 
 ---
 
-#### 🟡 FIX 0.2.4: Hardcoded `time_left: 16` for CashHunt (Should Be 30)
+#### [MEDIO] FIX 0.2.4: Hardcoded `time_left: 16` for CashHunt (Should Be 30)
 
 **File**: [wheel_process.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/wheel_process.erl) (lines 418–425)
 
@@ -478,7 +478,7 @@ publish_minigame_start(State#state.round, SegName, WinnerIndex, Details,
 
 ---
 
-#### 🟡 FIX 0.2.5: CrazyTime Flapper Positions Are Wrong (1 Apart vs 120°)
+#### [MEDIO] FIX 0.2.5: CrazyTime Flapper Positions Are Wrong (1 Apart vs 120°)
 
 **File**: [crazytime.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/crazytime.erl) (lines 38–40)
 
@@ -496,7 +496,7 @@ YellowMult = ResolveVal((WinnerIdx + 2 * Spacing) rem NumSegments),
 
 ---
 
-#### 🟡 FIX 0.2.6: CashHunt Choice Type Mismatch → Silent Default Fallback
+#### [MEDIO] FIX 0.2.6: CashHunt Choice Type Mismatch → Silent Default Fallback
 
 **File**: [cashhunt.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/cashhunt.erl) (lines 63–74)
 
@@ -521,7 +521,7 @@ parse_cell_index(_, DefaultCell) -> DefaultCell.
 
 ---
 
-#### 🟡 FIX 0.2.7: Charlist Values Serialize as Integer Arrays in JSON
+#### [MEDIO] FIX 0.2.7: Charlist Values Serialize as Integer Arrays in JSON
 
 **File**: [wheel_process.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/wheel_process.erl) (lines 381–384)
 
@@ -544,7 +544,7 @@ json_value(L) when is_list(L) ->
 
 ---
 
-#### 🟡 FIX 0.2.8: Pachinko Unbounded DOUBLE Recursion
+#### [MEDIO] FIX 0.2.8: Pachinko Unbounded DOUBLE Recursion
 
 **File**: [pachinko.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/pachinko.erl) (lines 75–81)
 
@@ -576,7 +576,7 @@ Also fix the O(N²) list concatenation by using `[DropData | AccDrops]` and reve
 
 ---
 
-#### 🟡 FIX 0.2.9: Redundant `inets:start()` in `game_engine_app.erl` and `worker.erl`
+#### [MEDIO] FIX 0.2.9: Redundant `inets:start()` in `game_engine_app.erl` and `worker.erl`
 
 **Files**: [game_engine_app.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/game_engine_app.erl) (line 13), [worker.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/worker.erl) (line 20)
 
@@ -585,11 +585,11 @@ Also fix the O(N²) list concatenation by using `[DropData | AccDrops]` and reve
 **Fix**: Remove both `inets:start()` calls. Ensure `inets` is in the `applications` list in `game_engine.app.src` (it already is).
 
 > [!NOTE]
-> ✅ **RISOLTO dalla Fase 1**: le chiamate HTTP sono state sostituite da AMQP nativo e `inets` è stato **rimosso** dalla lista `applications` di `game_engine.app.src`. Nel codice non resta nessuna chiamata a `inets:start()` né a `httpc`.
+> [FATTO] **RISOLTO dalla Fase 1**: le chiamate HTTP sono state sostituite da AMQP nativo e `inets` è stato **rimosso** dalla lista `applications` di `game_engine.app.src`. Nel codice non resta nessuna chiamata a `inets:start()` né a `httpc`.
 
 ---
 
-#### 🟡 FIX 0.2.10: `find_segment_index/3` Returns Wrong Index for Unfound Segments
+#### [MEDIO] FIX 0.2.10: `find_segment_index/3` Returns Wrong Index for Unfound Segments
 
 **File**: [wheel_process.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/wheel_process.erl) (lines 295–297)
 
@@ -615,7 +615,7 @@ end
 
 ---
 
-#### 🟢 FIX 0.2.11: CrazyTime Choice Case-Sensitivity
+#### [BASSO] FIX 0.2.11: CrazyTime Choice Case-Sensitivity
 
 **File**: [crazytime.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/crazytime.erl) (lines 78–83)
 
@@ -634,7 +634,7 @@ end,
 
 ---
 
-#### 🟢 FIX 0.2.12: JSON Injection Risk in `publish_refund/1`
+#### [BASSO] FIX 0.2.12: JSON Injection Risk in `publish_refund/1`
 
 **File**: [worker.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/worker.erl) (lines 199–203)
 
@@ -651,7 +651,7 @@ escape_json_string(Str) ->
 
 ---
 
-#### 🟢 FIX 0.2.13: Synchronous `Module:play/1` Inside `handle_info` — Deadlock Risk
+#### [BASSO] FIX 0.2.13: Synchronous `Module:play/1` Inside `handle_info` — Deadlock Risk
 
 **File**: [wheel_process.erl](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/erlang-engine/game_engine/src/wheel_process.erl) (line 191)
 
@@ -671,7 +671,7 @@ Or convert to async pattern with `gen_server:cast` + a response message.
 
 ---
 
-#### 🟡 FIX 0.3.1: CashHunt Default Choice Never Sent to Backend
+#### [MEDIO] FIX 0.3.1: CashHunt Default Choice Never Sent to Backend
 
 **File**: [app.js](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/java-gateway/src/main/resources/static/app.js) (lines 978–995)
 
@@ -706,7 +706,7 @@ setTimeout(() => {
 
 ---
 
-#### 🟡 FIX 0.3.2: CrazyTime Duplicate Choice Submission
+#### [MEDIO] FIX 0.3.2: CrazyTime Duplicate Choice Submission
 
 **File**: [app.js](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/java-gateway/src/main/resources/static/app.js) (lines 1600–1633)
 
@@ -732,7 +732,7 @@ if (!choiceSent) {
 
 ---
 
-#### 🟢 FIX 0.3.3: Image Cache Busting on Every Round
+#### [BASSO] FIX 0.3.3: Image Cache Busting on Every Round
 
 **File**: [app.js](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/java-gateway/src/main/resources/static/app.js) (lines 623, 722, 1050)
 
@@ -747,7 +747,7 @@ if (!choiceSent) {
 
 ---
 
-#### 🟢 FIX 0.3.4: Division by Zero in Multiplier Calculation
+#### [BASSO] FIX 0.3.4: Division by Zero in Multiplier Calculation
 
 **File**: [app.js](file:///C:/Users/cacak/OneDrive/Desktop/distributed_crazy_time/java-gateway/src/main/resources/static/app.js) (line 454)
 
@@ -763,46 +763,46 @@ myMultiplier = myBetAmount > 0 ? Math.round((winAmount - myBetAmount) / myBetAmo
 
 | ID | Severity | Component | Description |
 |---|---|---|---|
-| 0.1.1 | 🔴 CRITICAL | Java | Double-spending race condition on bet placement |
-| 0.1.2 | 🔴 CRITICAL | Java | Lost update race between payout and bet operations |
-| 0.1.3 | 🔴 CRITICAL | Java | Refund doesn't update bet status → double payout exploit |
-| 0.1.4 | 🔴 CRITICAL | Java | Duplicate payout for multiple winning bets per user |
-| 0.2.1 | 🔴 CRITICAL | Erlang | Missing catch-all in `segment_type/1` crashes wheel |
-| 0.2.2 | 🔴 CRITICAL | Erlang | `undo_bets` crashes on missing map keys |
-| 0.1.14 | 🔴 CRITICAL | Java | Nessun `bet_id`: rimborsi per importo, payout per username |
-| 0.1.5 | 🟡 HIGH | Java | Missing `@Transactional` on wallet operations |
-| 0.1.6 | 🟡 HIGH | Java | No phase check before accepting bets |
-| 0.1.7 | 🟡 HIGH | Java | Dev force-result endpoint unprotected |
-| 0.1.8 | 🟡 HIGH | Java | NPE + JSON injection in game choice |
-| 0.2.3 | 🟡 HIGH | Erlang | Async minigames send `multiplier: 0` |
-| 0.2.4 | 🟡 HIGH | Erlang | Hardcoded `time_left: 16` for CashHunt |
-| 0.2.5 | 🟡 HIGH | Erlang | CrazyTime flapper 1-apart instead of 120° |
-| 0.2.6 | 🟡 HIGH | Erlang | CashHunt choice type mismatch |
-| 0.2.7 | 🟡 HIGH | Erlang | Charlists serialize as integer arrays |
-| 0.2.8 | 🟡 HIGH | Erlang | Pachinko unbounded DOUBLE recursion |
-| 0.2.10 | 🟡 HIGH | Erlang | `find_segment_index` returns wrong index |
-| 0.3.1 | 🟡 HIGH | Frontend | CashHunt default choice never sent |
-| 0.3.2 | 🟡 HIGH | Frontend | CrazyTime double choice submission |
-| 0.1.9 | 🟢 MEDIUM | Java | Non-atomic GameStateCache |
-| 0.1.10 | 🟢 MEDIUM | Java | Regex JSON parsing (use Jackson) |
-| 0.1.11 | 🟢 MEDIUM | Java | Repository directory case mismatch |
-| 0.1.12 | 🟢 MEDIUM | Java | Missing UTF-8 encoding in 401 response |
-| 0.1.13 | 🟢 MEDIUM | Frontend | Logout doesn't call server |
-| 0.2.9 | 🟢 MEDIUM | Erlang | Redundant `inets:start()` |
-| 0.2.11 | 🟢 MEDIUM | Erlang | CrazyTime choice case-sensitivity |
-| 0.2.12 | 🟢 MEDIUM | Erlang | JSON injection in `publish_refund` |
-| 0.2.13 | 🟢 MEDIUM | Erlang | Sync `Module:play` deadlock risk |
-| 0.3.3 | 🟢 LOW | Frontend | Image cache busting every round |
-| 0.3.4 | 🟢 LOW | Frontend | Division by zero in multiplier calc |
+| 0.1.1 | [CRITICO] CRITICAL | Java | Double-spending race condition on bet placement |
+| 0.1.2 | [CRITICO] CRITICAL | Java | Lost update race between payout and bet operations |
+| 0.1.3 | [CRITICO] CRITICAL | Java | Refund doesn't update bet status → double payout exploit |
+| 0.1.4 | [CRITICO] CRITICAL | Java | Duplicate payout for multiple winning bets per user |
+| 0.2.1 | [CRITICO] CRITICAL | Erlang | Missing catch-all in `segment_type/1` crashes wheel |
+| 0.2.2 | [CRITICO] CRITICAL | Erlang | `undo_bets` crashes on missing map keys |
+| 0.1.14 | [CRITICO] CRITICAL | Java | Nessun `bet_id`: rimborsi per importo, payout per username |
+| 0.1.5 | [MEDIO] HIGH | Java | Missing `@Transactional` on wallet operations |
+| 0.1.6 | [MEDIO] HIGH | Java | No phase check before accepting bets |
+| 0.1.7 | [MEDIO] HIGH | Java | Dev force-result endpoint unprotected |
+| 0.1.8 | [MEDIO] HIGH | Java | NPE + JSON injection in game choice |
+| 0.2.3 | [MEDIO] HIGH | Erlang | Async minigames send `multiplier: 0` |
+| 0.2.4 | [MEDIO] HIGH | Erlang | Hardcoded `time_left: 16` for CashHunt |
+| 0.2.5 | [MEDIO] HIGH | Erlang | CrazyTime flapper 1-apart instead of 120° |
+| 0.2.6 | [MEDIO] HIGH | Erlang | CashHunt choice type mismatch |
+| 0.2.7 | [MEDIO] HIGH | Erlang | Charlists serialize as integer arrays |
+| 0.2.8 | [MEDIO] HIGH | Erlang | Pachinko unbounded DOUBLE recursion |
+| 0.2.10 | [MEDIO] HIGH | Erlang | `find_segment_index` returns wrong index |
+| 0.3.1 | [MEDIO] HIGH | Frontend | CashHunt default choice never sent |
+| 0.3.2 | [MEDIO] HIGH | Frontend | CrazyTime double choice submission |
+| 0.1.9 | [BASSO] MEDIUM | Java | Non-atomic GameStateCache |
+| 0.1.10 | [BASSO] MEDIUM | Java | Regex JSON parsing (use Jackson) |
+| 0.1.11 | [BASSO] MEDIUM | Java | Repository directory case mismatch |
+| 0.1.12 | [BASSO] MEDIUM | Java | Missing UTF-8 encoding in 401 response |
+| 0.1.13 | [BASSO] MEDIUM | Frontend | Logout doesn't call server |
+| 0.2.9 | [BASSO] MEDIUM | Erlang | Redundant `inets:start()` |
+| 0.2.11 | [BASSO] MEDIUM | Erlang | CrazyTime choice case-sensitivity |
+| 0.2.12 | [BASSO] MEDIUM | Erlang | JSON injection in `publish_refund` |
+| 0.2.13 | [BASSO] MEDIUM | Erlang | Sync `Module:play` deadlock risk |
+| 0.3.3 | [BASSO] LOW | Frontend | Image cache busting every round |
+| 0.3.4 | [BASSO] LOW | Frontend | Division by zero in multiplier calc |
 
 ---
 
-## Phase 1: Native AMQP Client Integration ✅ IMPLEMENTATA
+## Phase 1: Native AMQP Client Integration [FATTO] IMPLEMENTATA
 
 **Goal**: Replace all `httpc` HTTP Management API calls with proper AMQP 0-9-1 protocol using the `amqp_client` Erlang library. This is the foundation for everything else — multi-node communication through RabbitMQ must be robust.
 
 > [!NOTE]
-> **Questa sezione è stata allineata al codice realmente implementato.** In fase di revisione sono emerse 6 divergenze rispetto alla stesura originale: sono elencate nella tabella qui sotto e segnalate inline con il marcatore **🔧 MODIFICA #n** nei punti in cui il piano è cambiato.
+> **Questa sezione è stata allineata al codice realmente implementato.** In fase di revisione sono emerse 6 divergenze rispetto alla stesura originale: sono elencate nella tabella qui sotto e segnalate inline con il marcatore **[FIX] MODIFICA #n** nei punti in cui il piano è cambiato.
 
 ### Divergenze rispetto alla stesura originale
 
@@ -825,7 +825,7 @@ The current implementation uses HTTP POST to `localhost:15672/api/...` for both 
 
 ### [MODIFY] [rebar.config](erlang-engine/game_engine/rebar.config)
 
-Add `amqp_client` as a dependency — **🔧 MODIFICA #1: versione 4.3.4, non 3.12.14**:
+Add `amqp_client` as a dependency — **[FIX] MODIFICA #1: versione 4.3.4, non 3.12.14**:
 
 ```erlang
 {erl_opts, [debug_info]}.
@@ -845,7 +845,7 @@ Add `amqp_client` as a dependency — **🔧 MODIFICA #1: versione 4.3.4, non 3.
 
 ### [MODIFY] [game_engine.app.src](erlang-engine/game_engine/src/game_engine.app.src)
 
-**🔧 MODIFICA #2**: oltre ad aggiungere `amqp_client`, si **rimuove `inets`** (non resta nessun `httpc`) e si aggiunge la configurazione del broker in `env`, così le Fasi 2-3 potranno sovrascriverla per nodo:
+**[FIX] MODIFICA #2**: oltre ad aggiungere `amqp_client`, si **rimuove `inets`** (non resta nessun `httpc`) e si aggiunge la configurazione del broker in `env`, così le Fasi 2-3 potranno sovrascriverla per nodo:
 
 ```erlang
 {application, game_engine, [
@@ -912,7 +912,7 @@ Un `gen_server` che possiede la connessione AMQP e i suoi canali. Centralizza il
 
 `reject/2` è modellata su `ack/1` (stesso accesso lock-free ai canali via ETS) e serve a rimettere un messaggio in coda: la usano il ramo "nessun leader disponibile" e l'ack differito della Fase 3.
 
-**Init logic** — **🔧 MODIFICA #4: nessuna connessione dentro `init/1`**:
+**Init logic** — **[FIX] MODIFICA #4: nessuna connessione dentro `init/1`**:
 1. `process_flag(trap_exit, true)` — i processi di `amqp_client` possono essere linkati e non devono abbattere il manager.
 2. Creare la tabella ETS pubblica `rabbitmq_manager_tab` (`named_table, public, set, read_concurrency`).
 3. Leggere la config con `maps:merge(?DEFAULT_CFG, application:get_env(game_engine, rabbitmq, #{}))`.
@@ -927,7 +927,7 @@ Un `gen_server` che possiede la connessione AMQP e i suoi canali. Centralizza il
 6. `ets:insert(?TAB, [{pub_ch, PubCh}, {cons_ch, ConsCh}])` e `erlang:monitor/2` su connessione e canali.
 7. Riattivare tutte le sottoscrizioni memorizzate.
 
-**Publish** — **🔧 MODIFICA #5: non passa dal gen_server**:
+**Publish** — **[FIX] MODIFICA #5: non passa dal gen_server**:
 ```erlang
 publish(Queue, Payload) when is_binary(Queue), is_binary(Payload) ->
     case lookup_channel(pub_ch) of          %% lettura diretta dalla ETS
@@ -940,7 +940,7 @@ publish(Queue, Payload) when is_binary(Queue), is_binary(Payload) ->
 ```
 Exchange di default + routing key = nome della coda: l'esatto equivalente della vecchia POST su `amq.default`.
 
-**Subscribe** — **🔧 MODIFICA #3: il consumer è il PID del chiamante**:
+**Subscribe** — **[FIX] MODIFICA #3: il consumer è il PID del chiamante**:
 ```erlang
 amqp_channel:subscribe(ConsCh, #'basic.consume'{queue = Queue, no_ack = false}, Pid)
 ```
@@ -963,7 +963,7 @@ Il terzo argomento è il processo che riceverà le delivery: passando il PID del
 - **Keep** tutta la logica di parsing (`parse_bet_json/1`, `extract_string_field/2`, `extract_number_field/2`, `escape_json_string/1`) — funziona già sul payload JSON grezzo.
 - `process_message/1` **conserva firma e corpo** (dispatch `force_segment` / `minigame_choice` / `UNDO_BETS` / `FORCE_*` / `place_bet` + rimborso): cambia solo il fatto che riceve il payload direttamente, senza il wrapper della Management API da sbucciare con `extract_payload/1`.
 
-**🔧 MODIFICA #3 — il worker è il consumer, con ack manuale**:
+**[FIX] MODIFICA #3 — il worker è il consumer, con ack manuale**:
 ```erlang
 handle_info(#'basic.consume_ok'{}, State) -> {noreply, State};
 handle_info(#'basic.cancel_ok'{}, State)  -> {noreply, State};
@@ -988,7 +988,7 @@ handle_info({#'basic.deliver'{delivery_tag = Tag}, #amqp_msg{payload = Payload}}
 > [!TIP]
 > L'ack manuale è ciò che rende possibile la Fase 5: se il nodo dealer muore mentre elabora una scommessa, il messaggio non-ackato viene **riconsegnato** dal broker invece di andare perso (il vecchio `ack_requeue_false` HTTP lo cancellava subito).
 
-**New publish_refund** — **🔧 MODIFICA #6: `unicode:characters_to_binary`, non `list_to_binary`**:
+**New publish_refund** — **[FIX] MODIFICA #6: `unicode:characters_to_binary`, non `list_to_binary`**:
 ```erlang
 publish_refund(BetMap) ->
     Username = maps:get(<<"username">>, BetMap, <<"unknown">>),
@@ -1009,7 +1009,7 @@ Sparisce il doppio escaping (`EscapedPayload`), che serviva solo al wrapper JSON
 
 ### [MODIFY] [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)
 
-**Change**: sostituire la sola `publish_to_queue/2` — **🔧 MODIFICA #6**:
+**Change**: sostituire la sola `publish_to_queue/2` — **[FIX] MODIFICA #6**:
 
 ```erlang
 %% unicode:characters_to_binary/1 (e non list_to_binary/1) perche' i payload
@@ -1063,16 +1063,16 @@ Da questa fase l'engine **richiede `rebar3`** (`../rebar3 shell` / `../rebar3 co
 
 ---
 
-### Verification for Phase 1 — ✅ eseguita
+### Verification for Phase 1 — [FATTO] eseguita
 
 | # | Test | Esito |
 |---|---|---|
-| 1 | `../rebar3 compile` con `amqp_client` risolto | ✅ pulito, zero warning; deps in `_build/default/lib/` |
-| 2 | `grep -rn "httpc\|15672\|inets" src/` | ✅ nessun residuo HTTP |
-| 3 | Avvio dell'engine **senza broker** | ✅ parte lo stesso, logga `Broker non raggiungibile`, ritenta ogni 5 s, tutti e 4 i figli vivi (verifica della **MODIFICA #4**) |
-| 4 | Avvio con broker attivo | ✅ `is_connected = true`, 4 code dichiarate `durable=true` senza `PRECONDITION_FAILED`, timer accumulati su `state_queue` |
-| 5 | Bet pubblicata su `bets_queue` | ✅ `[WORKER] Bet ricevuta` → `[WHEEL] Scommessa accettata` → coda a 0, ack confermato |
-| 6 | Stop e restart del broker a caldo | ✅ disconnessione rilevata, manager/wheel/worker restano vivi, riconnessione e **ri-sottoscrizione automatiche**; la bet successiva arriva in fase `spinning` → rifiutata → rimborso pubblicato su `refunds_queue` via AMQP |
+| 1 | `../rebar3 compile` con `amqp_client` risolto | [FATTO] pulito, zero warning; deps in `_build/default/lib/` |
+| 2 | `grep -rn "httpc\|15672\|inets" src/` | [FATTO] nessun residuo HTTP |
+| 3 | Avvio dell'engine **senza broker** | [FATTO] parte lo stesso, logga `Broker non raggiungibile`, ritenta ogni 5 s, tutti e 4 i figli vivi (verifica della **MODIFICA #4**) |
+| 4 | Avvio con broker attivo | [FATTO] `is_connected = true`, 4 code dichiarate `durable=true` senza `PRECONDITION_FAILED`, timer accumulati su `state_queue` |
+| 5 | Bet pubblicata su `bets_queue` | [FATTO] `[WORKER] Bet ricevuta` → `[WHEEL] Scommessa accettata` → coda a 0, ack confermato |
+| 6 | Stop e restart del broker a caldo | [FATTO] disconnessione rilevata, manager/wheel/worker restano vivi, riconnessione e **ri-sottoscrizione automatiche**; la bet successiva arriva in fase `spinning` → rifiutata → rimborso pubblicato su `refunds_queue` via AMQP |
 
 Test end-to-end con il gateway Java (bet → payout dal browser) non ancora eseguito: da fare con `mvn spring-boot:run` seguendo `comandi_avvio.md`.
 
@@ -1081,12 +1081,12 @@ Test end-to-end con il gateway Java (bet → payout dal browser) non ancora eseg
 
 ---
 
-## Phase 2: Multi-Node Erlang Cluster ✅ IMPLEMENTATA
+## Phase 2: Multi-Node Erlang Cluster [FATTO] IMPLEMENTATA
 
 **Goal**: Run the Erlang game engine on multiple nodes (e.g., `node1@host`, `node2@host`, `node3@host`) that form a cluster and can discover each other. Only **one node** runs the game (the Leader/Dealer); others are hot standby.
 
 > [!NOTE]
-> **Questa sezione è stata allineata al codice realmente implementato.** In fase di realizzazione sono emerse 3 divergenze rispetto alla stesura originale: sono elencate nella tabella qui sotto e segnalate inline con il marcatore **🔧 MODIFICA** nei punti in cui il piano è cambiato.
+> **Questa sezione è stata allineata al codice realmente implementato.** In fase di realizzazione sono emerse 3 divergenze rispetto alla stesura originale: sono elencate nella tabella qui sotto e segnalate inline con il marcatore **[FIX] MODIFICA** nei punti in cui il piano è cambiato.
 
 ### Divergenze rispetto alla stesura originale
 
@@ -1212,12 +1212,12 @@ Le aggiunte che le Fasi 4-5 danno per presenti: tre su `cluster_manager`, una in
 
 | Estensione | Stato |
 |---|---|
-| 1. `configured_nodes/0` e `get_participants/0` | ✅ **FATTA** |
-| 2. Bootstrap di Mnesia | ✅ **FATTA** |
-| 3. Delega di `nodedown` a `leader_election:node_down/1` | ✅ **FATTA** |
-| 4. `mnesia` fra le `applications`, `snapshot` fra i `registered` | ✅ **FATTA** |
+| 1. `configured_nodes/0` e `get_participants/0` | [FATTO] **FATTA** |
+| 2. Bootstrap di Mnesia | [FATTO] **FATTA** |
+| 3. Delega di `nodedown` a `leader_election:node_down/1` | [FATTO] **FATTA** |
+| 4. `mnesia` fra le `applications`, `snapshot` fra i `registered` | [FATTO] **FATTA** |
 
-#### 1. Due liste distinte esposte come API — ✅ FATTA
+#### 1. Due liste distinte esposte come API — [FATTO] FATTA
 
 ```erlang
 -export([start_link/0, get_nodes/0, get_connected_nodes/0,
@@ -1241,7 +1241,7 @@ handle_call(get_participants, _From, State) ->
 > [!IMPORTANT]
 > Il denominatore del quorum **non** può essere `nodes()`: in una partizione si riduce da solo e la guardia diventa inutile. Per lo stesso motivo anche il numeratore va intersecato con la lista statica.
 
-#### 2. Bootstrap di Mnesia — ✅ FATTA
+#### 2. Bootstrap di Mnesia — [FATTO] FATTA
 
 Va eseguito **dopo** la formazione del cluster, mai in `init/1`: il punto d'aggancio naturale è un `handle_info(mnesia_bootstrap, ...)` schedulato insieme a `initial_election`, quando i ping ai peer hanno già avuto il tempo di connettere.
 
@@ -1282,7 +1282,7 @@ ok = mnesia:wait_for_tables([snapshot_record], 5000).
 
 Aggiungere inoltre `mnesia:subscribe(system)` e loggare in modo rumoroso `{inconsistent_database, _, _}`.
 
-#### 3. Delega della caduta di un nodo all'elezione — ✅ FATTA
+#### 3. Delega della caduta di un nodo all'elezione — [FATTO] FATTA
 
 `handle_info({nodedown, Node, _}, ...)` chiama oggi `maybe_start_election_on_nodedown/1`, che decide da sé se rieleggere. Con il quorum la decisione dipende dal ruolo corrente e dalla maggioranza, quindi vive nell'elezione:
 
@@ -1293,7 +1293,7 @@ leader_election:node_down(Node),
 
 Il `try/catch error:undef` che proteggeva la Fase 2 dall'assenza del modulo non serve più: `leader_election` esiste ed è nel supervisore.
 
-#### 4. Configurazione — ✅ FATTA
+#### 4. Configurazione — [FATTO] FATTA
 
 ```erlang
 {applications, [kernel, stdlib, crypto, mnesia, amqp_client]},   %% mnesia AGGIUNTA
@@ -1311,26 +1311,26 @@ Le directory `Mnesia.<nodo>` create a runtime sono in `.gitignore`.
 
 ---
 
-## Phase 3: Bully Leader Election Algorithm ✅ IMPLEMENTATA E CORRETTA
+## Phase 3: Bully Leader Election Algorithm [FATTO] IMPLEMENTATA E CORRETTA
 
 **Goal**: Implement the Bully Election algorithm so that exactly **one node** is elected as the "Dealer" (leader). The leader runs the game loop (`wheel_process` attivo); i nodi standby tengono i propri processi vivi ma dormienti.
 
 > [!NOTE]
-> **Questa sezione descrive il codice realmente implementato.** L'algoritmo Bully era già completo; le **5 divergenze** emerse rispetto alla stesura originale sono state **tutte applicate** (retrofit degli Step 1-3 di [ordine_implementazione.md](ordine_implementazione.md)). Restano marcate inline con **🔧 CORREZIONE #n** perché spiegano *perché* il codice ha la forma che ha.
+> **Questa sezione descrive il codice realmente implementato.** L'algoritmo Bully era già completo; le **5 divergenze** emerse rispetto alla stesura originale sono state **tutte applicate** (retrofit degli Step 1-3 di [ordine_implementazione.md](ordine_implementazione.md)). Restano marcate inline con **[FIX] CORREZIONE #n** perché spiegano *perché* il codice ha la forma che ha.
 >
-> ✅ **Verificato su cluster a 3 nodi**: elezione del nodo col nome più alto, rielezione entro pochi secondi alla caduta del leader, retrocessione automatica a standby quando il quorum si perde (1/3), 6 bet distribuite fra i tre worker e tutte arrivate al wheel del solo leader, UNDO consumato da un worker qualsiasi con rimborso pubblicato correttamente.
+> [FATTO] **Verificato su cluster a 3 nodi**: elezione del nodo col nome più alto, rielezione entro pochi secondi alla caduta del leader, retrocessione automatica a standby quando il quorum si perde (1/3), 6 bet distribuite fra i tre worker e tutte arrivate al wheel del solo leader, UNDO consumato da un worker qualsiasi con rimborso pubblicato correttamente.
 
 ### Divergenze rispetto alla stesura originale
 
-> Tutte e cinque **applicate** nel codice (✅ nella prima colonna).
+> Tutte e cinque **applicate** nel codice ([FATTO] nella prima colonna).
 
 | # | Stesura originale | Problema | Soluzione adottata |
 |---|---|---|---|
-| 1 ✅ | `apply_role/1` attiva e disattiva **anche il `worker`** | Con il worker attivo solo sul leader, l'ingestione delle bet non è distribuita: i canali `worker → wheel` sono tutti locali e vuoti, e lo snapshot della Fase 4 torna a essere l'artefatto vacuo che la riscrittura vuole eliminare | Il **worker resta attivo su tutti i nodi**; solo `wheel_process` è leader-only. Il worker riceve `{set_leader, Node}` e instrada al leader |
-| 2 ✅ | Il worker in standby rifiuta ogni delivery con `reject(Tag, true)` | Loop caldo: il messaggio rimbalza fra broker e nodi passivi finché non capita sul leader | Il rifiuto avviene **solo** quando `leader =:= undefined`, cioè quando nessuno può servirlo |
-| 3 ✅ | Nessuna guardia di quorum | In una partizione 2-1 entrambi i lati eleggono un leader: due ledger divergenti per lo stesso round, scritture concorrenti su Mnesia, audit trail senza valore | `has_quorum/0` applicata in **due** punti: `declare_victory/1` e caduta di un nodo |
-| 4 ✅ | `undo_bets/1` come `gen_server:call` | Come call cross-nodo va in timeout quando il wheel è bloccato fino a 10 s nella call al minigioco, facendo crollare il worker | Convertita a `cast`; il rimborso non torna più come valore di ritorno ma come evento `bet_rejected` pubblicato dal wheel |
-| 5 ✅ | Il `nodedown` gestito dentro `leader_election` | Il monitoraggio dei nodi è già in `cluster_manager`, duplicarlo significa due sottoscrizioni e due verità | `cluster_manager` chiama `leader_election:node_down/1` |
+| 1 [FATTO] | `apply_role/1` attiva e disattiva **anche il `worker`** | Con il worker attivo solo sul leader, l'ingestione delle bet non è distribuita: i canali `worker → wheel` sono tutti locali e vuoti, e lo snapshot della Fase 4 torna a essere l'artefatto vacuo che la riscrittura vuole eliminare | Il **worker resta attivo su tutti i nodi**; solo `wheel_process` è leader-only. Il worker riceve `{set_leader, Node}` e instrada al leader |
+| 2 [FATTO] | Il worker in standby rifiuta ogni delivery con `reject(Tag, true)` | Loop caldo: il messaggio rimbalza fra broker e nodi passivi finché non capita sul leader | Il rifiuto avviene **solo** quando `leader =:= undefined`, cioè quando nessuno può servirlo |
+| 3 [FATTO] | Nessuna guardia di quorum | In una partizione 2-1 entrambi i lati eleggono un leader: due ledger divergenti per lo stesso round, scritture concorrenti su Mnesia, audit trail senza valore | `has_quorum/0` applicata in **due** punti: `declare_victory/1` e caduta di un nodo |
+| 4 [FATTO] | `undo_bets/1` come `gen_server:call` | Come call cross-nodo va in timeout quando il wheel è bloccato fino a 10 s nella call al minigioco, facendo crollare il worker | Convertita a `cast`; il rimborso non torna più come valore di ritorno ma come evento `bet_rejected` pubblicato dal wheel |
+| 5 [FATTO] | Il `nodedown` gestito dentro `leader_election` | Il monitoraggio dei nodi è già in `cluster_manager`, duplicarlo significa due sottoscrizioni e due verità | `cluster_manager` chiama `leader_election:node_down/1` |
 
 ---
 
@@ -1355,7 +1355,7 @@ Le directory `Mnesia.<nodo>` create a runtime sono in `.gitignore`.
 }).
 ```
 
-**API** — 🔧 **CORREZIONE #5: `node_down/1` chiamata da `cluster_manager`**:
+**API** — [FIX] **CORREZIONE #5: `node_down/1` chiamata da `cluster_manager`**:
 ```erlang
 -export([start_link/0, start_election/0, get_leader/0, is_leader/0, node_down/1]).
 
@@ -1365,7 +1365,7 @@ is_leader()      -> gen_server:call(?MODULE, is_leader).
 node_down(Node)  -> gen_server:cast(?MODULE, {node_down, Node}).
 ```
 
-#### 🔧 CORREZIONE #3: guardia di quorum
+#### [FIX] CORREZIONE #3: guardia di quorum
 
 ```erlang
 %% Il denominatore e' la lista STATICA dei nodi configurati, non nodes().
@@ -1423,7 +1423,7 @@ handle_cast({node_down, Node}, State) ->
 
 `maybe_reelect/2` lancia `start_election` solo se il nodo caduto era il leader o se non c'è leader noto: oggi `cluster_manager` ne lancia una a **ogni** evento di topologia, incondizionatamente, e con tre nodi che partono insieme si ottiene una raffica di elezioni. Vale la pena aggiungere anche la guardia su `election_in_progress`, oggi memorizzato ma mai controllato.
 
-#### 🔧 CORREZIONE #1: `apply_role/1` non tocca più il worker
+#### [FIX] CORREZIONE #1: `apply_role/1` non tocca più il worker
 
 ```erlang
 apply_role(leader) ->
@@ -1455,7 +1455,7 @@ Dopo `apply_role(leader)`, il nuovo leader deve:
 
 ---
 
-### [MODIFY] [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl) — ✅ già implementato
+### [MODIFY] [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl) — [FATTO] già implementato
 
 Il flag `active` nel record di stato, i cast `activate`/`deactivate`, la guardia sui tick e il rifiuto delle bet quando `active = false` sono **già presenti nel codice** e restano invariati:
 
@@ -1469,13 +1469,13 @@ handle_info(tick, State = #state{active = false}) ->
     {noreply, State};                                %% standby: nessun tick
 ```
 
-L'unica modifica dovuta a questa fase è la **🔧 CORREZIONE #4**: `undo_bets/1` passa da `call` a `cast`, restituendo i `bet_id` annullati attraverso un evento anziché come valore di ritorno.
+L'unica modifica dovuta a questa fase è la **[FIX] CORREZIONE #4**: `undo_bets/1` passa da `call` a `cast`, restituendo i `bet_id` annullati attraverso un evento anziché come valore di ritorno.
 
 ---
 
-### [MODIFY] [worker.erl](erlang-engine/game_engine/src/worker.erl) — 🔧 riscritto
+### [MODIFY] [worker.erl](erlang-engine/game_engine/src/worker.erl) — [FIX] riscritto
 
-**🔧 CORREZIONI #1, #2 e #4.** Il flag `active` e i due `handle_cast(activate|deactivate, ...)` implementati in questa fase **vanno rimossi**:
+**[FIX] CORREZIONI #1, #2 e #4.** Il flag `active` e i due `handle_cast(activate|deactivate, ...)` implementati in questa fase **vanno rimossi**:
 
 ```erlang
 -record(state, {
@@ -1513,19 +1513,19 @@ gen_server:cast({wheel_process, Leader}, {undo_bets, Username}),   %% CORREZIONE
 gen_server:cast({wheel_process, Leader}, {bet, BetMap}),
 ```
 
-**Ack differito** — ✅ **implementato**: il `DeliveryTag` non viene più confermato al ritorno di `process_message/3` ma conservato in `inflight`, e l'ack parte alla ricezione di `{bet_result, BetId, accepted | rejected}` dal wheel. Un `{inflight_timeout, BetId}` armato a 15 s rimette la bet in coda se il leader muore o resta bloccato. I comandi senza `bet_id` (`force_segment`, `minigame_choice`, `UNDO_BETS`) restano ad **ack immediato**.
+**Ack differito** — [FATTO] **implementato**: il `DeliveryTag` non viene più confermato al ritorno di `process_message/3` ma conservato in `inflight`, e l'ack parte alla ricezione di `{bet_result, BetId, accepted | rejected}` dal wheel. Un `{inflight_timeout, BetId}` armato a 15 s rimette la bet in coda se il leader muore o resta bloccato. I comandi senza `bet_id` (`force_segment`, `minigame_choice`, `UNDO_BETS`) restano ad **ack immediato**.
 
 > [!NOTE]
 > Il verdetto `not_leader` esiste apposta: il worker **non** acka e rimette la scommessa in coda, invece di scartarla come farebbe con un `rejected`. Senza questa distinzione un cambio di leader mentre la bet è in volo la farebbe sparire con il saldo già scalato.
 
 ---
 
-## Phase 4: Chandy-Lamport Snapshot Algorithm — ✅ RISCRITTA E IMPLEMENTATA
+## Phase 4: Chandy-Lamport Snapshot Algorithm — [FATTO] RISCRITTA E IMPLEMENTATA
 
 **Goal**: quando la finestra di puntata si chiude ("No more bets"), eseguire l'algoritmo di Chandy-Lamport per catturare uno **snapshot globale consistente** delle scommesse accettate. Il risultato non è un log: è il **ledger autorevole del round** verso il gateway Java e il **checkpoint** da cui un nuovo leader può completare il round dopo un crash.
 
 > [!NOTE]
-> ✅ **Implementata e verificata.** Il test che conta — bet piazzate a cavallo del gong — dà `local_bets=3 in_flight_bets=3`: i canali contengono davvero qualcosa e il ledger pubblicato include anche le puntate catturate in volo. Il checkpoint è replicato su Mnesia e leggibile dagli standby.
+> [FATTO] **Implementata e verificata.** Il test che conta — bet piazzate a cavallo del gong — dà `local_bets=3 in_flight_bets=3`: i canali contengono davvero qualcosa e il ledger pubblicato include anche le puntate catturate in volo. Il checkpoint è replicato su Mnesia e leggibile dagli standby.
 
 > [!CAUTION]
 > **Questa fase sostituisce integralmente la stesura originale.** L'analisi in `snapshot_analisi.md` ha mostrato che lo snapshot come era descritto era **ridondante**: catturava uno stato già interamente disponibile in locale sul leader, su canali vuoti per costruzione, e nessuno ne consumava il risultato. Le motivazioni complete e la verifica punto per punto sono in `snapshot_implementation_plan.md`; qui c'è il progetto definitivo.
@@ -1564,7 +1564,7 @@ L'idea è una sola: **spostare i marker sui canali applicativi e rendere quei ca
 
 ---
 
-### [NEW] `erlang-engine/game_engine/src/cl_recorder.erl` — ✅ FATTO (8 test eunit)
+### [NEW] `erlang-engine/game_engine/src/cl_recorder.erl` — [FATTO] FATTO (8 test eunit)
 
 Modulo di **funzioni pure** (nessun processo) con la logica Chandy-Lamport lato partecipante, condivisa da `wheel_process` e `worker` per non duplicarla. Essendo puro, è anche l'unica parte banalmente testabile in isolamento.
 
@@ -1589,7 +1589,7 @@ Modulo di **funzioni pure** (nessun processo) con la logica Chandy-Lamport lato 
 
 ### [MODIFY] [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl)
 
-#### 1. Prerequisito: promuovere lo stato del round nel record — ✅ FATTO
+#### 1. Prerequisito: promuovere lo stato del round nel record — [FATTO] FATTO
 
 Oggi segmento vincente, indice e dettagli del minigioco vivono **solo dentro i messaggi `send_after` in volo**. Senza questo passo nessun recovery è possibile.
 
@@ -1609,21 +1609,21 @@ Oggi segmento vincente, indice e dettagli del minigioco vivono **solo dentro i m
 
 `settled_bet_ids` va ripopolato dai `snapshot_record` **all'avvio e a ogni elezione**: è subito dopo un crash che le riconsegne del broker arrivano.
 
-#### 2. `handle_cast({bet, BetMap, FromNode})` al posto di `handle_call({place_bet, ...})` — ✅ FATTO
+#### 2. `handle_cast({bet, BetMap, FromNode})` al posto di `handle_call({place_bet, ...})` — [FATTO] FATTO
 
 **Deduplicare per `bet_id` prima di tutto.** Con l'ack differito una riconsegna del broker può ripresentare una bet già accettata (ack perso). Se `BetId` è già in `bets` **oppure in `settled_bet_ids`** → rispondere `{bet_result, BetId, accepted}` senza inserirla di nuovo.
 
 Il secondo termine del test non è pleonastico: `bets` viene azzerato a ogni round, quindi da solo copre la riconsegna intra-round ma **non** quella che arriva nel round successivo — che è il caso frequente, perché nasce da un crash. Senza, la bet viene **giocata due volte e pagata due volte**.
 
 > [!NOTE]
-> ✅ **Entrambi i termini sono implementati.** `settled_bet_ids` viene ripopolato dai `snapshot_record` a ogni attivazione come leader e arricchito alla chiusura di ogni taglio. Verificato ripubblicando un `bet_id` già a ledger sia con lo stesso leader sia **dopo un crash**: nel secondo caso il nuovo leader logga `ricaricati N bet_id dai checkpoint` e deduplica.
+> [FATTO] **Entrambi i termini sono implementati.** `settled_bet_ids` viene ripopolato dai `snapshot_record` a ogni attivazione come leader e arricchito alla chiusura di ogni taglio. Verificato ripubblicando un `bet_id` già a ledger sia con lo stesso leader sia **dopo un crash**: nel secondo caso il nuovo leader logga `ricaricati N bet_id dai checkpoint` e deduplica.
 
 Altrimenti:
 - `phase = betting, active = true` → accetta e `cast` di `{bet_result, BetId, accepted}` al worker mittente;
 - **in registrazione e canale aperto** → `cl_recorder:on_app_msg/3` e **basta**: la bet finisce nello stato del canale e verrà unita a `bets` alla chiusura del taglio. Non va aggiunta anche a `bets` qui, altrimenti si conta due volte;
 - altrimenti → `{bet_result, BetId, rejected}`.
 
-#### 3. Trigger del taglio, **dopo** l'estrazione del vincitore — ✅ FATTO
+#### 3. Trigger del taglio, **dopo** l'estrazione del vincitore — [FATTO] FATTO
 
 ```erlang
 handle_info(tick, State = #state{active = true, phase = betting, time_left = 1}) ->
@@ -1644,7 +1644,7 @@ handle_info(tick, State = #state{active = true, phase = betting, time_left = 1})
     %% ... publish_spinning + send_after come oggi ...
 ```
 
-#### 4. Chiusura del taglio — ✅ FATTA
+#### 4. Chiusura del taglio — [FATTO] FATTA
 
 ```erlang
 handle_info({cl_marker, SnapId, {worker, N}}, State) ->
@@ -1658,26 +1658,26 @@ handle_info({cl_marker, SnapId, {worker, N}}, State) ->
     %%                      {cl_part, SnapId, {wheel, node()}, Local, Chan}).
 ```
 
-#### 5. Abort locale — ✅ FATTO
+#### 5. Abort locale — [FATTO] FATTO
 
 `handle_info({cl_abort, SnapId}, State)` — chiude forzatamente la registrazione, riporta ciò che ha, logga `degraded`. Senza, un collector morto lascerebbe i partecipanti in registrazione per sempre.
 
 #### 6. Altre modifiche
 
 - `build_result_json/7` — aggiungere `bet_id` a ogni entry dell'array `payouts` (la sorgente è `compute_payouts/3`, che oggi propaga solo `username`/`bet`/`payout`).
-- ✅ **FATTO** — Ogni `{bet_result, BetId, rejected}` è accompagnato da un evento **`bet_rejected`** su `results_queue`: è il solo percorso che chiude le bet arrivate **dopo** la pubblicazione del ledger, che altrimenti resterebbero `PENDING` con il saldo scalato.
+- [FATTO] **FATTO** — Ogni `{bet_result, BetId, rejected}` è accompagnato da un evento **`bet_rejected`** su `results_queue`: è il solo percorso che chiude le bet arrivate **dopo** la pubblicazione del ledger, che altrimenti resterebbero `PENDING` con il saldo scalato.
   ```json
   {"type":"bet_rejected","bet_id":"<uuid>","round":R,"reason":"betting_closed"}
   ```
   Lo stesso evento con `"reason":"undo"` sostituisce il rimborso aggregato dell'UNDO (Fase 3, correzione #4).
-- ✅ **FATTO** — `escape_json_string/1` è stata spostata qui da `worker.erl`, dove sarebbe rimasta senza chiamanti: `build_result_json/7` costruisce le entry di `payouts` con `~s` sull'username **senza escaping**, e va comunque toccata.
+- [FATTO] **FATTO** — `escape_json_string/1` è stata spostata qui da `worker.erl`, dove sarebbe rimasta senza chiamanti: `build_result_json/7` costruisce le entry di `payouts` con `~s` sull'username **senza escaping**, e va comunque toccata.
 
 > [!NOTE]
 > **Limite noto, da dichiarare nella relazione**: durante il minigioco il wheel resta bloccato fino a 10 s dentro `gen_server:call(Module, {play, ...}, 10000)` e non risponde ad alcuna `call`. Tre conseguenze: (a) non può partecipare a uno snapshot in quella finestra — innocuo oggi, perché l'unico trigger è al gong, ma è ciò che impedirebbe di aggiungere un trigger sulla transizione di fase; (b) è la ragione per cui `undo_bets/1` va convertita a `cast`; (c) è la ragione per cui l'`inflight_timeout` del worker non può scendere sotto i ~12 s.
 
 ---
 
-### [MODIFY] [worker.erl](erlang-engine/game_engine/src/worker.erl) — ✅ FATTO
+### [MODIFY] [worker.erl](erlang-engine/game_engine/src/worker.erl) — [FATTO] FATTO
 
 ```erlang
 handle_info({cl_marker, SnapId, From}, S) ->
@@ -1705,7 +1705,7 @@ gen_server:cast({snapshot, InitiatorNode},
 
 ---
 
-### [NEW] `erlang-engine/game_engine/src/snapshot.erl` — collector — ✅ FATTO
+### [NEW] `erlang-engine/game_engine/src/snapshot.erl` — collector — [FATTO] FATTO
 
 ```erlang
 -record(state, {
@@ -1726,7 +1726,7 @@ gen_server:cast({snapshot, InitiatorNode},
 
 ---
 
-### [NEW] tabella Mnesia `snapshot_record` — ✅ FATTA
+### [NEW] tabella Mnesia `snapshot_record` — [FATTO] FATTA
 
 ```erlang
 -record(snapshot_record, {
@@ -1748,7 +1748,7 @@ Tipo `ordered_set`, così `mnesia:dirty_last/1` restituisce l'ultimo round e `mn
 
 ---
 
-### [MODIFY] [game_engine_sup.erl](erlang-engine/game_engine/src/game_engine_sup.erl) — ✅ FATTO
+### [MODIFY] [game_engine_sup.erl](erlang-engine/game_engine/src/game_engine_sup.erl) — [FATTO] FATTO
 
 `snapshot` è stato aggiunto come **ULTIMO** figlio:
 
@@ -1768,7 +1768,7 @@ game_engine_sup (rest_for_one)
 
 ---
 
-## Phase 5: Fault Tolerance & Crash Recovery — ✅ RISCRITTA E IMPLEMENTATA
+## Phase 5: Fault Tolerance & Crash Recovery — [FATTO] RISCRITTA E IMPLEMENTATA
 
 **Goal**: quando il nodo dealer crasha a metà round, il sistema deve:
 1. rilevare il crash (`nodedown` in `cluster_manager`);
@@ -1777,7 +1777,7 @@ game_engine_sup (rest_for_one)
 4. riprendere il gioco.
 
 > [!NOTE]
-> ✅ **Implementata e verificata** su cluster a 3 nodi con gateway: uccidendo il leader in fase `spinning` il round viene **completato** con l'esito catturato nel taglio (nessun rimborso, nessun round perso); uccidendolo in fase di puntata il round viene annullato e la puntata rimborsata.
+> [FATTO] **Implementata e verificata** su cluster a 3 nodi con gateway: uccidendo il leader in fase `spinning` il round viene **completato** con l'esito catturato nel taglio (nessun rimborso, nessun round perso); uccidendolo in fase di puntata il round viene annullato e la puntata rimborsata.
 >
 > Il discriminante è il campo `result_published` del checkpoint, scritto dal wheel subito dopo aver pubblicato l'esito. Il bootstrap Mnesia migra con `transform_table` le tabelle create prima che quel campo esistesse.
 
@@ -1804,7 +1804,7 @@ Al crash del leader in fase `betting`, ogni bet del round R sta in **uno solo** 
 
 ---
 
-### [MODIFY] [leader_election.erl](erlang-engine/game_engine/src/leader_election.erl) — recovery a due rami — ✅ FATTO
+### [MODIFY] [leader_election.erl](erlang-engine/game_engine/src/leader_election.erl) — recovery a due rami — [FATTO] FATTO
 
 ```erlang
 apply_role(leader) ->
@@ -1855,7 +1855,7 @@ recover_from_checkpoint() ->
 
 ---
 
-### [MODIFY] [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl) — ✅ FATTO
+### [MODIFY] [wheel_process.erl](erlang-engine/game_engine/src/wheel_process.erl) — [FATTO] FATTO
 
 Alla riattivazione il wheel **non** azzera incondizionatamente le bet: consulta prima il checkpoint.
 
@@ -1873,7 +1873,7 @@ handle_cast({complete_round, R, Ledger, Seg, Idx}, State) ->
 
 ### [MODIFY] Java Gateway — dispatch e riconciliazione per ledger
 
-#### 1. `GameResultListener.java` — dispatchare sul campo `type` — ✅ FATTO
+#### 1. `GameResultListener.java` — dispatchare sul campo `type` — [FATTO] FATTO
 
 Oggi il campo `type` è **completamente ignorato**: qualunque messaggio su `results_queue` viene passato a `PayoutListener` come se fosse un risultato di round.
 
@@ -1895,50 +1895,50 @@ public void receiveGameResult(String message) {
 }
 ```
 
-#### 2. [NEW] `rabbitmq/LedgerListener.java` — implementa R1 e R2 — ✅ FATTO
+#### 2. [NEW] `rabbitmq/LedgerListener.java` — implementa R1 e R2 — [FATTO] FATTO
 
 `@Transactional`:
 - per ogni `bet_id` nel ledger con `Bet` `PENDING`: setta `Bet.round = R`, lascia `PENDING`;
 - per ogni `bet_id` nel ledger con `Bet` già `REFUNDED` (caso R2): **non** riaprire, **non** pagare; loggare `replay_after_refund` e chiudere in stato terminale;
 - per ogni `Bet` `PENDING` con `round = R` **assente** dal ledger: `REFUNDED` + accredito saldo, idempotente sul `betId`.
 
-#### 3. [NEW] handler `bet_rejected` — rimborso puntuale — ✅ FATTO (`BetRejectionHandler.java`)
+#### 3. [NEW] handler `bet_rejected` — rimborso puntuale — [FATTO] FATTO (`BetRejectionHandler.java`)
 
 `@Transactional`: `findByBetId(id)`, e **solo se** `PENDING` → `REFUNDED` + accredito. L'idempotenza è la guardia sullo stato stesso: una riconsegna del messaggio trova la bet già `REFUNDED` e non fa nulla. È la sostituzione **deterministica** del match per importo di `RefundListener`, fragile per costruzione perché due puntate di pari importo su segmenti diversi sono indistinguibili.
 
-#### 4. handler `round_cancelled` — ✅ FATTO
+#### 4. handler `round_cancelled` — [FATTO] FATTO
 
 Rimborsa `findByRoundAndStatus(R, "PENDING")` **meno** `exclude_bet_ids` (regola R1).
 
 > [!CAUTION]
 > Va **rimosso** il `findByStatus("PENDING")` globale previsto dalla stesura originale: rimborsa anche bet di round estranei.
 
-#### 5. `PayoutListener.java` — per round e per `bet_id` — ✅ FATTO
+#### 5. `PayoutListener.java` — per round e per `bet_id` — [FATTO] FATTO
 
 > [!CAUTION]
 > **Chi costruisce le entry di `payouts` deve includere il `bet_id`.** Passando dal match per username a quello per identificativo, ogni produttore di payout va aggiornato — non solo `wheel_process:compute_payouts/3`. I minigiochi **asincroni** ne hanno uno proprio: `crazytime:compute_payouts/3` e `cashhunt:compute_payouts/3`. Finché quei due emettevano entry senza `bet_id`, il gateway non trovava corrispondenza, ricadeva sul campo `multiplier` — che per gli asincroni è la sentinella `-1` — e **saltava il pagamento**, lasciando la scommessa `PENDING` con il saldo scalato. Trovato provando il punto aperto della Fase 0 e corretto: ora la vincita di un CashHunt giocato col default viene accreditata (verificato: saldo 90 → 150, `Payout di $60 accreditato … (bet 5460dbc0-…)`).
 
 `findByRoundAndStatus(round, "PENDING")` al posto della scansione globale; match per `bet_id` invece che per `username`; via l'`it.remove()`, che era una toppa alla mancanza di un id (FIX 0.1.4).
 
-#### 6. `RefundListener.java` — rimosso — ✅ FATTO
+#### 6. `RefundListener.java` — rimosso — [FATTO] FATTO
 
 Classe e coda `refunds_queue` spariscono: la funzione è assorbita dall'handler `bet_rejected`. Togliere `refunds_queue` da `?QUEUES` in `rabbitmq_manager.erl` e il bean `refundsQueue` da `GatewayApplication.java`.
 
 > [!NOTE]
 > **Prerequisito d'ordine rispettato**: l'UNDO è passato a `bet_rejected` **prima** che la coda venisse rimossa. Verificato sul saldo: 125 → bet da 30 → 95 → UNDO → 125.
 
-#### 7. Rimuovere i `catch` che inghiottono le eccezioni — ✅ FATTO in `PayoutListener`
+#### 7. Rimuovere i `catch` che inghiottono le eccezioni — [FATTO] FATTO in `PayoutListener`
 
 In `PayoutListener` e `RefundListener`: essendo i metodi `@Transactional`, l'eccezione catturata **non provoca rollback** e i `save` parziali vengono committati.
 
 ---
 
-### [MODIFY] Frontend — `app.js` — ✅ FATTO
+### [MODIFY] Frontend — `app.js` — [FATTO] FATTO
 
 ```javascript
 // Dentro la subscription a /topic/game-results
 if (data.type === 'round_cancelled') {
-    showNotification('⚠️ Round annullato — il nodo dealer è caduto. Le puntate non giocate sono state rimborsate.', 'warning');
+    showNotification('[ATTENZIONE] Round annullato — il nodo dealer è caduto. Le puntate non giocate sono state rimborsate.', 'warning');
     resetBettingUI();
     fetchBalance();
     return;
@@ -1950,7 +1950,7 @@ if (data.type === 'round_ledger') {
 
 ---
 
-## Phase 6: Integration Testing & Startup Scripts — ✅ ESEGUITA
+## Phase 6: Integration Testing & Startup Scripts — [FATTO] ESEGUITA
 
 ### Avvio del cluster a 3 nodi
 
@@ -2030,12 +2030,12 @@ mnesia:dirty_last(snapshot_record).     %% ultimo checkpoint replicato
 ### New Files (5)
 | File | Type | Purpose |
 |------|------|---------|
-| `rabbitmq_manager.erl` | gen_server | ✅ **FATTO** — connessione/canali AMQP, `publish/2` via ETS, `subscribe/2` con PID del consumer, `ack/1`, `reject/2`, riconnessione automatica |
-| `cluster_manager.erl` | gen_server | ✅ **FATTO** — discovery, `monitor_nodes`, reconnect, `configured_nodes/0`, `get_participants/0`, delega a `node_down/1`, **bootstrap Mnesia** a due rami + `subscribe(system)` |
-| `leader_election.erl` | gen_server | ✅ **FATTO** — Bully Algorithm, ruoli leader/standby, guardia di **quorum** nei due punti, `{set_leader, N}` a tutti i worker, `node_down/1` |
-| `cl_recorder.erl` | modulo puro | ✅ **FATTO** — logica Chandy-Lamport lato partecipante, condivisa da `wheel_process` e `worker`, con 8 test eunit |
-| `snapshot.erl` | gen_server | ✅ **FATTO** — collector: congela i partecipanti, raccoglie le porzioni, persiste su Mnesia, pubblica il ledger, chiude in `degraded` allo scadere dei 5 s |
-| tabella `snapshot_record` | Mnesia | ✅ **FATTA** — `ordered_set` con chiave `{Round, Initiator}`, `disc_copies` replicate su tutti i nodi; record definito in `include/game_engine.hrl` |
+| `rabbitmq_manager.erl` | gen_server | [FATTO] **FATTO** — connessione/canali AMQP, `publish/2` via ETS, `subscribe/2` con PID del consumer, `ack/1`, `reject/2`, riconnessione automatica |
+| `cluster_manager.erl` | gen_server | [FATTO] **FATTO** — discovery, `monitor_nodes`, reconnect, `configured_nodes/0`, `get_participants/0`, delega a `node_down/1`, **bootstrap Mnesia** a due rami + `subscribe(system)` |
+| `leader_election.erl` | gen_server | [FATTO] **FATTO** — Bully Algorithm, ruoli leader/standby, guardia di **quorum** nei due punti, `{set_leader, N}` a tutti i worker, `node_down/1` |
+| `cl_recorder.erl` | modulo puro | [FATTO] **FATTO** — logica Chandy-Lamport lato partecipante, condivisa da `wheel_process` e `worker`, con 8 test eunit |
+| `snapshot.erl` | gen_server | [FATTO] **FATTO** — collector: congela i partecipanti, raccoglie le porzioni, persiste su Mnesia, pubblica il ledger, chiude in `degraded` allo scadere dei 5 s |
+| tabella `snapshot_record` | Mnesia | [FATTO] **FATTA** — `ordered_set` con chiave `{Round, Initiator}`, `disc_copies` replicate su tutti i nodi; record definito in `include/game_engine.hrl` |
 
 ### Modified Files (Phase 0 Bug Fixes)
 | File | Changes |
@@ -2048,7 +2048,7 @@ mnesia:dirty_last(snapshot_record).     %% ultimo checkpoint replicato
 | `GameStateCache.java` | Aggiornamenti atomici via record immutabile |
 | `AuthInterceptor.java` | Encoding UTF-8 |
 | `PlayerRepository.java` | `findByUsernameForUpdate` con `@Lock` |
-| `Bet.java` / `BetRepository.java` | ✅ **FATTO** — `betId` univoco, `findByBetId`, `findByRoundAndStatus` (FIX 0.1.14) |
+| `Bet.java` / `BetRepository.java` | [FATTO] **FATTO** — `betId` univoco, `findByBetId`, `findByRoundAndStatus` (FIX 0.1.14) |
 | `wheel_process.erl` | Catch-all `segment_type`, `maps:get/3`, charlist JSON, `find_segment_index` |
 | `worker.erl` | Rimozione `inets:start()`, escaping JSON |
 | `cashhunt.erl` / `crazytime.erl` / `pachinko.erl` | Parser robusto, flapper a 120°, cap sulle ricorsioni, **`bet_id` nelle entry di `payouts`** |
@@ -2057,20 +2057,20 @@ mnesia:dirty_last(snapshot_record).     %% ultimo checkpoint replicato
 ### Modified Files (Phases 1–6)
 | File | Changes |
 |------|---------|
-| `rebar.config` | ✅ **FATTO** — `{amqp_client, "4.3.4"}` (🔧 non 3.12.14: incompatibile con OTP 28) |
-| `game_engine.app.src` | ✅ **FATTO** — `amqp_client` e `mnesia` fra le `applications`, `snapshot` fra i `registered`, config broker + `peer_nodes` |
-| `game_engine_sup.erl` | ✅ **FATTO** — `rest_for_one` con `rabbitmq_manager`, `cluster_manager`, `leader_election` come primi tre figli e `snapshot` come **ultimo** |
-| `cluster_manager.erl` | ✅ **FATTO** — due liste, delega a `node_down/1`, bootstrap Mnesia, `mnesia:subscribe(system)`, `force_load_snapshots/0` |
-| `leader_election.erl` | ✅ **Completo** — quorum nei due punti, `{set_leader, N}`, **recovery a due rami** alla sola transizione a leader, `collect_inflight`, `cancel_round/1` |
-| `wheel_process.erl` | ✅ **Completo** — AMQP, `{bet, _}` asincrona con deduplica intra e cross-round, `bet_rejected`, stato del round, trigger e chiusura del taglio, `complete_round`, `mark_result_published` |
-| `worker.erl` | ✅ Completo per le Fasi 1-4 — AMQP, attivo su ogni nodo, instradamento al leader, ack differito con `inflight`, **handler dei marker** e riporto al collector |
-| `GameResultListener.java` | ✅ **FATTO** — dispatch completo sul campo `type`: `result`, `round_ledger`, `round_cancelled`, `bet_rejected` |
-| `BetRejectionHandler.java` | ✅ **NUOVO, FATTO** — rimborso puntuale e idempotente per `bet_id` |
-| `LedgerListener.java` | ✅ **NUOVO, FATTO** — regole R1/R2, riconciliazione per round e per `bet_id`, prudente sui ledger `degraded`, handler di `round_cancelled` con `exclude_bet_ids` |
-| `PayoutListener.java` | ✅ **FATTO** — query per round, match per `bet_id`, niente più `catch` che inghiotte le eccezioni |
-| `RefundListener.java` | ✅ **RIMOSSO** insieme a `refunds_queue` (bean, coda e `?QUEUES`) |
-| `app.js` | ✅ **FATTO** — banner di round annullato e ricarica del saldo |
-| `istruzioni.txt` | ✅ **FATTO** — istruzioni per il cluster a 3 nodi |
+| `rebar.config` | [FATTO] **FATTO** — `{amqp_client, "4.3.4"}` ([FIX] non 3.12.14: incompatibile con OTP 28) |
+| `game_engine.app.src` | [FATTO] **FATTO** — `amqp_client` e `mnesia` fra le `applications`, `snapshot` fra i `registered`, config broker + `peer_nodes` |
+| `game_engine_sup.erl` | [FATTO] **FATTO** — `rest_for_one` con `rabbitmq_manager`, `cluster_manager`, `leader_election` come primi tre figli e `snapshot` come **ultimo** |
+| `cluster_manager.erl` | [FATTO] **FATTO** — due liste, delega a `node_down/1`, bootstrap Mnesia, `mnesia:subscribe(system)`, `force_load_snapshots/0` |
+| `leader_election.erl` | [FATTO] **Completo** — quorum nei due punti, `{set_leader, N}`, **recovery a due rami** alla sola transizione a leader, `collect_inflight`, `cancel_round/1` |
+| `wheel_process.erl` | [FATTO] **Completo** — AMQP, `{bet, _}` asincrona con deduplica intra e cross-round, `bet_rejected`, stato del round, trigger e chiusura del taglio, `complete_round`, `mark_result_published` |
+| `worker.erl` | [FATTO] Completo per le Fasi 1-4 — AMQP, attivo su ogni nodo, instradamento al leader, ack differito con `inflight`, **handler dei marker** e riporto al collector |
+| `GameResultListener.java` | [FATTO] **FATTO** — dispatch completo sul campo `type`: `result`, `round_ledger`, `round_cancelled`, `bet_rejected` |
+| `BetRejectionHandler.java` | [FATTO] **NUOVO, FATTO** — rimborso puntuale e idempotente per `bet_id` |
+| `LedgerListener.java` | [FATTO] **NUOVO, FATTO** — regole R1/R2, riconciliazione per round e per `bet_id`, prudente sui ledger `degraded`, handler di `round_cancelled` con `exclude_bet_ids` |
+| `PayoutListener.java` | [FATTO] **FATTO** — query per round, match per `bet_id`, niente più `catch` che inghiotte le eccezioni |
+| `RefundListener.java` | [FATTO] **RIMOSSO** insieme a `refunds_queue` (bean, coda e `?QUEUES`) |
+| `app.js` | [FATTO] **FATTO** — banner di round annullato e ricarica del saldo |
+| `istruzioni.txt` | [FATTO] **FATTO** — istruzioni per il cluster a 3 nodi |
 
 ---
 
@@ -2078,17 +2078,17 @@ mnesia:dirty_last(snapshot_record).     %% ultimo checkpoint replicato
 
 ```mermaid
 graph TD
-    Z["Phase 0: Bug Fixes<br/>+ bet_id UUID"] --> A["Phase 1: AMQP Client ✅"]
-    A --> B["Phase 2: Multi-Node Cluster ✅"]
-    B --> C["Phase 3: Bully Election ✅"]
-    C --> R["✅ RETROFIT<br/>worker attivo ovunque, set_leader, quorum"]
-    R --> P["✅ PREREQUISITI<br/>bet_id, cast + ack differito, bet_rejected"]
-    P --> M["✅ Phase 2 estesa<br/>Mnesia + partecipanti"]
+    Z["Phase 0: Bug Fixes<br/>+ bet_id UUID"] --> A["Phase 1: AMQP Client [FATTO]"]
+    A --> B["Phase 2: Multi-Node Cluster [FATTO]"]
+    B --> C["Phase 3: Bully Election [FATTO]"]
+    C --> R["[FATTO] RETROFIT<br/>worker attivo ovunque, set_leader, quorum"]
+    R --> P["[FATTO] PREREQUISITI<br/>bet_id, cast + ack differito, bet_rejected"]
+    P --> M["[FATTO] Phase 2 estesa<br/>Mnesia + partecipanti"]
     M --> Q["Quorum<br/>anti split-brain"]
-    Q --> D["✅ Phase 4: Chandy-Lamport"]
-    D --> J["✅ UC2 Java<br/>dispatch + LedgerListener"]
-    J --> E["✅ Phase 5: Fault Tolerance"]
-    E --> F["✅ Phase 6: Integration Testing"]
+    Q --> D["[FATTO] Phase 4: Chandy-Lamport"]
+    D --> J["[FATTO] UC2 Java<br/>dispatch + LedgerListener"]
+    J --> E["[FATTO] Phase 5: Fault Tolerance"]
+    E --> F["[FATTO] Phase 6: Integration Testing"]
 ```
 
 > [!CAUTION]
@@ -2109,9 +2109,9 @@ graph TD
 
 ### Manual Verification
 1. **Phase 0**: giro end-to-end, UNDO durante `betting`, bet dopo "No more bets" (rimborso + stato aggiornato), piazzamento concorrente.
-2. **Phase 1** ✅: verificata — compilazione, avvio con e senza broker, consumo di una bet con ack, stop/restart del broker a caldo con ri-sottoscrizione automatica.
-3. **Phase 2** ✅: verificata — 3 nodi che si trovano in qualsiasi ordine di avvio, reconnect periodico, bootstrap Mnesia nei due rami, replica del checkpoint su tutti i nodi e persistenza su disco dopo il riavvio.
-4. **Phase 3** ✅: verificata su cluster a 3 nodi — elezione, rielezione alla caduta del leader, retrocessione a standby con quorum 1/3, bet distribuite fra i tre worker e tutte inoltrate al wheel del leader, comandi non-bet consumati da uno standby (UNDO incluso, anche durante il minigioco), e **partizione di rete 2-1** con il leader isolato che si autoretrocede.
-5. **Phase 4** ✅: verificata. Il test che conta — **«canali non vuoti»** — dà `in_flight_bets=3` con le tre puntate in volo che entrano nel round e finiscono nel ledger; checkpoint replicato e leggibile dagli standby; deduplica cross-round funzionante anche dopo un cambio di leader; ledger consumato da Java con payout per `bet_id`, rimborso R1 e `replay_after_refund` R2.
-6. **Phase 5** ✅: verificata. Kill del leader in `spinning` → il ramo A **completa** il round dal checkpoint (bet chiusa sull'esito catturato, nessun rimborso); kill in fase di puntata → il ramo B annulla il solo round interrotto e rimborsa (`Σ wallet` invariato).
-7. **Phase 6** ✅: checklist completata, **partizione di rete inclusa**. Isolando il leader in carica con una partizione 2-1 stabile (`net_kernel:allow/1` su entrambi i lati), il leader si autoretrocede, la maggioranza ne elegge uno nuovo, la minoranza rimette le puntate nel broker, e per ogni round esiste **un solo** `round_ledger`. Alla ricomposizione compare `inconsistent_database, running_partitioned_network`, loggato in modo rumoroso come previsto.
+2. **Phase 1** [FATTO]: verificata — compilazione, avvio con e senza broker, consumo di una bet con ack, stop/restart del broker a caldo con ri-sottoscrizione automatica.
+3. **Phase 2** [FATTO]: verificata — 3 nodi che si trovano in qualsiasi ordine di avvio, reconnect periodico, bootstrap Mnesia nei due rami, replica del checkpoint su tutti i nodi e persistenza su disco dopo il riavvio.
+4. **Phase 3** [FATTO]: verificata su cluster a 3 nodi — elezione, rielezione alla caduta del leader, retrocessione a standby con quorum 1/3, bet distribuite fra i tre worker e tutte inoltrate al wheel del leader, comandi non-bet consumati da uno standby (UNDO incluso, anche durante il minigioco), e **partizione di rete 2-1** con il leader isolato che si autoretrocede.
+5. **Phase 4** [FATTO]: verificata. Il test che conta — **«canali non vuoti»** — dà `in_flight_bets=3` con le tre puntate in volo che entrano nel round e finiscono nel ledger; checkpoint replicato e leggibile dagli standby; deduplica cross-round funzionante anche dopo un cambio di leader; ledger consumato da Java con payout per `bet_id`, rimborso R1 e `replay_after_refund` R2.
+6. **Phase 5** [FATTO]: verificata. Kill del leader in `spinning` → il ramo A **completa** il round dal checkpoint (bet chiusa sull'esito catturato, nessun rimborso); kill in fase di puntata → il ramo B annulla il solo round interrotto e rimborsa (`Σ wallet` invariato).
+7. **Phase 6** [FATTO]: checklist completata, **partizione di rete inclusa**. Isolando il leader in carica con una partizione 2-1 stabile (`net_kernel:allow/1` su entrambi i lati), il leader si autoretrocede, la maggioranza ne elegge uno nuovo, la minoranza rimette le puntate nel broker, e per ogni round esiste **un solo** `round_ledger`. Alla ricomposizione compare `inconsistent_database, running_partitioned_network`, loggato in modo rumoroso come previsto.
