@@ -1,0 +1,438 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{graphicx}
+\usepackage{geometry}
+\geometry{a4paper, top=3cm, bottom=3cm, left=2.5cm, right=2.5cm}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{parskip}
+\usepackage{booktabs}
+
+\definecolor{unipiblue}{RGB}{0,51,102}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    filecolor=magenta,      
+    urlcolor=blue,
+    pdftitle={Distributed Crazy Time},
+}
+
+\begin{document}
+
+% --- TITLE PAGE ---
+\begin{titlepage}
+    \begin{center}
+        \vspace*{0.5cm}
+        
+        \IfFileExists{unipi_logo.png}{\includegraphics[width=0.35\textwidth]{unipi_logo.png}}{\rule{4cm}{4cm}} \\
+        \vspace{1cm}
+        
+        {\fontsize{34}{40}\selectfont \textcolor{unipiblue}{\scshape Università di Pisa}} \\
+        \vspace{0.6cm}
+        {\Large Computer Engineering} \\
+        {\Large Distributed Systems} \\
+        
+        \vspace{3.5cm}
+        
+        {\huge \textbf{Distributed Crazy Time}} \\
+        
+        \vfill
+        
+        \noindent\rule{\textwidth}{0.4pt} \\
+        \vspace{0.5cm}
+        \begin{minipage}[t]{0.45\textwidth}
+            \begin{flushleft}
+            \vspace{0.8cm}
+            Academic Year: 2025/2026
+            \end{flushleft}
+        \end{minipage}
+        \hfill
+        \begin{minipage}[t]{0.45\textwidth}
+            \begin{flushright}
+            Gabriele Caioli \\
+            Klaudio Ciacia \\
+            Lorenzo Vanni
+            \end{flushright}
+        \end{minipage}
+        \vspace{1cm}
+    \end{center}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+\section{Introduction}
+This project consists of a replica of the casino game Crazy Time, implemented as a web-based distributed application organized into three main cooperating layers:
+\begin{itemize}
+    \item \textbf{Web Layer}: A responsive frontend developed in HTML5/CSS3/JavaScript communicating with a Central Gateway implemented in Java Spring Boot. This layer is responsible for player authentication, session handling, wallet persistence, REST endpoints, and WebSocket/STOMP event broadcasting.
+    \item \textbf{Message Broker Layer}: A native AMQP 0-9-1 broker (RabbitMQ) ensuring fully decoupled, asynchronous, durable communication between the Java Gateway and the Erlang Game Engine.
+    \item \textbf{Distributed Game Engine}: A fault-tolerant cluster of Erlang/OTP nodes running an authoritative game loop. It is responsible for synchronized countdown management, fair pseudo-random outcome generation, executing the main wheel spins, running four interactive mini-games, maintaining a global replicated ledger in Mnesia, and providing automated leader failover.
+\end{itemize}
+This architecture guarantees high availability, real-time responsiveness, and strict financial consistency under node crashes and network partitions.
+
+\begin{figure}[h!]
+    \centering
+    \IfFileExists{wheel.png}{\includegraphics[width=0.65\textwidth]{wheel.png}}{\rule{0.65\textwidth}{5cm}}
+\end{figure}
+
+\subsection{Environment}
+The Java-based Central Gateway is developed with Spring Boot 3.2 and Spring Data JPA, backed by an embedded file-persistent \textbf{H2 Database} (\texttt{./data/crazytimedb}) preventing data loss across gateway restarts. The Erlang Game Engine cluster runs on Erlang/OTP 28, utilizing \textbf{Mnesia} as a replicated distributed database with \texttt{disc\_copies} to persist checkpoint records. Inter-component messaging relies on RabbitMQ over native AMQP on port 5672.
+
+\section{System Description}
+The system provides complete account and wallet management, live game tracking, and real-time gameplay. Supported operations include user registration, secure login, wallet balance querying, betting on main wheel numbers or bonus mini-games, and interacting during the bonus phases.
+
+\subsection{Use Cases}
+An \textbf{Unregistered User} can:
+\begin{itemize}
+    \item Register to the service to create a player profile and an initial credited wallet.
+\end{itemize}
+An \textbf{Unlogged User} can:
+\begin{itemize}
+    \item Authenticate with credentials and obtain a secure Bearer session token. If the user already has an active session on another client, the previous session is invalidated and terminated in real time via a WebSocket STOMP notification (Session Kick on \texttt{/user/queue/session}).
+\end{itemize}
+A \textbf{Logged Player} can:
+\begin{itemize}
+    \item Terminate their session (Logout);
+    \item View live synchronized countdown timers, wheel spin animations, and mini-game states;
+    \item Place bets on one or more wheel segments (during the betting window);
+    \item Submit choices during interactive mini-game rounds;
+    \item Inspect wallet balance in real time and view comprehensive betting history.
+\end{itemize}
+The \textbf{System} must:
+\begin{itemize}
+    \item Maintain and update player wallet balances securely with pessimistic database locking;
+    \item Synchronize countdown timers and phase transitions across all connected clients;
+    \item Strictly reject any bets submitted after the betting window closes;
+    \item Generate authoritative, unbiased outcomes for every wheel spin and mini-game event;
+    \item Tolerate node crashes and network partitions via Bully leader election and quorum guards;
+    \item Ensure zero financial loss through Chandy-Lamport distributed snapshots, deferred message acknowledgments, and deterministic two-branch recovery.
+\end{itemize}
+
+\subsection{The Game}
+Crazy Time consists of cyclical rounds structured into the following distinct phases:
+\begin{enumerate}
+    \item \textbf{Betting}: Players can place wagers on any of the 8 wheel outcomes (numbers \texttt{1}, \texttt{2}, \texttt{5}, \texttt{10}, or mini-games \texttt{CoinFlip}, \texttt{Pachinko}, \texttt{CashHunt}, \texttt{CrazyTime}). This phase lasts for a configurable duration (default 10 seconds).
+    \item \textbf{Lock}: not a phase in its own right, but the instant separating Betting from Spinning. On the final tick of the countdown the engine draws the winning segment, opens the distributed cut, and from that moment rejects late bets.
+    \item \textbf{Spin}: The wheel spins for approximately 10.5 seconds, aligning with frontend canvas animations.
+    \item \textbf{Resolution}: If the wheel lands on a number, winning bets receive a net payout equal to the bet multiplied by the number, plus the return of the original wager ($payout = bet \times multiplier + bet$). Losing bets are marked as lost. If the wheel lands on a mini-game segment, the round transitions into the bonus phase.
+    \item \textbf{Minigame (Bonus)}: The selected mini-game runs for players who placed a winning bet on that bonus segment. Two mini-games are interactive (Cash Hunt and Crazy Time), and two are automated (Coin Flip and Pachinko).
+\end{enumerate}
+Following payout resolution or minigame completion, a 5-second \textbf{Cooldown} phase elapses before the next round opens, allowing clients to display winning celebrations and synchronize balances. Of all these, only three phase names are ever published on \texttt{state\_queue} --- \texttt{betting}, \texttt{spinning} and \texttt{minigame}: the cooldown is internal to the engine, and clients simply remain on the last phase announced until the new round opens.
+
+Clients communicate exclusively with the Java Gateway via HTTP REST and WebSocket/STOMP. The Gateway translates client actions into AMQP messages:
+\begin{itemize}
+    \item \textbf{Betting}: Authenticated players submit bet items via \texttt{POST /api/wallet/place-bet}. The Gateway validates funds, deducts balance atomically, assigns a unique UUID (\texttt{bet\_id}), records the bet in the database as \texttt{PENDING}, and publishes the message to RabbitMQ's \texttt{bets\_queue}. A single request may carry several items: those targeting the same segment are aggregated before persistence, so one segment always yields exactly one database row and one \texttt{bet\_id}, whatever the number of items the client sent.
+    \item \textbf{Mini-game interaction}: During interactive bonuses, players submit choices via \texttt{POST /api/game/choice}, which forwards a \texttt{minigame\_choice} message to the Erlang cluster.
+\end{itemize}
+
+\subsubsection{Minigames}
+There are four possible bonus games:
+\begin{itemize}
+    \item \textbf{Coin Flip}: Two distinct random multipliers are assigned to the two sides of a coin (Red and Blue / Heads and Tails). The coin flips, and participants receive a payout based on the winning side ($bet + bet \times multiplier$).
+    \item \textbf{Pachinko}: A pachinko board appears with 8 bottom prize slots, filled with seven random multipliers and exactly one \textbf{DOUBLE} slot, then shuffled. A puck is dropped from one of 16 top drop zones, navigating a 15-step stochastic peg bounce path. If the puck lands on DOUBLE, every numeric slot is doubled and the ball is dropped again, within a budget of 7 drops in total; on the final drop any DOUBLE still on the board is replaced by the highest multiplier present, so the round always resolves to a number.
+    \item \textbf{Cash Hunt}: A 9$\times$12 grid of 108 hidden multipliers (weighted probability from $2\times$ to $200\times$) is revealed, covered by symbols, and shuffled. Players interact with a 10-second selection countdown (within a 30-second backend window). If a player fails to choose, the engine assigns an authoritative server-side default tile.
+    \item \textbf{Crazy Time}: A giant secondary virtual wheel containing 64 high-multiplier segments is spun. A single segment is marked \textbf{DOUBLE} and, in the current implementation, resolves to a fixed 100$\times$ rather than doubling the rest of the wheel. Three colored flappers (Blue, Green, Yellow) sit 21 segments apart (120$^\circ$): the engine draws one winning index and derives the other two by offset, so the three multipliers are rigidly correlated by construction rather than drawn independently. Players pick a flapper before the spin and receive the multiplier pointed by their chosen arrow.
+\end{itemize}
+
+\subsection{Architecture}
+The architecture decouples user-facing web services from authoritative game calculation and state persistence through message queues and distributed actor concurrency.
+
+\begin{figure}[h!]
+    \centering
+    \IfFileExists{architecture.png}{\includegraphics[width=\textwidth]{architecture.png}}{\rule{\textwidth}{6cm}}
+\end{figure}
+
+\subsubsection{Central Node (Java Gateway)}
+Implemented with Spring Boot, the Central Gateway exposes REST APIs and WebSocket endpoints. It is the sole component interacting with the relational database holding player balances and bet history. When a bet is placed, the Gateway applies pessimistic locking on the player entity, deducts funds, generates a unique \texttt{bet\_id}, persists the record, and publishes it to RabbitMQ. The Gateway subscribes to \texttt{results\_queue} and \texttt{state\_queue}, dispatching outcomes, ledger confirmations, refunds, and state broadcasts.
+
+\subsubsection{Message Broker (RabbitMQ)}
+The messaging middleware decouples producers and consumers using three durable AMQP queues:
+\begin{itemize}
+    \item \texttt{bets\_queue}: Ingests incoming player bets and mini-game choices from Java to the Erlang cluster.
+    \item \texttt{state\_queue}: Erlang periodically broadcasts game timers, phases, and spinning outcomes to the Gateway for WebSocket distribution.
+    \item \texttt{results\_queue}: Multiplexed channel over which Erlang publishes finalized round results (\texttt{result}), authoritative snapshots (\texttt{round\_ledger}), individual bet rejections (\texttt{bet\_rejected}), and round cancellations (\texttt{round\_cancelled}).
+\end{itemize}
+
+\subsubsection{Game Server Cluster (Erlang Engine)}
+The Erlang cluster (typically 3 nodes: \texttt{game1}, \texttt{game2}, \texttt{game3}) manages game state authoritatively. To achieve high scalability and fault tolerance, bet ingestion is distributed across all nodes as \textbf{competing consumers} on \texttt{bets\_queue}, while game coordination and wheel spinning are delegated to an elected \textbf{Active Dealer (Leader)}.
+
+\begin{figure}[h!]
+    \centering
+    \IfFileExists{nodes.png}{\includegraphics[width=0.85\textwidth]{nodes.png}}{\rule{0.85\textwidth}{3.5cm}}
+\end{figure}
+
+\subsection{Dealer Election and Quorum Consensus}
+Running the game engine on multiple nodes requires selecting a single coordinator to advance round timers, spin the wheel, and publish results, avoiding duplicated payouts. The coordinator is elected using the \textbf{Bully Algorithm} augmented with strict quorum guards:
+\begin{enumerate}
+    \item Each node has an atom identifier (\texttt{game1@localhost}, \texttt{game2@localhost}, \texttt{game3@localhost}), ordered lexicographically.
+    \item The surviving node with the highest ID wins the election and assumes the \textbf{Leader} role (\texttt{wheel\_process} activated).
+    \item Remaining nodes assume the \textbf{Standby} role (\texttt{wheel\_process} deactivated). Workers on all nodes continue consuming bets from RabbitMQ and forward them asynchronously to the current Leader.
+    \item \textbf{Quorum Enforcement (CP Trade-off)}: An election requires a strict majority of configured nodes ($\lfloor N/2 \rfloor + 1$, e.g., 2 out of 3). Furthermore, an active Leader continuously monitors cluster topology via Erlang's \texttt{net\_kernel}: if a network partition leaves the Leader in a minority partition (1/3), it immediately \textbf{self-demotes} to Standby (\texttt{apply\_role(standby)}), preventing split-brain execution and conflicting Mnesia writes.
+    \item If the Leader crashes, surviving majority nodes detect the failure via \texttt{nodedown} notifications and elect the highest-ID survivor.
+\end{enumerate}
+
+\subsection{Synchronization and Durability}
+
+\subsubsection{Deferred Acknowledgment (Deferred ACK)}
+Because worker-to-wheel communication is asynchronous across distributed nodes, acknowledging AMQP messages immediately upon reception would create a critical vulnerability: if the Leader crashes while a bet is in transit, the message has left the broker, funds were deducted in Java, but the engine never recorded the wager.
+
+To guarantee zero bet loss, workers implement \textbf{Deferred Acknowledgment}:
+\begin{itemize}
+    \item Upon consuming a bet from \texttt{bets\_queue}, the worker records the \texttt{DeliveryTag} in a local \texttt{inflight} map and forwards the bet asynchronously to the Leader's \texttt{wheel\_process}.
+    \item The worker acknowledges the message to RabbitMQ (\texttt{basic.ack}) \textbf{only when} the Leader replies with a \emph{terminal} verdict: \texttt{accepted}, or \texttt{rejected} for a bet that arrived after the betting window had closed. A rejection is terminal because the Leader has already published the matching \texttt{bet\_rejected} event, so the refund is under way and the message must not be replayed.
+    \item A \texttt{not\_leader} verdict is \emph{not} terminal: the addressed node is no longer the dealer, so the worker returns the message to the broker with \texttt{requeue=true} instead of acknowledging it.
+    \item If the Leader crashes or fails to respond within 15 seconds (\texttt{INFLIGHT\_TIMEOUT}), the worker likewise rejects the message with \texttt{requeue=true}, returning it to RabbitMQ so a surviving node can ingest it.
+\end{itemize}
+
+\subsubsection{Chandy-Lamport Distributed Snapshots}
+To accurately separate valid bets from late bets without a global clock, the system implements the \textbf{Chandy-Lamport Snapshot Algorithm}:
+\begin{enumerate}
+    \item \textbf{Trigger and Local State}: At the expiration of the betting timer (the gong), the Leader's \texttt{wheel\_process} draws the winning segment, saves its local state (round number, received bets, extracted winner), and emits a \texttt{cl\_marker} backwards to all participating workers over the real application channels.
+    \item \textbf{Channel State Recording}: Upon receiving the first marker, each worker records its local unacknowledged bets and replies with a marker to the Leader. Any bet arriving at the Leader after snapshot initiation but before the worker's marker represents an \textbf{in-flight message} that was in transit when the gong sounded. Crucially, these in-flight bets causally belong to the current round and are captured into the channel state.
+    \item \textbf{Collector and Checkpoint}: A dedicated \texttt{snapshot.erl} process aggregates the local states and channel states pushed by every participant. If any node fails to respond within 5 seconds, the cut closes in \textbf{degraded} mode. The whole cut is committed as an atomic \texttt{snapshot\_record} to Mnesia and the resulting authoritative \textbf{Ledger} is published to \texttt{results\_queue} as a \texttt{round\_ledger} message.
+    \item \textbf{What the Ledger contains}: the published ledger is formed from the \emph{initiator's own} portion of the cut --- the bets the wheel had already accepted, plus those captured in its incoming channel states. The workers' local states, that is the bets they consumed from the broker but never acknowledged, are stored in the same \texttt{snapshot\_record} but deliberately do not enter the ledger: they are the material of the Branch B recovery described below, not of the financial reconciliation.
+\end{enumerate}
+
+\subsubsection{Ledger Reconciliation Rules (R1, R2, R3)}
+The Java Gateway consumes the authoritative round ledger and applies formal consistency rules:
+\begin{itemize}
+    \item \textbf{Rule R1 (Ledger Authority \& Refund)}: pending bets of the round that are absent from the ledger are refunded. If the ledger is flagged \texttt{degraded} --- the cut was closed by timeout with participants missing --- those bets instead remain \texttt{PENDING}: an incomplete ledger is not evidence that a wager was lost, and they will be settled by the ledger of the round in which they are actually played. In doubt, the system does not refund.
+    \item \textbf{Rule R2 (Financial Authority)}: Java maintains financial authority over money, while Erlang holds authority over game outcomes. A bet already \texttt{REFUNDED} that reappears in a subsequent ledger due to broker re-delivery is logged as \texttt{replay\_after\_refund} and is never paid again.
+    \item \textbf{Rule R3 (Persistent Deduplication)}: To prevent replay after failover, a newly activated Leader reloads the set of already settled bet IDs from historical Mnesia checkpoints (\texttt{reload\_settled/0}), ensuring re-delivered bets from previous rounds are recognised and merely re-acknowledged instead of being played again. The set is rebuilt from the three most recent checkpoints (\texttt{SETTLED\_ROUNDS}): with a 15-second in-flight timeout and rounds lasting at least 25 seconds, that window covers every redelivery the broker can plausibly produce, while keeping the reload bounded.
+\end{itemize}
+
+\subsubsection{State Recovery}
+When the Leader crashes, the newly elected Leader initiates recovery in \texttt{leader\_election:recover\_from\_checkpoint/0}:
+\begin{itemize}
+    \item \textbf{Branch A (Post-Gong Crash, Checkpoint Present, \texttt{result\_published = false})}:
+    \begin{itemize}
+        \item \textit{Direct Multipliers (1, 2, 5, 10 --- 83.3\% of wheel)}: The new Leader reads the checkpoint from Mnesia and \textbf{completes the round deterministically} using the winning segment and ledger already recorded. Payouts are computed and published without spinning the wheel again.
+        \item \textit{Mini-games (Pachinko, Coin Flip, Cash Hunt, Crazy Time --- 16.7\% of wheel)}: Because the bonus interaction was volatile in the failed Leader's process memory, the bonus outcome cannot be determined. The new Leader cancels the round, following the same refund rule as Branch B below: the round's pending bets are refunded \emph{except} those still held unacknowledged by surviving workers, which the broker redelivers on its own.
+    \end{itemize}
+    \item \textbf{Branch B (Betting Phase Crash, No Checkpoint to Complete)}: the most recent checkpoint has \texttt{result\_published = true}, so the crash caught a round that had not yet reached its gong and for which no outcome exists. The Leader cancels that round by broadcasting \texttt{round\_cancelled}, having first queried the surviving workers for their unacknowledged in-flight bets (\texttt{collect\_inflight/1}) and listed them in \texttt{exclude\_bet\_ids}. Java refunds only the pending bets that are genuinely lost, while the excluded ones are re-delivered by RabbitMQ and seamlessly played in the next round --- refunding those would return the money \emph{and} let the wager run.
+    \item \textbf{No checkpoint at all}: on a cluster whose Mnesia table is still empty --- a first start, or a database wiped between runs --- there is nothing to complete and nothing to cancel. Recovery logs the fact and returns without publishing any message.
+\end{itemize}
+
+\subsubsection{Testability and Verification Hooks}
+To allow deterministic verification of distributed race conditions and failover scenarios, the system incorporates dedicated testing mechanisms:
+\begin{itemize}
+    \item \textbf{In-Flight Delay Injection (\texttt{bet\_forward\_delay})}: In \texttt{worker.erl}, an artificial forwarding delay can be configured via the application environment to widen the network delivery window, deterministically testing the capture of in-flight channel states during Chandy-Lamport snapshot cuts.
+    \item \textbf{Deterministic Outcome Forcing (\texttt{/api/wallet/force-result})}: An administrative endpoint injects a forced segment outcome (e.g., \texttt{FORCE\_CashHunt}) via RabbitMQ, guaranteeing reproducible testing of minigame executions and leader crash recoveries. The target segment travels as a query parameter, not in a JSON body. Authorisation is deliberately minimal: there is no role model, and the endpoint simply compares the caller's username against the literal \texttt{admin}, returning \texttt{403} to everyone else. It is a development affordance, and a production deployment would have to replace it with a real authorisation check.
+\end{itemize}
+
+\section{Implementation}
+
+\subsection{Database Node}
+Persistence is managed by an embedded H2 database in file-persistent mode (\texttt{crazytimedb.mv.db}), eliminating external dependencies while maintaining ACID guarantees.
+
+\subsubsection{Player Table (\texttt{players})}
+Maps registered accounts and credentials:
+\begin{itemize}
+    \item \texttt{id}: Primary key (\texttt{Long}, auto-generated identity).
+    \item \texttt{username}: Unique account username (\texttt{String}, unique, non-null).
+    \item \texttt{passwordHash}: BCrypt salted hash of user password (\texttt{String}, non-null).
+    \item \texttt{balance}: Current wallet balance (\texttt{BigDecimal}, non-null).
+    \item \texttt{sessionToken}: Bearer authentication token (\texttt{String}, unique, nullable).
+    \item \texttt{sessionCreatedAt}: Token creation timestamp (\texttt{LocalDateTime}).
+\end{itemize}
+
+\subsubsection{Bet Table (\texttt{bets})}
+Maintains an immutable wager audit trail:
+\begin{itemize}
+    \item \texttt{id}: Primary key (\texttt{Long}, auto-generated identity).
+    \item \texttt{bet\_id}: Unique UUID generated by Gateway upon placement (\texttt{String}, unique).
+    \item \texttt{username}: Username of the wagering player (\texttt{String}, non-null).
+    \item \texttt{amount}: Wager amount in currency units (\texttt{BigDecimal}, non-null).
+    \item \texttt{segment}: Target segment (\texttt{"1"}, \texttt{"2"}, \texttt{"5"}, \texttt{"10"}, \texttt{"Pachinko"}, etc.).
+    \item \texttt{status}: Lifecycle state (\texttt{PENDING}, \texttt{WON}, \texttt{LOST}, \texttt{REFUNDED}).
+    \item \texttt{payout}: Total credited winnings (\texttt{BigDecimal}, default 0.00).
+    \item \texttt{round}: Authoritative game round number (\texttt{Integer}).
+    \item \texttt{timestamp}: Placement timestamp (\texttt{LocalDateTime}, non-null).
+\end{itemize}
+
+\subsection{Central Node (Java)}
+The Gateway application is packaged in \texttt{com.crazytime} across modular packages:
+\begin{itemize}
+    \item \texttt{config}: Web and security beans (\texttt{SecurityConfig}, \texttt{WebConfig}, \texttt{WebSocketConfig}).
+    \item \texttt{controller}: HTTP REST endpoints (\texttt{AuthController}, \texttt{WalletController}, \texttt{GameController}).
+    \item \texttt{dto}: Request/response DTO records (\texttt{LoginRequest}, \texttt{RegisterRequest}, \texttt{PlaceBetRequest}, etc.).
+    \item \texttt{entity}: JPA database entities (\texttt{Player}, \texttt{Bet}).
+    \item \texttt{rabbitmq}: AMQP listeners and caches (\texttt{GameResultListener}, \texttt{PayoutListener}, \texttt{BetRejectionHandler}, \texttt{LedgerListener}, \texttt{GameStateCache}).
+    \item \texttt{repository}: Spring Data JPA interfaces with pessimistic write locks.
+    \item \texttt{security}: Interceptors for token validation, custom handshake handler, and STOMP principals.
+    \item \texttt{service}: Business authentication logic and single-session enforcement (\texttt{AuthService}).
+\end{itemize}
+
+\subsubsection{Security and Web Configuration}
+\begin{itemize}
+    \item \texttt{SecurityConfig}: Exposes the \texttt{PasswordEncoder} bean (\texttt{BCryptPasswordEncoder}). Full Spring Security filters are omitted to prevent overhead, adopting lightweight interceptors instead.
+    \item \texttt{WebConfig}: Implements \texttt{WebMvcConfigurer}, configuring CORS and registering \texttt{AuthInterceptor} on all \texttt{/api/**} paths (excluding public authentication routes).
+    \item \texttt{AuthInterceptor} \& \texttt{WsAuthInterceptor}: Intercept incoming HTTP requests and WebSocket handshakes, validating active database sessions. While \texttt{AuthInterceptor} validates the \texttt{Authorization: Bearer <token>} header on REST endpoints, \texttt{WsAuthInterceptor} inspects the \texttt{?token=<token>} query parameter due to browser SockJS handshake constraints.
+    \item \texttt{WebSocketConfig}: Enables STOMP over WebSocket at endpoint \texttt{/ws} (with SockJS fallback), routing destination prefixes \texttt{/app}, broker subscriptions on \texttt{/topic}, and point-to-point queues on \texttt{/queue} (with prefix \texttt{/user}).
+    \item \texttt{CustomHandshakeHandler} \& \texttt{StompPrincipal}: Associates each authenticated WebSocket handshake with a \texttt{StompPrincipal}, enabling user-targeted messaging (\texttt{convertAndSendToUser}).
+    \item \texttt{AuthService}: Handles registration and login, enforcing a single active session per user by sending a \texttt{SESSION\_TERMINATED} STOMP notification to \texttt{/user/queue/session} upon concurrent login.
+\end{itemize}
+
+\subsubsection{Controllers}
+\begin{itemize}
+    \item \texttt{AuthController}: Manages \texttt{POST /api/auth/register} (creates player with initial balance), \texttt{POST /api/auth/login} (generates session token), and \texttt{POST /api/auth/logout}.
+    \item \texttt{WalletController}:
+    \begin{itemize}
+        \item \texttt{GET /api/wallet/balance}: Returns current authenticated player balance.
+        \item \texttt{POST /api/wallet/place-bet}: Validates betting phase from \texttt{GameStateCache}. Aggregates the request's items by segment, then uses pessimistic locking (\texttt{findByUsernameForUpdate}) to prevent race conditions and double-spending. Deducts the aggregated total, persists one \texttt{Bet} record per segment with its own UUID, and forwards the corresponding JSON messages to \texttt{bets\_queue}.
+        \item \texttt{POST /api/wallet/force-result}: DEV command reserved to the caller whose username is literally \texttt{admin}, forcing the next wheel segment for reproducible testing.
+        \item \texttt{POST /api/wallet/undo-bets}: Acknowledges the client's undo without any server-side effect. The bet slip is assembled in the browser and reaches the Gateway only on confirmation, so an undo issued beforehand touches neither the wallet nor the engine. The engine does retain a complete server-side cancellation path (segment \texttt{UNDO\_BETS}, resolving into one \texttt{bet\_rejected} event per \texttt{bet\_id}), which this design leaves unused.
+        \item \texttt{GET /api/wallet/history}: Returns sorted betting history.
+    \end{itemize}
+    \item \texttt{GameController}:
+    \begin{itemize}
+        \item \texttt{GET /api/game/state}: Returns cached phase, round number, and time left.
+        \item \texttt{POST /api/game/choice}: Submits player mini-game choices to \texttt{bets\_queue}.
+    \end{itemize}
+\end{itemize}
+
+\subsubsection{RabbitMQ Package}
+\begin{itemize}
+    \item \texttt{GameResultListener}: Single ingress listener on \texttt{results\_queue} and \texttt{state\_queue}. Inspects the JSON \texttt{type} field, routing \texttt{result} to \texttt{PayoutListener}, \texttt{round\_ledger} / \texttt{round\_cancelled} to \texttt{LedgerListener}, and \texttt{bet\_rejected} to \texttt{BetRejectionHandler}.
+    \item \texttt{PayoutListener}: Transactionally moves bets to \texttt{WON}/\texttt{LOST} and credits winnings to player accounts, matching each wager by \texttt{bet\_id}. For the asynchronous mini-games (Cash Hunt, Crazy Time) Erlang publishes a sentinel multiplier of $-1$, instructing the listener to read individualised winnings from the \texttt{payouts} JSON array instead of deriving them from a single global factor.
+    \item \texttt{BetRejectionHandler}: Atomically credits the player's balance back when Erlang rejects a bet. Idempotence comes from the bet's own state: a message redelivered by the broker finds the wager already \texttt{REFUNDED} and credits nothing a second time.
+    \item \texttt{LedgerListener}: Reconciles pending bets against the authoritative Chandy-Lamport ledger (Rules R1 and R2).
+    \item \texttt{GameStateCache}: Thread-safe cache providing sub-millisecond access to game phases for REST validations.
+\end{itemize}
+
+\subsection{Erlang Game Engine}
+
+\subsubsection{Source Code Structure}
+The engine source resides in \texttt{erlang-engine/game\_engine/src/}:
+\begin{itemize}
+    \item \texttt{game\_engine.app.src}: Application specification defining modules and configured \texttt{peer\_nodes}.
+    \item \texttt{game\_engine\_app.erl} \& \texttt{game\_engine\_sup.erl}: Application callback and top supervisor (\texttt{rest\_for\_one} strategy).
+    \item \texttt{cluster\_manager.erl}: Peer discovery, topology monitoring, and Mnesia bootstrap.
+    \item \texttt{leader\_election.erl}: Bully election, quorum verification, and recovery management.
+    \item \texttt{rabbitmq\_manager.erl}: Reconnecting AMQP connection and channel manager with public ETS table.
+    \item \texttt{worker.erl}: Distributed AMQP consumer with deferred acknowledgment.
+    \item \texttt{wheel\_process.erl}: Authoritative game loop and wheel logic.
+    \item \texttt{cl\_recorder.erl} \& \texttt{snapshot.erl}: Functional Chandy-Lamport recorder and collector gen\_server.
+    \item \texttt{minigames\_sup.erl} \& mini-games: Supervisors and engines for \texttt{pachinko.erl}, \texttt{coinflip.erl}, \texttt{cashhunt.erl}, and \texttt{crazytime.erl}.
+\end{itemize}
+
+\subsubsection{Supervision Tree}
+The top supervisor (\texttt{game\_engine\_sup}) employs a \texttt{rest\_for\_one} strategy ensuring dependent components restart cleanly:
+\begin{verbatim}
+game_engine_sup (rest_for_one)
+  |-- rabbitmq_manager   (AMQP connection and channel holder)
+  |-- cluster_manager    (Node discovery and topology monitor)
+  |-- leader_election    (Bully election and quorum guard)
+  |-- wheel_process      (Authoritative wheel loop - Leader only)
+  |-- minigames_sup      (Supervisor for 4 mini-game workers)
+  |-- worker             (AMQP consumer with deferred ACK)
+  `-- snapshot           (Chandy-Lamport snapshot collector)
+\end{verbatim}
+
+\subsubsection{Mini-Games Implementation}
+Each mini-game is isolated in an OTP gen\_server under \texttt{minigames\_sup}:
+\begin{itemize}
+    \item \texttt{coinflip.erl}: Generates independent multipliers for Red and Blue sides, returning winner side and factor.
+    \item \texttt{pachinko.erl}: Simulates an 8-slot board with DOUBLE mechanics, generating a 15-step bouncing puck path across 16 drop zones.
+    \item \texttt{cashhunt.erl}: Generates a 108-tile grid with realistic distribution, accepting asynchronous player choices and computing exact individual payouts with server fallback.
+    \item \texttt{crazytime.erl}: Simulates the 64-segment bonus wheel with Blue, Green, and Yellow selectors, computing payouts based on player arrow choice.
+\end{itemize}
+
+\section{Demonstration and Verification}
+
+\subsection{Deployment Topologies}
+The system supports both local testing and distributed deployment on university container infrastructure.
+
+\subsubsection{University Laboratory Deployment (2 Virtual Machines)}
+As configured for DSMT lab evaluations (Ubuntu 24.04 containers):
+\begin{itemize}
+    \item \textbf{VM1 (10.2.1.17)}: Hosts RabbitMQ Server, Java Gateway, and Erlang nodes \texttt{game1} and \texttt{game2} (representing the majority quorum of 2/3).
+    \item \textbf{VM2 (10.2.1.18)}: Hosts Erlang node \texttt{game3} (Active Leader / Primary Dealer).
+\end{itemize}
+This physical separation allows realistic testing of both failure modes. A leader crash is produced with \texttt{pkill -9} on VM2. A network partition is produced in two steps, because a partition must persist rather than heal on the next reconnection attempt:
+\begin{enumerate}
+    \item on both VM1 nodes, \texttt{net\_kernel:allow(['game1@10.2.1.17', 'game2@10.2.1.17'])} restricts the distribution layer to that pair. The restriction applies to connections in either direction, so it is enough to issue it on the majority side: \texttt{game3} needs no intervention;
+    \item \texttt{game3} is then brought down. From that moment its \texttt{cluster\_manager} retries \texttt{net\_adm:ping/1} every 10 seconds (\texttt{RECONNECT\_INTERVAL}) and is refused every time.
+\end{enumerate}
+The result is a durable partition rather than a crash: \texttt{game3} is alive but isolated, the majority sits on the gateway's side, and one can observe that \texttt{game3} cleanly self-demotes instead of continuing to act as dealer.
+
+\subsubsection{Local Execution (3 Erlang Nodes)}
+To run the cluster locally:
+\begin{enumerate}
+    \item \textbf{Start RabbitMQ}:
+\begin{verbatim}
+rabbitmq-server
+\end{verbatim}
+    \item \textbf{Start Java Gateway}:
+\begin{verbatim}
+cd java-gateway
+mvn spring-boot:run
+\end{verbatim}
+    \item \textbf{Start Erlang Cluster} (Start Node 1 first to create Mnesia schema; use isolated folders to prevent build locks):
+\begin{verbatim}
+# Terminal 3 (Start Node 1 first to create Mnesia schema):
+cd erlang-engine/game_engine
+../rebar3 shell --sname game1@localhost --setcookie crazytime
+
+# Terminal 4 (Start Node 2 in isolated directory to avoid build locks):
+cd erlang-engine-2/game_engine
+../rebar3 shell --sname game2@localhost --setcookie crazytime
+
+# Terminal 5 (Start Node 3 in isolated directory - Elected Leader):
+cd erlang-engine-3/game_engine
+../rebar3 shell --sname game3@localhost --setcookie crazytime
+\end{verbatim}
+\end{enumerate}
+
+\subsection{Interaction via REST APIs and Curl}
+The system can be tested via the web frontend at \url{http://localhost:8080} or via command-line REST requests:
+
+\begin{verbatim}
+# 1. Register Player Profile (credentials in JSON body)
+curl -X POST http://localhost:8080/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"testuser","password":"testpassword","initialBalance":500}'
+
+# 2. Login to Obtain Bearer Session Token
+curl -X POST http://localhost:8080/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"testuser","password":"testpassword"}'
+# Response: {"success":true,"message":"Login effettuato con successo",
+#            "token":"<UUID_TOKEN>","username":"testuser",
+#            "balance":500.00,"error":null}
+
+# 3. Query Wallet Balance (requires Authorization header)
+curl -X GET http://localhost:8080/api/wallet/balance \
+  -H "Authorization: Bearer <UUID_TOKEN>"
+
+# 4. Place Bets (JSON body with segment and amount)
+curl -X POST http://localhost:8080/api/wallet/place-bet \
+  -H "Authorization: Bearer <UUID_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"segment":"5","amount":10.00}'
+
+# 5. Place Multiple Aggregated Bets in One Request
+curl -X POST http://localhost:8080/api/wallet/place-bet \
+  -H "Authorization: Bearer <UUID_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '[{"segment":"1","amount":5.00},{"segment":"CrazyTime","amount":2.00}]'
+\end{verbatim}
+
+\subsection{Automated Test Suites}
+Alongside the manual scenarios above, the repository carries automated tests on both sides of the system.
+
+\begin{itemize}
+    \item \textbf{Gateway (JUnit 5 + Mockito)}: \texttt{AuthServiceTest} covers registration, login, the session kick on concurrent login (\texttt{loginWithKick}) and both outcomes of token resolution, valid and expired; \texttt{AuthControllerTest} covers the register and login endpoints, including a wrong password. \texttt{WalletControllerTest} covers a successful wager, a multi-item bet slip, insufficient funds, and the balance and history endpoints.
+    \item \textbf{Engine (EUnit)}: \texttt{cl\_recorder\_tests.erl} exercises the Chandy-Lamport recorder in isolation across eight cases --- a fresh recorder is not recording, the initiator opens every incoming channel, the first marker opens the others while a subsequent one closes only its own, application messages are captured on open channels alone and ignored when no cut is running, \texttt{close\_all} closes the cut, and a new cut replaces one left open. Being able to test it as a pure module is precisely the reason the recorder holds no process of its own.
+    \item \textbf{Scenario scripts (Python)}: \texttt{test\_scripts/} drives the running system from outside, over its REST API. Each script targets a different property.
+    \begin{itemize}
+        \item \texttt{stress\_test.py} --- \emph{concurrent load}. Registers 50 players and runs an open-ended sequence of rounds, wagering a random amount on a random segment for each of them in parallel. It is deliberately interactive: the operator presses Enter when the betting timer opens and again when the wheel has stopped, so the run can be followed on screen alongside the browser. At the end of every round it prints, per player, the balance before and after, the payout and the net result, plus the house balance for the round. The host is the first command-line argument, defaulting to VM1.
+        \item \texttt{crash\_test.py} --- \emph{dealer crash and recovery}. Ten players each wager 10\,EUR on segment \texttt{5}; the script records the amount actually debited, then issues \texttt{pkill -9} against \texttt{game3} \emph{before} the gong and samples the balances every 5 seconds for a minute. Comparing the sum refunded against the sum staked shows which recovery branch was taken and that no money was lost in the process.
+        \item \texttt{inflight\_test.py} --- \emph{in-flight capture during the cut}. Waits for the countdown to reach \texttt{time\_left = 1} and fires twenty concurrent wagers with \texttt{bet\_forward\_delay} raised to 600\,ms in the engine, so that they reach the wheel with the cut already open. It is the only way to make the channel-state case occur on demand, rather than hoping to hit a window of a few milliseconds.
+    \end{itemize}
+\end{itemize}
+
+\end{document}
