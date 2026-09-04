@@ -122,7 +122,7 @@ for IP in 10.2.1.17 10.2.1.18; do
       --exclude='.DS_Store' \
       --exclude='java-gateway/data' \
       --exclude='Mnesia.*' \
-      erlang-engine java-gateway/target/java-gateway-0.0.1-SNAPSHOT.jar stress_test.py docs \
+      erlang-engine java-gateway/target/java-gateway-0.0.1-SNAPSHOT.jar test_scripts docs \
   | ssh root@$IP 'mkdir -p /root/dct && tar xzf - -C /root/dct'
 done
 ```
@@ -417,7 +417,7 @@ rabbitmq_manager:is_connected().        %% true su tutti e tre
 Copre il punto "carico mai misurato" dei limiti noti. Dal Mac, con la VPN su:
 
 ```bash
-python3 stress_test.py http://10.2.1.17:8080
+python3 test_scripts/stress_test.py http://10.2.1.17:8080
 ```
 
 (`pip3 install requests` se manca). Con 50 utenti guarda i log dei tre nodi: le

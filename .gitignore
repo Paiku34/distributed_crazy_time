@@ -22,3 +22,11 @@ java-gateway/data/
 
 # Editor / IDE
 .vscode/
+
+# Copie locali dell'engine per i test a 3 nodi su una sola macchina
+erlang-engine-2/
+erlang-engine-3/
+
+# Cache Python
+__pycache__/
+*.pyc
