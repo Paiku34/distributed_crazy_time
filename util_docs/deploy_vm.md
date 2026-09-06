@@ -10,12 +10,12 @@ Container assegnati:
 Credenziali: `root` / `root`. Ubuntu 24.04, Java 25, Erlang/OTP 28, Maven 3.9.11.
 
 **Perché questa ripartizione.** Il quorum è la maggioranza dei nodi in `peer_nodes`,
-cioè 2 su 3 (vedi [limiti_noti.md](limiti_noti.md#1-consistenza-scelta-sopra-disponibilità-il-quorum)).
+cioè 2 su 3 (vedi [limiti_noti.md](limiti_noti.md#a2)).
 Mettendo due nodi su VM1 e uno su VM2, una partizione fra le due macchine lascia la
 maggioranza dallo stesso lato del gateway: il gioco continua e il nodo isolato si
 autoretrocede. È esattamente lo scenario da mostrare, e su due macchine distinte
 il nodo isolato è isolato **davvero**: la sua rete, la sua beam, il suo disco
-Mnesia (punto 11 dei limiti noti, "test non eseguiti").
+Mnesia (vedi "Cosa non è stato misurato" nei [limiti noti](limiti_noti.md#cosa-non-è-stato-misurato)).
 
 L'isolamento si provoca dalla shell Erlang di `game3`
 ([sezione 6.2](#62-partizione-fra-game3-e-la-maggioranza)): i container non

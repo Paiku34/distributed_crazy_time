@@ -21,7 +21,7 @@ The Distributed Crazy Time project is a real-time betting web app with a hybrid 
 > Le Fasi 2 e 3 erano state implementate **prima** che quella riscrittura esistesse, quindi parte del codice andava **corretta**, non solo estesa. [FATTO] **Il retrofit è stato eseguito**: il `worker` è ora attivo su **tutti** i nodi e instrada al leader, e la guardia di quorum è in funzione. Il percorso operativo completo, step per step, è in [ordine_implementazione.md](ordine_implementazione.md).
 
 > [!NOTE]
-> I limiti noti del sistema — quorum, comportamenti di Mnesia, blocco del wheel nel minigioco, test non eseguiti — sono raccolti in un unico posto: [limiti_noti.md](limiti_noti.md).
+> I limiti noti del sistema — perimetro della replicazione, quorum, comportamenti di Mnesia, blocco del wheel nel minigioco, test non eseguiti — sono raccolti in un unico posto, ordinati per gravità e classificati fra scelte progettuali e difetti: [limiti_noti.md](limiti_noti.md).
 
 > [!NOTE]
 > Ogni fase si appoggia sulla precedente. Ognuna elenca i file esatti da creare/modificare, la struttura del codice Erlang e i punti di integrazione. **Si parte dalla Fase 0 (Bug Fixes)** per stabilizzare la base prima di aggiungere le funzionalità distribuite.
