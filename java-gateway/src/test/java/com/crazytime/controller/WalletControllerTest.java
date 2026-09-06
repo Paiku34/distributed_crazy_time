@@ -5,11 +5,13 @@ import com.crazytime.entity.Bet;
 import com.crazytime.entity.Player;
 import com.crazytime.repository.BetRepository;
 import com.crazytime.repository.PlayerRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+import org.mockito.Spy;
 import org.springframework.amqp.core.AmqpTemplate;
 import org.springframework.http.ResponseEntity;
 
@@ -17,6 +19,7 @@ import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -33,6 +36,11 @@ public class WalletControllerTest {
     @Mock
     private AmqpTemplate rabbitTemplate;
 
+    // Istanza reale: il controller serializza il payload della bet con createObjectNode(),
+    // che su un mock restituirebbe null.
+    @Spy
+    private ObjectMapper objectMapper = new ObjectMapper();
+
     @InjectMocks
     private WalletController walletController;
 
@@ -43,11 +51,22 @@ public class WalletControllerTest {
         MockitoAnnotations.openMocks(this);
         mockPlayer = new Player("testuser", "hashed", new BigDecimal("100.00"));
         mockPlayer.setId(1L);
+
+        // In produzione l'id della Bet lo assegna JPA dentro save(); sul mock resterebbe
+        // null e la costruzione della risposta (Map.of) fallirebbe con NPE.
+        AtomicLong betIdSeq = new AtomicLong(0);
+        when(betRepository.save(any(Bet.class))).thenAnswer(inv -> {
+            Bet saved = inv.getArgument(0);
+            if (saved.getId() == null) {
+                saved.setId(betIdSeq.incrementAndGet());
+            }
+            return saved;
+        });
     }
 
     @Test
     public void testPlaceBetSuccess() {
-        when(playerRepository.findById(1L)).thenReturn(Optional.of(mockPlayer));
+        when(playerRepository.findByUsernameForUpdate("testuser")).thenReturn(Optional.of(mockPlayer));
         
         ResponseEntity<Map<String, Object>> response = walletController.placeBet(
             mockPlayer, new PlaceBetRequest(new BigDecimal("20.00"), "Pachinko"));
@@ -62,7 +81,7 @@ public class WalletControllerTest {
 
     @Test
     public void testPlaceBetSlipMultipleItemsSuccess() {
-        when(playerRepository.findById(1L)).thenReturn(Optional.of(mockPlayer));
+        when(playerRepository.findByUsernameForUpdate("testuser")).thenReturn(Optional.of(mockPlayer));
         
         List<PlaceBetRequest> slip = List.of(
             new PlaceBetRequest(new BigDecimal("10.00"), "Pachinko"),
@@ -76,7 +95,10 @@ public class WalletControllerTest {
         assertTrue((Boolean) response.getBody().get("success"));
         // Total should be 20.00 (15 on Pachinko + 5 on 10)
         assertEquals(new BigDecimal("80.00"), mockPlayer.getBalance());
-        assertEquals(new BigDecimal("20.00"), response.getBody().get("total_amount"));
+        // Confronto numerico: Jackson normalizza i BigDecimal in valueToTree (stripTrailingZeros),
+        // quindi il totale arriva come 20 e non 20.00. La scala non e' significativa qui.
+        assertEquals(0, new BigDecimal("20.00")
+            .compareTo((BigDecimal) response.getBody().get("total_amount")));
         verify(playerRepository, times(1)).save(mockPlayer);
         // 2 distinct segments saved (Pachinko and 10)
         verify(betRepository, times(2)).save(any(Bet.class));
@@ -86,7 +108,7 @@ public class WalletControllerTest {
     @Test
     public void testPlaceBetInsufficientFunds() {
         mockPlayer.setBalance(new BigDecimal("10.00"));
-        when(playerRepository.findById(1L)).thenReturn(Optional.of(mockPlayer));
+        when(playerRepository.findByUsernameForUpdate("testuser")).thenReturn(Optional.of(mockPlayer));
         
         ResponseEntity<Map<String, Object>> response = walletController.placeBet(
             mockPlayer, new PlaceBetRequest(new BigDecimal("20.00"), "Pachinko"));

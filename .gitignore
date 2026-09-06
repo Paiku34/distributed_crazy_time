@@ -30,3 +30,8 @@ erlang-engine-3/
 # Cache Python
 __pycache__/
 *.pyc
+
+# Artefatti di build (ridondante: coperto anche dai .gitignore annidati
+# in java-gateway/ e erlang-engine/game_engine/)
+target/
+_build/

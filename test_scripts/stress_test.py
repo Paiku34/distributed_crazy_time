@@ -4,8 +4,8 @@ import time
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
-# Indirizzo del server (modifica qui o passa da riga di comando, es: python test_scripts/stress_test.py http://10.2.1.17:8080)
-DEFAULT_HOST = "http://10.2.1.17:8080"
+# Indirizzo del server (modifica qui o passa da riga di comando, es: python test_scripts/stress_test.py http://10.2.1.15:8080)
+DEFAULT_HOST = "http://10.2.1.15:8080"
 HOST = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_HOST
 N_USERS = 50
 SEGMENTS = ["1", "2", "5", "10", "Pachinko", "CoinFlip", "CashHunt", "CrazyTime"]
@@ -103,7 +103,7 @@ if __name__ == "__main__":
     if logged_in_count == 0:
         print(f"\nERRORE CRITICO: Nessun utente è riuscito a connettersi al server ({HOST}).")
         print("Verifica che il Java Gateway sia avviato e che l'indirizzo HOST sia corretto.")
-        print(f"Esempio d'uso: python test_scripts/stress_test.py http://10.2.1.17:8080 oppure http://localhost:8080")
+        print(f"Esempio d'uso: python test_scripts/stress_test.py http://10.2.1.15:8080 oppure http://localhost:8080")
         sys.exit(1)
     
     print(f"{logged_in_count}/{N_USERS} utenti autenticati con successo!\n")

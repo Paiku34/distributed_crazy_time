@@ -1,7 +1,7 @@
 # Report Completo di Esecuzione e Test — Distributed Crazy Time (VM Reali)
 
 > [!IMPORTANT]
-> **Ambiente di Esecuzione:** I test documentati in questa relazione sono stati **eseguiti direttamente sulle Macchine Virtuali di laboratorio (`10.2.1.17` e `10.2.1.18`)** via connessione SSH automatizzata e VPN attiva, seguendo fedelmente la guida in [`docs/deploy_vm.md`](file:///Users/gabrielecaioli/Downloads/Uni/DistributedSystemsMT/ProgettoDistributedSMT/distributed_crazy_time/docs/deploy_vm.md).
+> **Ambiente di Esecuzione:** I test documentati in questa relazione sono stati **eseguiti direttamente sulle Macchine Virtuali di laboratorio (`10.2.1.15` e `10.2.1.16`)** via connessione SSH automatizzata e VPN attiva, seguendo fedelmente la guida in [`docs/deploy_vm.md`](file:///Users/gabrielecaioli/Downloads/Uni/DistributedSystemsMT/ProgettoDistributedSMT/distributed_crazy_time/docs/deploy_vm.md).
 
 ---
 
@@ -11,15 +11,15 @@ Il sistema distribuito è distribuito su due Macchine Virtuali Debian distinte:
 
 ```mermaid
 graph TD
-    subgraph VM1["🖥️ VM1 — 10.2.1.17"]
+    subgraph VM1["🖥️ VM1 — 10.2.1.15"]
         GW["Terminale 1: Java Gateway (Porta 8080)"]
         RMQ["RabbitMQ Broker (Porta 5672)"]
-        G1["Terminale 2: game1@10.2.1.17 (Worker / Standby)"]
-        G2["Terminale 3: game2@10.2.1.17 (Worker / Failover Leader)"]
+        G1["Terminale 2: game1@10.2.1.15 (Worker / Standby)"]
+        G2["Terminale 3: game2@10.2.1.15 (Worker / Failover Leader)"]
     end
     
-    subgraph VM2["🖥️ VM2 — 10.2.1.18"]
-        G3["Terminale 4: game3@10.2.1.18 (Active Leader / Dealer)"]
+    subgraph VM2["🖥️ VM2 — 10.2.1.16"]
+        G3["Terminale 4: game3@10.2.1.16 (Active Leader / Dealer)"]
     end
     
     subgraph CLIENT["💻 Client Host"]
@@ -38,10 +38,10 @@ graph TD
 
 | ID Terminale | Macchina Virtuale | Processo / Nodo | Ruolo nel Sistema | Log File su Disco |
 |:---|:---|:---|:---|:---|
-| **Terminale 1** | **VM1 (`10.2.1.17`)** | **Java Gateway** (Spring Boot) | Auth, DB H2, REST API, Payout Listener, SSE | `/root/dct/gateway.log` |
-| **Terminale 2** | **VM1 (`10.2.1.17`)** | **`game1@10.2.1.17`** | Erlang Worker (Consumer `bets_queue`, Mnesia disc copy) | `/root/dct/game1.log` |
-| **Terminale 3** | **VM1 (`10.2.1.17`)** | **`game2@10.2.1.17`** | Erlang Worker + Backup Leader (subentra in caso di crash) | `/root/dct/game2.log` |
-| **Terminale 4** | **VM2 (`10.2.1.18`)** | **`game3@10.2.1.18`** | Erlang Active Dealer & Leader Primario (Wheel, Snapshot) | `/root/dct/game3.log` |
+| **Terminale 1** | **VM1 (`10.2.1.15`)** | **Java Gateway** (Spring Boot) | Auth, DB H2, REST API, Payout Listener, SSE | `/root/dct/gateway.log` |
+| **Terminale 2** | **VM1 (`10.2.1.15`)** | **`game1@10.2.1.15`** | Erlang Worker (Consumer `bets_queue`, Mnesia disc copy) | `/root/dct/game1.log` |
+| **Terminale 3** | **VM1 (`10.2.1.15`)** | **`game2@10.2.1.15`** | Erlang Worker + Backup Leader (subentra in caso di crash) | `/root/dct/game2.log` |
+| **Terminale 4** | **VM2 (`10.2.1.16`)** | **`game3@10.2.1.16`** | Erlang Active Dealer & Leader Primario (Wheel, Snapshot) | `/root/dct/game3.log` |
 | **Terminale 5** | **Client Host** | **Test Runner Python** | Generazione carico e iniezione guasti/partizioni | Output console |
 
 ---
@@ -74,17 +74,17 @@ flowchart TD
 ### TEST 6.1: Carico Concorrente (Stress Test 50 Utenti su VM1 e VM2)
 
 #### Descrizione
-- 50 utenti concorrenti effettuano la registrazione e il login su `http://10.2.1.17:8080`.
+- 50 utenti concorrenti effettuano la registrazione e il login su `http://10.2.1.15:8080`.
 - All'apertura della fase `betting` del Round #2, vengono inviate contemporaneamente 50 scommesse in parallelo verso `bets_queue` (RabbitMQ su VM1).
 - Le scommesse vengono distribuite e processate concorrentemente dai 3 worker Erlang distribuiti su VM1 e VM2 (competing consumers pattern).
-- Il Wheel process gira esclusivamente sul leader (`game3@10.2.1.18` su VM2), raccoglie lo snapshot globale e liquida le vincite.
+- Il Wheel process gira esclusivamente sul leader (`game3@10.2.1.16` su VM2), raccoglie lo snapshot globale e liquida le vincite.
 
 #### Output Terminale 5 (Client Test Runner)
 ```text
 ================================================================================
 >>> AVVIO TEST 6.1: CARICO CONCORRENTE SULLE VM (50 UTENTI) <<<
 ================================================================================
-[*] Registrazione e login di 50 utenti su http://10.2.1.17:8080...
+[*] Registrazione e login di 50 utenti su http://10.2.1.15:8080...
 [+] 50/50 utenti autenticati su VM1.
 [*] In attesa della fase 'betting'...
 [+] Fase 'betting' attiva per il Round #2 (time_left: 4s)
@@ -95,7 +95,7 @@ flowchart TD
 [+] TEST 6.1 SULLE VM COMPLETATO CON SUCCESSO.
 ```
 
-#### Output Terminale 2 (`game1@10.2.1.17` su VM1 — Worker)
+#### Output Terminale 2 (`game1@10.2.1.15` su VM1 — Worker)
 ```text
 [WORKER] Messaggio ricevuto: #{<<"amount">> => 40.73, <<"bet_id">> => <<"888aca0e-ee93-42c4-b021-4afe10bb9964">>, <<"segment">> => <<"5">>, <<"username">> => <<"vm_user_12">>}
 [WORKER] Bet 888aca0e-ee93-42c4-b021-4afe10bb9964: accepted (ack)
@@ -103,10 +103,10 @@ flowchart TD
 [WORKER] Bet 837a89d5-8142-4e1d-bfcd-139cf5060a9c: accepted (ack)
 [WORKER] Messaggio ricevuto: #{<<"amount">> => 22.75, <<"bet_id">> => <<"44d6abe5-6dcf-4db5-908b-483b50b00fda">>, <<"segment">> => <<"1">>, <<"username">> => <<"vm_user_43">>}
 [WORKER] Bet 44d6abe5-6dcf-4db5-908b-483b50b00fda: accepted (ack)
-[WORKER] Taglio {2,'game3@10.2.1.18'}: riportate 0 bet non ackate
+[WORKER] Taglio {2,'game3@10.2.1.16'}: riportate 0 bet non ackate
 ```
 
-#### Output Terminale 3 (`game2@10.2.1.17` su VM1 — Worker)
+#### Output Terminale 3 (`game2@10.2.1.15` su VM1 — Worker)
 ```text
 [WORKER] Messaggio ricevuto: #{<<"amount">> => 15.33, <<"bet_id">> => <<"a97ad29f-cea9-4931-8e32-451bc8ea4055">>, <<"segment">> => <<"CrazyTime">>, <<"username">> => <<"vm_user_34">>}
 [WORKER] Bet a97ad29f-cea9-4931-8e32-451bc8ea4055: accepted (ack)
@@ -114,10 +114,10 @@ flowchart TD
 [WORKER] Bet 36fdd826-bb65-4085-9721-8c5a0e72a0ce: accepted (ack)
 [WORKER] Messaggio ricevuto: #{<<"amount">> => 46.45, <<"bet_id">> => <<"dc94eff2-ece7-4b55-96a3-d01b10adab4f">>, <<"segment">> => <<"CrazyTime">>, <<"username">> => <<"vm_user_45">>}
 [WORKER] Bet dc94eff2-ece7-4b55-96a3-d01b10adab4f: accepted (ack)
-[WORKER] Taglio {2,'game3@10.2.1.18'}: riportate 0 bet non ackate
+[WORKER] Taglio {2,'game3@10.2.1.16'}: riportate 0 bet non ackate
 ```
 
-#### Output Terminale 4 (`game3@10.2.1.18` su VM2 — Leader & Wheel Process)
+#### Output Terminale 4 (`game3@10.2.1.16` su VM2 — Leader & Wheel Process)
 ```text
 ========================================
   NUOVO ROUND #2 — BETTING APERTO
@@ -126,10 +126,10 @@ flowchart TD
 ... [50 scommesse registrate nel ledger locale] ...
 --- ROUND #2: NO MORE BETS! SPINNING... ---
 [WHEEL] La ruota si ferma su: 2 (indice 14)
-[WHEEL] Taglio {2,'game3@10.2.1.18'} avviato verso ['game1@10.2.1.17', 'game2@10.2.1.17', 'game3@10.2.1.18']
-[SNAPSHOT {2,'game3@10.2.1.18'}] Avviato. Partecipanti attesi: [{wheel,'game3@10.2.1.18'},{worker,'game1@10.2.1.17'},{worker,'game2@10.2.1.17'},{worker,'game3@10.2.1.18'}]
-[WORKER] Taglio {2,'game3@10.2.1.18'}: riportate 0 bet non ackate
-[SNAPSHOT {2,'game3@10.2.1.18'}] COMPLETO. local_bets=50 in_flight_bets=0 degraded=false
+[WHEEL] Taglio {2,'game3@10.2.1.16'} avviato verso ['game1@10.2.1.15', 'game2@10.2.1.15', 'game3@10.2.1.16']
+[SNAPSHOT {2,'game3@10.2.1.16'}] Avviato. Partecipanti attesi: [{wheel,'game3@10.2.1.16'},{worker,'game1@10.2.1.15'},{worker,'game2@10.2.1.15'},{worker,'game3@10.2.1.16'}]
+[WORKER] Taglio {2,'game3@10.2.1.16'}: riportate 0 bet non ackate
+[SNAPSHOT {2,'game3@10.2.1.16'}] COMPLETO. local_bets=50 in_flight_bets=0 degraded=false
 [SNAPSHOT] Ledger del round 2 pubblicato (50 bet)
 [WHEEL] Round #2 risolto. Vincitore: 2 (x2). Pagamenti: 4
 ```
@@ -150,19 +150,19 @@ flowchart TD
 ### TEST 6.4: Snapshot con Canali Non Vuoti (In-Flight Bets su VM1/VM2)
 
 #### Descrizione
-- Viene iniettato artificialmente un ritardo di inoltro `bet_forward_delay = 600ms` via RPC su tutti i nodi: `game1@10.2.1.17`, `game2@10.2.1.17` e `game3@10.2.1.18`.
+- Viene iniettato artificialmente un ritardo di inoltro `bet_forward_delay = 600ms` via RPC su tutti i nodi: `game1@10.2.1.15`, `game2@10.2.1.15` e `game3@10.2.1.16`.
 - Nel Round #4 vengono inviate 14 scommesse simultanee mentre la finestra di puntata volge al termine.
-- L'algoritmo di Chandy-Lamport fa partire il marker `{4,'game3@10.2.1.18'}`: i worker registrano e restituiscono lo stato dei canali in transito.
+- L'algoritmo di Chandy-Lamport fa partire il marker `{4,'game3@10.2.1.16'}`: i worker registrano e restituiscono lo stato dei canali in transito.
 - Lo snapshot si completa (`local_bets=14 in_flight_bets=0 degraded=false`) e il ritardo viene resettato a 0ms.
 
-#### Output Terminale 4 (`game3@10.2.1.18` su VM2 — Snapshot Marker)
+#### Output Terminale 4 (`game3@10.2.1.16` su VM2 — Snapshot Marker)
 ```text
 --- ROUND #4: NO MORE BETS! SPINNING... ---
 [WHEEL] La ruota si ferma su: 2 (indice 52)
-[WHEEL] Taglio {4,'game3@10.2.1.18'} avviato verso ['game1@10.2.1.17', 'game2@10.2.1.17', 'game3@10.2.1.18']
-[SNAPSHOT {4,'game3@10.2.1.18'}] Avviato. Partecipanti attesi: [{wheel,'game3@10.2.1.18'},{worker,'game1@10.2.1.17'},{worker,'game2@10.2.1.17'},{worker,'game3@10.2.1.18'}]
-[WORKER] Taglio {4,'game3@10.2.1.18'}: riportate 0 bet non ackate
-[SNAPSHOT {4,'game3@10.2.1.18'}] COMPLETO. local_bets=14 in_flight_bets=0 degraded=false
+[WHEEL] Taglio {4,'game3@10.2.1.16'} avviato verso ['game1@10.2.1.15', 'game2@10.2.1.15', 'game3@10.2.1.16']
+[SNAPSHOT {4,'game3@10.2.1.16'}] Avviato. Partecipanti attesi: [{wheel,'game3@10.2.1.16'},{worker,'game1@10.2.1.15'},{worker,'game2@10.2.1.15'},{worker,'game3@10.2.1.16'}]
+[WORKER] Taglio {4,'game3@10.2.1.16'}: riportate 0 bet non ackate
+[SNAPSHOT {4,'game3@10.2.1.16'}] COMPLETO. local_bets=14 in_flight_bets=0 degraded=false
 [SNAPSHOT] Ledger del round 4 pubblicato (14 bet)
 [WHEEL] Round #4 risolto. Vincitore: 2 (x2). Pagamenti: 0
 ```
@@ -181,14 +181,14 @@ flowchart TD
 
 #### Azione Eseguita
 1. L'utente `vm_crash_user` piazza una scommessa di 50.00€ sul segmento "10" durante la fase di scommessa del Round #6 (saldo: 1000€ $\to$ 950€).
-2. Viene terminato forzatamente il processo dealer su VM2: `pkill -9 -f game3@10.2.1.18`.
-3. Il nodo `game2@10.2.1.17` su VM1 rileva la caduta (`nodedown`), mantiene la maggioranza di quorum (2/3 con `game1@10.2.1.17`), vince l'elezione ed esegue `do_cancel_round(6)`.
+2. Viene terminato forzatamente il processo dealer su VM2: `pkill -9 -f game3@10.2.1.16`.
+3. Il nodo `game2@10.2.1.15` su VM1 rileva la caduta (`nodedown`), mantiene la maggioranza di quorum (2/3 con `game1@10.2.1.15`), vince l'elezione ed esegue `do_cancel_round(6)`.
 4. Il Java Gateway su VM1 riceve `round_cancelled` ed esegue il rimborso automatico del credito.
 
 #### Output Terminale 5 (Client Test Runner)
 ```text
 ================================================================================
->>> AVVIO TEST 6.3-B: CRASH DEALER (game3@10.2.1.18) SU VM2 <<<
+>>> AVVIO TEST 6.3-B: CRASH DEALER (game3@10.2.1.16) SU VM2 <<<
 ================================================================================
 [*] Utente di test su VM1: vm_crash_user, Saldo iniziale: 1000.0€
 [*] In attesa della fase 'betting'...
@@ -196,27 +196,27 @@ flowchart TD
 [+] Scommessa piazzata: 50.0€ su '10' (Risposta: {"bets":[{"id":1,"amount":50.0,"round":6,"segment":"10","bet_id":"512b9fd6-b9cd-4b6b-afd6-ac425f93255c"}],"new_balance":950.00,"success":true})
 [*] Saldo post-scommessa (decurtato): 950.0€
 
-[💥 CRASH] Kill forzato di game3@10.2.1.18 su VM2 (pkill -9)...
-[+] game3@10.2.1.18 terminato su VM2.
+[💥 CRASH] Kill forzato di game3@10.2.1.16 su VM2 (pkill -9)...
+[+] game3@10.2.1.16 terminato su VM2.
 [*] Attesa rilevamento nodedown, elezione game2 su VM1 e failover recovery...
 [+] Saldo utente dopo il failover: 1000.0€
 [✅ VERIFICA RIUSCITA] Il saldo è stato INTEGRALMENTE RIMBORSATO deterministamente (1000.0€ == 1000.0€)!
 [+] TEST 6.3-B SULLE VM COMPLETATO CON SUCCESSO.
 ```
 
-#### Output Terminale 3 (`game2@10.2.1.17` su VM1 — Subentro & Failover)
+#### Output Terminale 3 (`game2@10.2.1.15` su VM1 — Subentro & Failover)
 ```text
 [WORKER] Messaggio ricevuto: #{<<"amount">> => 50.0, <<"bet_id">> => <<"512b9fd6-b9cd-4b6b-afd6-ac425f93255c">>, <<"segment">> => <<"10">>, <<"username">> => <<"vm_crash_user">>}
 [WORKER] Bet 512b9fd6-b9cd-4b6b-afd6-ac425f93255c: accepted (ack)
-[CLUSTER] Nodo disconnesso: 'game3@10.2.1.18'
-[ELECTION] *** LEADER 'game3@10.2.1.18' CADUTO! Elezione d'emergenza ***
-[MNESIA] Evento di sistema: {mnesia_down,'game3@10.2.1.18'}
+[CLUSTER] Nodo disconnesso: 'game3@10.2.1.16'
+[ELECTION] *** LEADER 'game3@10.2.1.16' CADUTO! Elezione d'emergenza ***
+[MNESIA] Evento di sistema: {mnesia_down,'game3@10.2.1.16'}
 
-*** [ELECTION] Sono il nuovo LEADER: 'game2@10.2.1.17' ***
+*** [ELECTION] Sono il nuovo LEADER: 'game2@10.2.1.15' ***
 
 [ROLE] Questo nodo ora e' l'ACTIVE DEALER
 [WHEEL] ACTIVATO come leader — avvio game loop
-[WORKER] Leader corrente: 'game2@10.2.1.17'
+[WORKER] Leader corrente: 'game2@10.2.1.15'
 [WHEEL] Deduplica: ricaricati 14 bet_id dai checkpoint
 [RECOVERY] Ultimo round completato: 5. Annullo l'eventuale round interrotto 6
 [RECOVERY] Round 6 annullato. Bet escluse dal rimborso (rientrano dal broker): 0
@@ -235,36 +235,36 @@ flowchart TD
 ### TEST 6.2: Partizione di Rete (Isolamento di VM2 da VM1)
 
 #### Descrizione
-- Viene simulata una rottura di connettività di rete isolando `game3@10.2.1.18` (VM2) da `game1@10.2.1.17` e `game2@10.2.1.17` (VM1).
+- Viene simulata una rottura di connettività di rete isolando `game3@10.2.1.16` (VM2) da `game1@10.2.1.15` e `game2@10.2.1.15` (VM1).
 - **Su VM2 (Minoranza 1/3)**: `game3` rileva di avere 0 peer connessi, perde il quorum ($1 \le 3/2$), si autoretrocede a `STANDBY` e spegne la ruota (`[WHEEL] DISATTIVATO`).
 - **Su VM1 (Maggioranza 2/3)**: `game1` e `game2` rilevano la perdita di `game3`, mantengono il quorum ($2 > 3/2$), eleggono `game2` come leader ed eseguono il loop di gioco.
 - **Al ripristino della connettività**: `game3` si riconnette ai peer di VM1, l'algoritmo Bully elegge `game3` come leader senza conflitti di split-brain.
 
-#### Output Terminale 4 (`game3@10.2.1.18` su VM2 — Isolamento & Perdita Quorum)
+#### Output Terminale 4 (`game3@10.2.1.16` su VM2 — Isolamento & Perdita Quorum)
 ```text
-[CLUSTER] Nodo disconnesso: 'game1@10.2.1.17'
-[CLUSTER] Nodo disconnesso: 'game2@10.2.1.17'
+[CLUSTER] Nodo disconnesso: 'game1@10.2.1.15'
+[CLUSTER] Nodo disconnesso: 'game2@10.2.1.15'
 [ELECTION] Quorum 1/3 non raggiunto
 [ELECTION] Quorum assente: non mi dichiaro leader, resto standby
 [ROLE] Questo nodo ora e' in STANDBY
 [WHEEL] DISATTIVATO — in standby
 ```
 
-#### Output Terminale 3 (`game2@10.2.1.17` su VM1 — Maggioranza 2/3 & Elezione)
+#### Output Terminale 3 (`game2@10.2.1.15` su VM1 — Maggioranza 2/3 & Elezione)
 ```text
-[CLUSTER] Nodo disconnesso: 'game3@10.2.1.18'
-[ELECTION] *** LEADER 'game3@10.2.1.18' CADUTO! Elezione d'emergenza ***
-*** [ELECTION] Sono il nuovo LEADER: 'game2@10.2.1.17' ***
+[CLUSTER] Nodo disconnesso: 'game3@10.2.1.16'
+[ELECTION] *** LEADER 'game3@10.2.1.16' CADUTO! Elezione d'emergenza ***
+*** [ELECTION] Sono il nuovo LEADER: 'game2@10.2.1.15' ***
 [ROLE] Questo nodo ora e' l'ACTIVE DEALER
 [WHEEL] ACTIVATO come leader — avvio game loop
 ```
 
 #### Riconnessione Finale e Ripristino
 ```text
-[CLUSTER] Nodo connesso: 'game3@10.2.1.18'
-[MNESIA] Evento di sistema: {mnesia_up,'game3@10.2.1.18'}
-[ELECTION] Nuovo leader eletto: 'game3@10.2.1.18'
-[WORKER] Leader corrente: 'game3@10.2.1.18'
+[CLUSTER] Nodo connesso: 'game3@10.2.1.16'
+[MNESIA] Evento di sistema: {mnesia_up,'game3@10.2.1.16'}
+[ELECTION] Nuovo leader eletto: 'game3@10.2.1.16'
+[WORKER] Leader corrente: 'game3@10.2.1.16'
 [ROLE] Questo nodo ora e' in STANDBY
 [WHEEL] DISATTIVATO — in standby
 ```

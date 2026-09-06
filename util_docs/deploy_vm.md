@@ -4,8 +4,8 @@ Container assegnati:
 
 | | IP | Ruolo |
 |---|---|---|
-| **VM1** | `10.2.1.17` | RabbitMQ + Java Gateway + `game1` + `game2` |
-| **VM2** | `10.2.1.18` | `game3` |
+| **VM1** | `10.2.1.15` | RabbitMQ + Java Gateway + `game1` + `game2` |
+| **VM2** | `10.2.1.16` | `game3` |
 
 Credenziali: `root` / `root`. Ubuntu 24.04, Java 25, Erlang/OTP 28, Maven 3.9.11.
 
@@ -62,8 +62,8 @@ del client e permette di scegliere quella compatibile.
 Verifica in un **altro** terminale:
 
 ```bash
-ping -c 2 10.2.1.17 && ping -c 2 10.2.1.18
-ssh root@10.2.1.17     # password: root
+ping -c 2 10.2.1.15 && ping -c 2 10.2.1.16
+ssh root@10.2.1.15     # password: root
 ```
 
 **Consiglio:** ti serviranno 5 sessioni SSH. Copia la chiave per non digitare la
@@ -71,8 +71,8 @@ password ogni volta:
 
 ```bash
 ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_dsmt      # se non ne hai già una
-ssh-copy-id -i ~/.ssh/id_dsmt root@10.2.1.17
-ssh-copy-id -i ~/.ssh/id_dsmt root@10.2.1.18
+ssh-copy-id -i ~/.ssh/id_dsmt root@10.2.1.15
+ssh-copy-id -i ~/.ssh/id_dsmt root@10.2.1.16
 ```
 
 ---
@@ -116,7 +116,7 @@ container). Esclude git, il DB H2 locale e le directory Mnesia di sviluppo, ma
 ```bash
 cd /Users/gabrielecaioli/Downloads/Uni/DistributedSystemsMT/ProgettoDistributedSMT/distributed_crazy_time
 
-for IP in 10.2.1.17 10.2.1.18; do
+for IP in 10.2.1.15 10.2.1.16; do
   COPYFILE_DISABLE=1 tar czf - \
       --exclude='.git' \
       --exclude='.DS_Store' \
@@ -143,7 +143,7 @@ Su **VM1** servono due copie dell'engine, una per nodo: due `rebar3 shell` nella
 stessa directory si contendono `_build/` e la directory Mnesia va tenuta separata.
 
 ```bash
-ssh root@10.2.1.17 'cp -r /root/dct/erlang-engine /root/dct/erlang-engine-2'
+ssh root@10.2.1.15 'cp -r /root/dct/erlang-engine /root/dct/erlang-engine-2'
 ```
 
 Quindi: `game1` gira in `/root/dct/erlang-engine`, `game2` in `/root/dct/erlang-engine-2`.
@@ -163,7 +163,7 @@ Il broker non è preinstallato. Gira **solo su VM1**, ed entrambe le VM ci si
 collegano.
 
 ```bash
-ssh root@10.2.1.17
+ssh root@10.2.1.15
 apt-get update && apt-get install -y rabbitmq-server
 ```
 
@@ -292,7 +292,7 @@ rmq rabbitmqctl status | grep -E 'RabbitMQ version|Erlang configuration'
 Verifica da **VM2** che il broker sia raggiungibile:
 
 ```bash
-ssh root@10.2.1.18 'timeout 3 bash -c "</dev/tcp/10.2.1.17/5672" && echo RAGGIUNGIBILE'
+ssh root@10.2.1.16 'timeout 3 bash -c "</dev/tcp/10.2.1.15/5672" && echo RAGGIUNGIBILE'
 ```
 
 ---
@@ -304,8 +304,8 @@ di sviluppo, e sulle VM si applica il sys.config
 [`config/vm.config`](../erlang-engine/game_engine/config/vm.config), già presente
 nel repo, che sovrascrive:
 
-- `rabbitmq.host` → `"10.2.1.17"`
-- `peer_nodes` → `['game1@10.2.1.17', 'game2@10.2.1.17', 'game3@10.2.1.18']`
+- `rabbitmq.host` → `"10.2.1.15"`
+- `peer_nodes` → `['game1@10.2.1.15', 'game2@10.2.1.15', 'game3@10.2.1.16']`
 - porte fisse per la distribuzione Erlang (9100–9155): senza, la beam ne sceglie
   una a caso a ogni avvio e non sapresti cosa aprire se un giorno ci fosse un
   firewall di mezzo
@@ -356,7 +356,7 @@ primo crea lo schema Mnesia, gli altri due se ne prendono una copia.
 ### Terminale 1 — Gateway (VM1)
 
 ```bash
-ssh root@10.2.1.17
+ssh root@10.2.1.15
 cd /root/dct/java-gateway
 java -jar target/java-gateway-0.0.1-SNAPSHOT.jar
 ```
@@ -367,9 +367,9 @@ lancialo sempre dalla stessa, o ti ritrovi utenti diversi a ogni avvio.
 ### Terminale 2 — `game1` (VM1)
 
 ```bash
-ssh root@10.2.1.17
+ssh root@10.2.1.15
 cd /root/dct/erlang-engine/game_engine
-../rebar3 shell --name game1@10.2.1.17 --setcookie crazytime --config config/vm.config
+../rebar3 shell --name game1@10.2.1.15 --setcookie crazytime --config config/vm.config
 ```
 
 Aspetta che compaia `Tabella snapshot_record pronta` prima di procedere.
@@ -377,24 +377,24 @@ Aspetta che compaia `Tabella snapshot_record pronta` prima di procedere.
 ### Terminale 3 — `game2` (VM1, seconda copia)
 
 ```bash
-ssh root@10.2.1.17
+ssh root@10.2.1.15
 cd /root/dct/erlang-engine-2/game_engine
-../rebar3 shell --name game2@10.2.1.17 --setcookie crazytime --config config/vm.config
+../rebar3 shell --name game2@10.2.1.15 --setcookie crazytime --config config/vm.config
 ```
 
 ### Terminale 4 — `game3` (VM2)
 
 ```bash
-ssh root@10.2.1.18
+ssh root@10.2.1.16
 cd /root/dct/erlang-engine/game_engine
-../rebar3 shell --name game3@10.2.1.18 --setcookie crazytime --config config/vm.config
+../rebar3 shell --name game3@10.2.1.16 --setcookie crazytime --config config/vm.config
 ```
 
 `game3` ha il nome più alto: vince l'elezione e diventa leader (il dealer).
 
 ### Terminale 5 — client (nessun SSH)
 
-Dal tuo Mac, con la VPN attiva: **http://10.2.1.17:8080**
+Dal tuo Mac, con la VPN attiva: **http://10.2.1.15:8080**
 
 ### Verifica del cluster
 
@@ -403,7 +403,7 @@ Da una qualsiasi shell Erlang:
 ```erlang
 nodes().                                %% deve elencare gli altri due
 cluster_manager:get_connected_nodes().
-leader_election:get_leader().           %% {ok,'game3@10.2.1.18'}
+leader_election:get_leader().           %% {ok,'game3@10.2.1.16'}
 leader_election:is_leader().
 rabbitmq_manager:is_connected().        %% true su tutti e tre
 ```
@@ -417,7 +417,7 @@ rabbitmq_manager:is_connected().        %% true su tutti e tre
 Copre il punto "carico mai misurato" dei limiti noti. Dal Mac, con la VPN su:
 
 ```bash
-python3 test_scripts/stress_test.py http://10.2.1.17:8080
+python3 test_scripts/stress_test.py http://10.2.1.15:8080
 ```
 
 (`pip3 install requests` se manca). Con 50 utenti guarda i log dei tre nodi: le
@@ -429,13 +429,13 @@ puntate si distribuiscono fra i worker dei nodi (competing consumers sulla
 Questo è il test che in locale non si poteva fare: colma il punto 11 dei limiti
 noti. Si esegue **interamente dalla shell Erlang di `game3`**.
 
-**Il test.** Nella finestra di `game3` (prompt `(game3@10.2.1.18)1>`), tre
+**Il test.** Nella finestra di `game3` (prompt `(game3@10.2.1.16)1>`), tre
 comandi, uno alla volta, ciascuno chiuso dal punto:
 
 ```erlang
-net_kernel:allow(['game3@10.2.1.18']).
-erlang:disconnect_node('game1@10.2.1.17').
-erlang:disconnect_node('game2@10.2.1.17').
+net_kernel:allow(['game3@10.2.1.16']).
+erlang:disconnect_node('game1@10.2.1.15').
+erlang:disconnect_node('game2@10.2.1.15').
 ```
 
 L'ordine conta. `disconnect_node/1` da solo non basta: la distribuzione Erlang
@@ -468,18 +468,18 @@ rielezione, che è l'ultima cosa che il test deve mostrare.
 > **Differenza rispetto a una partizione di rete vera:** qui il broker resta
 > raggiungibile da `game3`, quindi non vedrai `Broker non raggiungibile`. Se ti
 > serve anche quell'aspetto, chiudi la connessione AMQP di VM2 dalla dashboard
-> RabbitMQ (*Connections* → la connessione da `10.2.1.18` → *Force Close*): il
+> RabbitMQ (*Connections* → la connessione da `10.2.1.16` → *Force Close*): il
 > nodo ritenta, e nei log compaiono i tentativi.
 
-> **Variante: nodo congelato.** Da una shell su VM2, `pkill -STOP -f game3@10.2.1.18`
-> sospende la beam e `pkill -CONT -f game3@10.2.1.18` la risveglia. È l'unica
+> **Variante: nodo congelato.** Da una shell su VM2, `pkill -STOP -f game3@10.2.1.16`
+> sospende la beam e `pkill -CONT -f game3@10.2.1.16` la risveglia. È l'unica
 > forma davvero reversibile senza riavvio, ma mostra solo il lato maggioranza:
 > `game3` è fermo e non logga, quindi l'autoretrocessione non si vede.
 
 ### 6.3 Crash del dealer
 
 Con `game3` leader, chiudi la sua shell (`Ctrl-C` due volte) o, più brutalmente,
-da VM2: `pkill -9 -f game3@10.2.1.18`. Il round in corso viene recuperato da
+da VM2: `pkill -9 -f game3@10.2.1.16`. Il round in corso viene recuperato da
 `game2`: completato se il segmento era un moltiplicatore, annullato e rimborsato
 se era un minigioco (limite noto 6).
 
@@ -530,7 +530,7 @@ quella sì va rifatta — è l'unica cosa che non vive su disco.
 # sul Mac
 cd java-gateway && mvn -DskipTests package && cd ..
 scp java-gateway/target/java-gateway-0.0.1-SNAPSHOT.jar \
-    root@10.2.1.17:/root/dct/java-gateway/target/
+    root@10.2.1.15:/root/dct/java-gateway/target/
 ```
 
 Riavvii **solo** il terminale 1. I nodi Erlang non se ne accorgono: si
@@ -542,14 +542,14 @@ riconnettono da soli al broker, che non è mai caduto.
 # sul Mac, dalla radice del progetto
 cd erlang-engine/game_engine && ../rebar3 compile && cd ../..
 
-for IP in 10.2.1.17 10.2.1.18; do
+for IP in 10.2.1.15 10.2.1.16; do
   COPYFILE_DISABLE=1 tar czf - --exclude='Mnesia.*' erlang-engine \
   | ssh root@$IP 'tar xzf - -C /root/dct'
 done
 
 # VM1: allinea la seconda copia, quella di game2.
 # Copia solo src/ e config/: _build e Mnesia.* restano, rebar3 ricompila da solo.
-ssh root@10.2.1.17 'cp -r /root/dct/erlang-engine/game_engine/src \
+ssh root@10.2.1.15 'cp -r /root/dct/erlang-engine/game_engine/src \
                           /root/dct/erlang-engine/game_engine/config \
                           /root/dct/erlang-engine-2/game_engine/'
 ```
@@ -609,7 +609,7 @@ Misura l'MTU effettivo del percorso, con il bit "don't fragment":
 ```bash
 for s in 1200 1300 1350 1400 1450; do
   printf "pkt %s: " $((s+28))
-  ping -D -c 2 -W 1500 -s $s 10.2.1.17 >/dev/null 2>&1 && echo PASSA || echo scartato
+  ping -D -c 2 -W 1500 -s $s 10.2.1.15 >/dev/null 2>&1 && echo PASSA || echo scartato
 done
 ```
 

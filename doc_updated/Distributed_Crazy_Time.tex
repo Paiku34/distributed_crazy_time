@@ -338,13 +338,13 @@ The system supports both local testing and distributed deployment on university 
 
 \textbf{University Laboratory Topology (Ubuntu 24.04 containers)}:
 \begin{itemize}
-    \item \textbf{VM1 (10.2.1.17)}: Hosts RabbitMQ Server, Java Gateway, and Erlang nodes game1 and game2 (representing majority quorum of 2/3).
-    \item \textbf{VM2 (10.2.1.18)}: Hosts Erlang node game3 (Active Leader / Primary Dealer).
+    \item \textbf{VM1 (10.2.1.15)}: Hosts RabbitMQ Server, Java Gateway, and Erlang nodes game1 and game2 (representing majority quorum of 2/3).
+    \item \textbf{VM2 (10.2.1.16)}: Hosts Erlang node game3 (Active Leader / Primary Dealer).
 \end{itemize}
 
 This physical separation allows realistic testing of both failure modes. A leader crash is produced with pkill -9 on VM2. A network partition is produced in two steps, because a partition must persist rather than heal on the next reconnection attempt:
 \begin{enumerate}
-    \item on both VM1 nodes, \texttt{net\_\allowbreak kernel:allow(} \allowbreak \texttt{['game1@10.2.1.17',} \allowbreak \texttt{'game2@10.2.1.17'])} restricts the distribution layer to that pair. The restriction applies to connections in either direction, so issuing it on the majority side is enough: game3 needs no intervention;
+    \item on both VM1 nodes, \texttt{net\_\allowbreak kernel:allow(} \allowbreak \texttt{['game1@10.2.1.15',} \allowbreak \texttt{'game2@10.2.1.15'])} restricts the distribution layer to that pair. The restriction applies to connections in either direction, so issuing it on the majority side is enough: game3 needs no intervention;
     \item game3 is then brought down. From that moment its cluster\_\allowbreak manager retries \texttt{net\_\allowbreak adm:ping/1} every 10 seconds (RECONNECT\_\allowbreak INTERVAL) and is refused every time.
 \end{enumerate}
 The result is a durable partition rather than a crash: game3 is alive but isolated, the majority sits on the gateway's side, and one can observe that game3 cleanly self-demotes instead of continuing to act as dealer.
