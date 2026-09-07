@@ -79,6 +79,7 @@ This architecture allows the system to guarantee real-time responsiveness, stric
     \IfFileExists{wheel.png}{\includegraphics[width=0.7\textwidth]{wheel.png}}{\rule{0.7\textwidth}{5cm}}
 \end{figure}
 
+\clearpage
 \subsection{Environment}
 The Java-based part of the system (the Gateway) has been implemented using Spring Boot 3.2 and Spring Data JPA, interacting with an embedded, file-persistent H2 Database (./data/crazytimedb) for local durability across service restarts. The Erlang-based components (the game engine cluster) have been developed using Erlang/OTP 28, utilizing Mnesia as a replicated distributed database with disc copies (disc\_\allowbreak copies) to store global state and snapshots. The communication middleware relies on RabbitMQ over native AMQP 0-9-1 on standard port 5672.
 
@@ -129,6 +130,7 @@ Clients communicate exclusively with the Java Gateway via HTTP REST and WebSocke
     \item \textbf{Mini-game interaction}: During bonus games, users submit choices via POST /api/game/choice, which forwards them to the engine.
 \end{itemize}
 
+\clearpage
 \subsubsection{Minigames}
 There are four possible minigames:
 \begin{itemize}
@@ -138,6 +140,7 @@ There are four possible minigames:
     \item \textbf{Crazy time}: A giant 64-segment virtual wheel of high multipliers is spun. A single segment is marked DOUBLE and, in the current implementation, resolves to a fixed 100x rather than doubling the rest of the wheel. Three colored flappers (Blue, Green, Yellow) sit 21 segments apart (120$^\circ$): the engine draws one winning index and derives the other two by offset, so the three multipliers are correlated by design rather than drawn independently. Players choose an arrow before the spin and receive the multiplier it points to.
 \end{itemize}
 
+\clearpage
 \subsection{Architecture}
 The architecture is designed to decouple client-facing APIs from the game logic, using message queues and distributed actor concurrency.
 
@@ -154,11 +157,6 @@ Native AMQP 0-9-1 integration allows full decoupling. The Gateway produces to be
 
 \subsubsection{Game Server Cluster (Erlang Engine)}
 The Erlang game engine runs on a cluster of nodes (typically 3: game1, game2, game3). Bet ingestion is distributed across all nodes as \textbf{competing consumers} on bets\_\allowbreak queue. Game coordination, timer countdown, wheel spinning, and mini-game delegation are performed authoritatively by the elected Leader.
-
-\begin{figure}[H]
-    \centering
-    \IfFileExists{nodes.png}{\includegraphics[width=0.8\textwidth]{nodes.png}}{\rule{0.8\textwidth}{5cm}}
-\end{figure}
 
 \subsection{Dealer Election \& Quorum Consensus}
 The Erlang game engine runs on multiple nodes. To avoid duplicated payouts, an Active Dealer (Leader) node is elected. The election is implemented via the \textbf{Bully Algorithm} with strict majority quorum guards:
@@ -285,6 +283,7 @@ The source code is organized into modular packages:
     \item GameStateCache: Thread-safe atomic cache storing current phase, round, and time left.
 \end{itemize}
 
+\clearpage
 \subsection{Erlang Game Engine}
 The Game Engine runs on a distributed Erlang cluster, executing authoritative logic under OTP principles.
 
@@ -349,6 +348,7 @@ This physical separation allows realistic testing of both failure modes. A leade
 \end{enumerate}
 The result is a durable partition rather than a crash: game3 is alive but isolated, the majority sits on the gateway's side, and one can observe that game3 cleanly self-demotes instead of continuing to act as dealer.
 
+\clearpage
 \textbf{University VM Execution Sequence} (assuming RabbitMQ is already running on VM1, all dependencies installed, code deployed to \texttt{/root/dct/}, and \texttt{vm.config} configured):
 
 \begin{itemize}
@@ -376,7 +376,7 @@ ssh root@10.2.1.16
 cd /root/dct/erlang-engine/game_engine
 ../rebar3 shell --name game3@10.2.1.16 --setcookie crazytime --config config/vm.config
 \end{lstlisting}
-    \item \textbf{Terminal 5 --- Client (local browser)}: \texttt{http://10.2.1.15:8080}
+    \item \textbf{Local browser (client)}: \texttt{http://10.2.1.15:8080}
 \end{itemize}
 
 The startup order matters: the Gateway first (it connects to the local broker), then game1 (creates the Mnesia schema), then game2 and game3 (they join the existing schema). Once all three nodes are up, Bully elects game3 as Leader.
@@ -395,6 +395,7 @@ cd java-gateway && mvn spring-boot:run
 \begin{lstlisting}[basicstyle=\ttfamily, breaklines=true]
 cd erlang-engine/game_engine && ../rebar3 shell --sname game1@localhost --setcookie crazytime
 \end{lstlisting}
+\clearpage
     \item Terminal 4: 
 \begin{lstlisting}[basicstyle=\ttfamily, breaklines=true]
 cd erlang-engine-2/game_engine && ../rebar3 shell --sname game2@localhost --setcookie crazytime
