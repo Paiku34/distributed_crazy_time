@@ -349,6 +349,38 @@ This physical separation allows realistic testing of both failure modes. A leade
 \end{enumerate}
 The result is a durable partition rather than a crash: game3 is alive but isolated, the majority sits on the gateway's side, and one can observe that game3 cleanly self-demotes instead of continuing to act as dealer.
 
+\textbf{University VM Execution Sequence} (assuming RabbitMQ is already running on VM1, all dependencies installed, code deployed to \texttt{/root/dct/}, and \texttt{vm.config} configured):
+
+\begin{itemize}
+    \item \textbf{Terminal 1 --- Gateway (VM1)}:
+\begin{lstlisting}[basicstyle=\ttfamily, breaklines=true]
+ssh root@10.2.1.15
+cd /root/dct/java-gateway
+java -jar target/java-gateway-0.0.1-SNAPSHOT.jar
+\end{lstlisting}
+    \item \textbf{Terminal 2 --- game1 (VM1)}:
+\begin{lstlisting}[basicstyle=\ttfamily, breaklines=true]
+ssh root@10.2.1.15
+cd /root/dct/erlang-engine/game_engine
+../rebar3 shell --name game1@10.2.1.15 --setcookie crazytime --config config/vm.config
+\end{lstlisting}
+    \item \textbf{Terminal 3 --- game2 (VM1, second engine copy)}:
+\begin{lstlisting}[basicstyle=\ttfamily, breaklines=true]
+ssh root@10.2.1.15
+cd /root/dct/erlang-engine-2/game_engine
+../rebar3 shell --name game2@10.2.1.15 --setcookie crazytime --config config/vm.config
+\end{lstlisting}
+    \item \textbf{Terminal 4 --- game3 (VM2)}:
+\begin{lstlisting}[basicstyle=\ttfamily, breaklines=true]
+ssh root@10.2.1.16
+cd /root/dct/erlang-engine/game_engine
+../rebar3 shell --name game3@10.2.1.16 --setcookie crazytime --config config/vm.config
+\end{lstlisting}
+    \item \textbf{Terminal 5 --- Client (local browser)}: \texttt{http://10.2.1.15:8080}
+\end{itemize}
+
+The startup order matters: the Gateway first (it connects to the local broker), then game1 (creates the Mnesia schema), then game2 and game3 (they join the existing schema). Once all three nodes are up, Bully elects game3 as Leader.
+
 \textbf{Local Execution Sequence:}
 \begin{enumerate}
     \item \textbf{RabbitMQ}: rabbitmq-server (Management interface at \url{http://localhost:15672})
